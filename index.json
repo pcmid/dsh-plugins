@@ -52,7 +52,7 @@
   },
   "plugins": [
     {
-      "name": "@local/dsh-model-defaults",
+      "name": "@pcmid/dsh-model-defaults",
       "title": {
         "en": "Default models",
         "zh": "默认模型"
@@ -81,11 +81,11 @@
       "versions": [
         {
           "version": "0.3.0",
-          "publishTimestamp": 1794219752,
+          "publishTimestamp": 1794220069,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
             "path": "plugins/dsh-model-defaults"
           },
           "engines": {
@@ -95,7 +95,7 @@
       ]
     },
     {
-      "name": "@local/dsh-retry-advisor",
+      "name": "@pcmid/dsh-retry-advisor",
       "title": {
         "en": "AI retry advisor",
         "zh": "AI 重试判断"
@@ -124,11 +124,11 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1794219752,
+          "publishTimestamp": 1794220069,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
             "path": "plugins/dsh-retry-advisor"
           },
           "engines": {
@@ -138,7 +138,7 @@
       ]
     },
     {
-      "name": "@local/dsh-web-search-native",
+      "name": "@pcmid/dsh-web-search-native",
       "title": {
         "en": "Native web search",
         "zh": "接口原生网页搜索"
@@ -167,11 +167,11 @@
       "versions": [
         {
           "version": "0.3.3",
-          "publishTimestamp": 1794219752,
+          "publishTimestamp": 1794220069,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {
