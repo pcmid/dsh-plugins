@@ -1,10 +1,10 @@
-# @local/dsh-web-search-native
+# @pcmid/dsh-web-search-native
 
 为 DSH 内置的 `web_search` 工具提供搜索后端，使用模型接口自带的搜索能力，在设置页显示为“接口原生搜索”。
 
 目前支持 Anthropic Messages 接口：每个查询发起一次 Messages 请求，携带接口原生的 `web_search` 服务端工具（`web_search_20250305`），由接口完成搜索。
 
-- 请求优先使用**小模型**（`@local/dsh-model-defaults` 提供的 `smallModel` 服务，在模型设置页选择）。没装那个插件、没设置小模型，或小模型当前不可用时，使用发起搜索的对话**当前选中的模型**，子代理用它自己的模型。
+- 请求优先使用**小模型**（`@pcmid/dsh-model-defaults` 提供的 `smallModel` 服务，在模型设置页选择）。没装那个插件、没设置小模型，或小模型当前不可用时，使用发起搜索的对话**当前选中的模型**，子代理用它自己的模型。
 - 地址、密钥和请求头都取自所选模型的路由（`llm-pi-ai` 配置里的 `baseURL`、`apiKeyEnv`、`headers`），本插件不单独配置。
 - 当前对话的推理强度不会带到搜索请求里；只有小模型上明确选择的强度才生效，否则使用 `thinkingEffort`。
 - `web_search_tool_result` 中的结果成为来源列表（标题、URL、`page_age` 作为日期）。

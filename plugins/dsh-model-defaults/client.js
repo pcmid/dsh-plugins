@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-model-defaults',
+  id: '@pcmid/dsh-model-defaults',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

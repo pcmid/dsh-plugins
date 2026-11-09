@@ -10,7 +10,7 @@
  * that is not an `anthropic-messages` route answers not ready, which withdraws
  * the built-in `web_search` tool for model steps on that route.
  *
- * @module @local/dsh-web-search-native
+ * @module @pcmid/dsh-web-search-native
  */
 
 import z from '@deepseek-ai/schemastery'

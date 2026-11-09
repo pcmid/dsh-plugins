@@ -1,5 +1,5 @@
-# Bundle patch of @local/dsh-model-defaults. The small model starts unset; users
+# Bundle patch of @pcmid/dsh-model-defaults. The small model starts unset; users
 # choose it on the Models settings page, which writes this row's config.
 - insert:
     - id: model-defaults
-      name: '@local/dsh-model-defaults'
+      name: '@pcmid/dsh-model-defaults'

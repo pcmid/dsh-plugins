@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-retry-advisor",
+  "name": "@pcmid/dsh-retry-advisor",
   "version": "0.1.0",
   "description": "Asks a model to analyze model-request failures that no built-in handler retries, and retries when the analysis says a resend can succeed.",
   "author": "pcmid",

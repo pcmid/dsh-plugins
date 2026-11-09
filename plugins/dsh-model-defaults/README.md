@@ -1,4 +1,4 @@
-# @local/dsh-model-defaults
+# @pcmid/dsh-model-defaults
 
 在“模型”设置页的供应商列表上方增加两组配置，选中后立即保存。
 
@@ -23,7 +23,7 @@
 | 使用默认小模型 | 复选框 | `model-defaults.enabled` |
 | 小模型 | 模型和推理强度下拉框 | `model-defaults` 的 `provider`、`model`、`reasoningEffort` |
 
-关闭复选框时，小模型的选择会保留，重新打开不用再选。目前只有 `@local/dsh-web-search-native` 读取小模型。
+关闭复选框时，小模型的选择会保留，重新打开不用再选。目前只有 `@pcmid/dsh-web-search-native` 读取小模型。
 
 ## 行为说明
 

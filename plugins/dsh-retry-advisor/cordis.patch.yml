@@ -1,6 +1,6 @@
-# Bundle patch of @local/dsh-retry-advisor: mounts the last-resort
+# Bundle patch of @pcmid/dsh-retry-advisor: mounts the last-resort
 # agent/request-error listener. With no provider/model set, the analysis
 # runs on the failed conversation's current model.
 - insert:
     - id: retry-advisor
-      name: '@local/dsh-retry-advisor'
+      name: '@pcmid/dsh-retry-advisor'
