@@ -1,0 +1,48 @@
+{
+  "name": "@local/dsh-model-defaults",
+  "version": "0.3.0",
+  "description": "Adds new-session defaults (model, agent, permissions) and a small model to the top of the Models settings page.",
+  "author": "pcmid",
+  "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-model-defaults#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-model-defaults"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-models"
+      ]
+    }
+  }
+}

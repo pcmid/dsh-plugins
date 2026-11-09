@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "AI retry advisor",
+    "description": "When a model request fails and no built-in handler retries it, asks a model to analyze the cause and decide whether and when to resend. If the analysis itself fails, the request is not retried."
+  }
+}

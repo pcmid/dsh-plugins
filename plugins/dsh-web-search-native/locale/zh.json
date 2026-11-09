@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "接口原生网页搜索",
+    "description": "用模型接口自带的网页搜索为 web_search 工具提供后端，优先使用小模型，否则使用当前对话的模型。目前支持 Anthropic Messages 路由。"
+  }
+}
