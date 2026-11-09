@@ -13,7 +13,7 @@
  * Decisions are written to the Host log and, unless disabled, appended to a
  * JSONL decision log.
  *
- * @module @local/dsh-retry-advisor
+ * @module @pcmid/dsh-retry-advisor
  */
 
 import z from '@deepseek-ai/schemastery'

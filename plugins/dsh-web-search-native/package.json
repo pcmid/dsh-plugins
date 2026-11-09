@@ -1,5 +1,5 @@
 {
-  "name": "@local/dsh-web-search-native",
+  "name": "@pcmid/dsh-web-search-native",
   "version": "0.3.3",
   "description": "Web search provider that uses the model API's built-in web search on the small model, or on the conversation's current model. Currently supports Anthropic Messages routes.",
   "author": "pcmid",

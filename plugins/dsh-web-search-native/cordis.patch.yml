@@ -1,6 +1,6 @@
-# Bundle patch of @local/dsh-web-search-native: mounts the native Messages
+# Bundle patch of @pcmid/dsh-web-search-native: mounts the native Messages
 # search provider. Model, endpoint, and key come from the conversation's
 # current route, so this row needs no connection config.
 - insert:
     - id: web-search-native
-      name: '@local/dsh-web-search-native'
+      name: '@pcmid/dsh-web-search-native'

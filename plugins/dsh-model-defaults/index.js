@@ -7,7 +7,7 @@
  * `smallModel` service; the Client half edits it on the Models settings page.
  * The conversation default stays owned by `@deepseek-ai/dsh-agent-default-model`.
  *
- * @module @local/dsh-model-defaults
+ * @module @pcmid/dsh-model-defaults
  */
 
 import { Service } from '@deepseek-ai/cordis'

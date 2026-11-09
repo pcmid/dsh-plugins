@@ -1,6 +1,6 @@
 # AI retry advisor
 
-`@local/dsh-retry-advisor` decides what to do with a failed model request after every built-in recovery handler has declined. It asks a model why the request failed and whether resending it can succeed. If the analysis itself fails, the failure stays terminal and the turn ends as it did before.
+`@pcmid/dsh-retry-advisor` decides what to do with a failed model request after every built-in recovery handler has declined. It asks a model why the request failed and whether resending it can succeed. If the analysis itself fails, the failure stays terminal and the turn ends as it did before.
 
 ## Behavior
 
