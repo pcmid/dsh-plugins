@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Auto restart",
+    "description": "When the Harness quits, restarts, or crashes while an agent is working, continues those conversations after the next startup. Waits for subagents that were cut off too, rearms active goals, and stops after a few automatic continuations without your input."
+  }
+}

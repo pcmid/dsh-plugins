@@ -1,0 +1,5 @@
+# Bundle patch of @pcmid/dsh-auto-restart: tracks running turns and, after
+# the next startup, continues the conversations a quit, restart, or crash cut off.
+- insert:
+    - id: auto-restart
+      name: '@pcmid/dsh-auto-restart'
