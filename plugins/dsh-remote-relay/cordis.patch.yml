@@ -1,0 +1,6 @@
+# Bundle patch of @pcmid/dsh-remote-relay. Remote access starts switched off; the owner
+# turns it on and sets the relay address on the Remote access settings page, which
+# writes this row's volatile config.
+- insert:
+    - id: remote-relay
+      name: '@pcmid/dsh-remote-relay'

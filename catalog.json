@@ -23,6 +23,7 @@
     { "path": "plugins/dsh-retry-advisor", "category": "model", "labels": ["own"] },
     { "path": "plugins/dsh-web-search-native", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-auto-restart", "category": "tools", "labels": ["own"] },
+    { "path": "plugins/dsh-remote-relay", "category": "tools", "labels": ["own"] },
     { "npm": "@0imzero/dsh-workspace-menu", "version": "2.1.0", "category": "ui", "labels": ["external"] },
     { "npm": "@laoyuehanni/dsh-token-usage", "version": "0.4.15", "category": "usage", "labels": ["external"] }
   ]

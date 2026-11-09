@@ -22,6 +22,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-retry-advisor`](plugins/dsh-retry-advisor) | 本仓库 | 模型与接入 | 内置机制不再重试的模型请求失败，交给模型分析是否值得重发 |
 | [`@pcmid/dsh-web-search-native`](plugins/dsh-web-search-native) | 本仓库 | 工具与能力 | 用模型接口自带的网页搜索（目前是 Anthropic Messages）为 `web_search` 提供后端 |
 | [`@pcmid/dsh-auto-restart`](plugins/dsh-auto-restart) | 本仓库 | 工具与能力 | agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话 |
+| [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
 | [`@0imzero/dsh-workspace-menu`](https://github.com/0imzero/dsh-workspace-menu) | npm `2.1.0` | 界面增强 | 主页工作区/会话的右键与双击增强菜单 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/LaoYueHanNi/dsh-token-usage) | npm `0.4.15` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页 |
 

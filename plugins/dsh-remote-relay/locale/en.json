@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Remote access",
+    "description": "Use this DSH from a phone or another computer through your self-hosted OpenChamber relay, with end-to-end encryption and paired devices."
+  }
+}
