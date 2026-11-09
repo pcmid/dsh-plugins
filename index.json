@@ -181,6 +181,92 @@
       ]
     },
     {
+      "name": "@pcmid/dsh-auto-restart",
+      "title": {
+        "en": "Auto restart",
+        "zh": "自动续跑"
+      },
+      "description": {
+        "en": "When the Harness quits, restarts, or crashes while an agent is working, continues those conversations after the next startup. Waits for subagents that were cut off too, rearms active goals, and stops after a few automatic continuations without your input.",
+        "zh": "agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话。子 agent 被中断也会唤醒主会话，活跃的 goal 会重新启用；你没有发消息时，连续自动续跑超过几次就不再续跑。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzJmNWJkMyIvPgogIDxwYXRoIGQ9Ik0xOC42IDI2LjUgQTE1IDE1IDAgMSAxIDE4LjYgMzcuNSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwb2x5Z29uIHBvaW50cz0iMTIuNSwxOS41IDI1LjUsMjEuNSAxNS41LDMxIiBmaWxsPSIjZmZmZmZmIi8+CiAgPHBvbHlnb24gcG9pbnRzPSIyOCwyNCA0MSwzMiAyOCw0MCIgZmlsbD0iI2ZmZmZmZiIvPgo8L3N2Zz4K",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-auto-restart#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-auto-restart"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794222777,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "545edb555ca12a456628185c5fef3e712cd78dd3",
+            "path": "plugins/dsh-auto-restart"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@pcmid/dsh-remote-relay",
+      "title": {
+        "en": "Remote access",
+        "zh": "远程访问"
+      },
+      "description": {
+        "en": "Use this DSH from a phone or another computer through your self-hosted OpenChamber relay, with end-to-end encryption and paired devices.",
+        "zh": "通过自建的 OpenChamber relay，从手机或其他电脑使用这个 DSH；端到端加密，仅限已配对设备。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzNiN2ZmMiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMxZDRmYzAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE0IiBmaWxsPSJ1cmwoI2JnKSIvPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPgogICAgPHJlY3QgeD0iOSIgeT0iMjYiIHdpZHRoPSIxMyIgaGVpZ2h0PSIyMiIgcng9IjMiLz4KICAgIDxyZWN0IHg9IjM0IiB5PSIyNiIgd2lkdGg9IjIxIiBoZWlnaHQ9IjE0IiByeD0iMi41Ii8+CiAgICA8cGF0aCBkPSJNNDAgNDhoOU00NC41IDQwdjgiLz4KICAgIDxwYXRoIGQ9Ik0xNS41IDIxQzE5IDEzIDI1IDEwIDMyIDEwczEzIDMgMTYuNSAxMSIgc3Ryb2tlLWRhc2hhcnJheT0iMC4xIDYiLz4KICA8L2c+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIxMCIgcj0iNC41IiBmaWxsPSIjZmZmIi8+CiAgPGNpcmNsZSBjeD0iMTUuNSIgY3k9IjQzIiByPSIxLjYiIGZpbGw9IiNmZmYiLz4KPC9zdmc+Cg==",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-remote-relay#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-remote-relay"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794222777,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "22d384bbebec6fcbb8f697d8bb9c36ed3c17238a",
+            "path": "plugins/dsh-remote-relay"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
       "name": "@0imzero/dsh-workspace-menu",
       "description": "DSH 主页工作区/会话右键与双击增强菜单：置顶、重命名、资源管理器打开、归档、分叉、复制、新窗口等（DSH 0.2.x 适配版）",
       "homepage": "https://github.com/0imzero/dsh-workspace-menu#readme",
