@@ -1,0 +1,28 @@
+{
+  "title": { "en": "pcmid DSH plugins", "zh": "pcmid 的 DSH 插件" },
+  "description": {
+    "en": "Plugins developed in this repository, plus the third-party plugins we use, pinned to the versions we run.",
+    "zh": "本仓库自研的插件，以及我们在用的第三方插件（固定为实际使用的版本）。"
+  },
+  "repository": "https://github.com/pcmid/dsh-plugins",
+  "indexUrl": "https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json",
+  "metadata": {
+    "categories": {
+      "model": { "title": { "en": "Models & providers", "zh": "模型与接入" } },
+      "tools": { "title": { "en": "Tools & capabilities", "zh": "工具与能力" } },
+      "ui": { "title": { "en": "UI enhancements", "zh": "界面增强" } },
+      "usage": { "title": { "en": "Usage & billing", "zh": "用量与计费" } }
+    },
+    "labels": {
+      "own": { "title": { "en": "Developed here", "zh": "自研" } },
+      "external": { "title": { "en": "Third-party", "zh": "第三方" } }
+    }
+  },
+  "plugins": [
+    { "path": "plugins/dsh-model-defaults", "category": "model", "labels": ["own"] },
+    { "path": "plugins/dsh-retry-advisor", "category": "model", "labels": ["own"] },
+    { "path": "plugins/dsh-web-search-native", "category": "tools", "labels": ["own"] },
+    { "npm": "@0imzero/dsh-workspace-menu", "version": "2.1.0", "category": "ui", "labels": ["external"] },
+    { "npm": "@laoyuehanni/dsh-token-usage", "version": "0.4.15", "category": "usage", "labels": ["external"] }
+  ]
+}

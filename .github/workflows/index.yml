@@ -1,0 +1,24 @@
+name: index
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The generator pins each plugin to the last commit that touched it.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - name: index.json is valid and up to date
+        run: npm run check:index
+      - name: dsh-retry-advisor tests
+        working-directory: plugins/dsh-retry-advisor
+        run: npm install --no-save --no-package-lock && npm test
