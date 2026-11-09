@@ -18,13 +18,13 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 
 | 插件 | 来源 | 分类 | 说明 |
 |---|---|---|---|
-| [`@local/dsh-model-defaults`](plugins/dsh-model-defaults) | 本仓库 | 模型与接入 | 在模型设置页顶部设置新会话默认值（模型、智能体、权限）和小模型 |
-| [`@local/dsh-retry-advisor`](plugins/dsh-retry-advisor) | 本仓库 | 模型与接入 | 内置机制不再重试的模型请求失败，交给模型分析是否值得重发 |
-| [`@local/dsh-web-search-native`](plugins/dsh-web-search-native) | 本仓库 | 工具与能力 | 用模型接口自带的网页搜索（目前是 Anthropic Messages）为 `web_search` 提供后端 |
+| [`@pcmid/dsh-model-defaults`](plugins/dsh-model-defaults) | 本仓库 | 模型与接入 | 在模型设置页顶部设置新会话默认值（模型、智能体、权限）和小模型 |
+| [`@pcmid/dsh-retry-advisor`](plugins/dsh-retry-advisor) | 本仓库 | 模型与接入 | 内置机制不再重试的模型请求失败，交给模型分析是否值得重发 |
+| [`@pcmid/dsh-web-search-native`](plugins/dsh-web-search-native) | 本仓库 | 工具与能力 | 用模型接口自带的网页搜索（目前是 Anthropic Messages）为 `web_search` 提供后端 |
 | [`@0imzero/dsh-workspace-menu`](https://github.com/0imzero/dsh-workspace-menu) | npm `2.1.0` | 界面增强 | 主页工作区/会话的右键与双击增强菜单 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/LaoYueHanNi/dsh-token-usage) | npm `0.4.15` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页 |
 
-`@local/dsh-web-search-native` 会优先使用 `@local/dsh-model-defaults` 提供的小模型，两者建议一起安装。
+`@pcmid/dsh-web-search-native` 会优先使用 `@pcmid/dsh-model-defaults` 提供的小模型，两者建议一起安装。
 
 不经过索引也可以直接安装本仓库的插件：在插件管理里安装下面这种固定到提交的 Git 地址（提交号见 `index.json` 里对应版本的 `source.commit`）：
 
@@ -64,4 +64,4 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 - 自研插件以 Git 来源发布（`source.type: git`，固定提交 + `path`），`publishTimestamp` 取该提交的提交时间；第三方插件以 npm 来源发布，`publishTimestamp` 取 npm 的发布时间。
 - 标题和描述取自插件导出的 `locale/*.json` 的 `meta.title` / `meta.description`，缺英文时用包名或 `package.json` 的 `description` 补上；图标不超过 32 KiB 时内联为 `data:` URL。
 - `engines.dsh` 原样复制插件 `package.json` 的声明。两个第三方插件没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它们显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。
-- 自研插件沿用本地开发时的 `@local/` 包名，这样已经从本地目录安装的 DSH 会把索引里的同名插件识别为「已安装」。
+- 自研插件使用 `@pcmid/` 包名，但没有发布到 npm，只能从本仓库的 Git 地址安装。
