@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "远程访问",
+    "description": "通过自建的 OpenChamber relay，从手机或其他电脑使用这个 DSH；端到端加密，仅限已配对设备。"
+  }
+}
