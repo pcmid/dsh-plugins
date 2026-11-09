@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Native web search",
+    "description": "Backs the web_search tool with the model API's built-in web search, running on the small model or the conversation's current model. Currently supports Anthropic Messages routes."
+  }
+}
