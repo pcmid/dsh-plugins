@@ -1,0 +1,256 @@
+{
+  "format": 1,
+  "title": {
+    "en": "pcmid DSH plugins",
+    "zh": "pcmid 的 DSH 插件"
+  },
+  "description": {
+    "en": "Plugins developed in this repository, plus the third-party plugins we use, pinned to the versions we run.",
+    "zh": "本仓库自研的插件，以及我们在用的第三方插件（固定为实际使用的版本）。"
+  },
+  "metadata": {
+    "categories": {
+      "model": {
+        "title": {
+          "en": "Models & providers",
+          "zh": "模型与接入"
+        }
+      },
+      "tools": {
+        "title": {
+          "en": "Tools & capabilities",
+          "zh": "工具与能力"
+        }
+      },
+      "ui": {
+        "title": {
+          "en": "UI enhancements",
+          "zh": "界面增强"
+        }
+      },
+      "usage": {
+        "title": {
+          "en": "Usage & billing",
+          "zh": "用量与计费"
+        }
+      }
+    },
+    "labels": {
+      "own": {
+        "title": {
+          "en": "Developed here",
+          "zh": "自研"
+        }
+      },
+      "external": {
+        "title": {
+          "en": "Third-party",
+          "zh": "第三方"
+        }
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "@local/dsh-model-defaults",
+      "title": {
+        "en": "Default models",
+        "zh": "默认模型"
+      },
+      "description": {
+        "en": "Adds new-session defaults (model, agent, permissions) and a small model to the top of the Models settings page.",
+        "zh": "在模型设置页顶部增加新会话默认值（模型、智能体、权限）和小模型。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzViNGJkYiIvPgogIDxwYXRoIGQ9Ik0yNiAxNWwzLjQgOS42TDM5IDI4bC05LjYgMy40TDI2IDQxbC0zLjQtOS42TDEzIDI4bDkuNi0zLjR6IiBmaWxsPSIjZmZmZmZmIi8+CiAgPHBhdGggZD0iTTQ1IDM2bDEuOSA1LjFMNTIgNDNsLTUuMSAxLjlMNDUgNTBsLTEuOS01LjFMMzggNDNsNS4xLTEuOXoiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-model-defaults#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-model-defaults"
+      },
+      "metadata": {
+        "category": "model",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.3.0"
+      },
+      "versions": [
+        {
+          "version": "0.3.0",
+          "publishTimestamp": 1794219752,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "path": "plugins/dsh-model-defaults"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@local/dsh-retry-advisor",
+      "title": {
+        "en": "AI retry advisor",
+        "zh": "AI 重试判断"
+      },
+      "description": {
+        "en": "When a model request fails and no built-in handler retries it, asks a model to analyze the cause and decide whether and when to resend. If the analysis itself fails, the request is not retried.",
+        "zh": "模型请求失败且内置机制不再重试时，让模型分析错误原因，决定是否重发、等多久再发。分析本身失败时不重试。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmOGE1ZiIvPgogIDxwYXRoIGQ9Ik00NS4yIDI3LjIgQTE0IDE0IDAgMSAxIDM0LjQgMTguMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwb2x5Z29uIHBvaW50cz0iNDEuNSwxOS41IDMzLjMsMTAuOCAzMS4wLDI1LjAiIGZpbGw9IiNmZmZmZmYiLz4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSI0IiBmaWxsPSIjZmZmZmZmIi8+Cjwvc3ZnPgo=",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-retry-advisor#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-retry-advisor"
+      },
+      "metadata": {
+        "category": "model",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794219752,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "path": "plugins/dsh-retry-advisor"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@local/dsh-web-search-native",
+      "title": {
+        "en": "Native web search",
+        "zh": "接口原生网页搜索"
+      },
+      "description": {
+        "en": "Backs the web_search tool with the model API's built-in web search, running on the small model or the conversation's current model. Currently supports Anthropic Messages routes.",
+        "zh": "用模型接口自带的网页搜索为 web_search 工具提供后端，优先使用小模型，否则使用当前对话的模型。目前支持 Anthropic Messages 路由。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzFmNWVmZiIvPgogIDxjaXJjbGUgY3g9IjI4IiBjeT0iMjgiIHI9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iNCIvPgogIDxlbGxpcHNlIGN4PSIyOCIgY3k9IjI4IiByeD0iNiIgcnk9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjE0IiB5MT0iMjgiIHgyPSI0MiIgeTI9IjI4IiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjM4LjUiIHkxPSIzOC41IiB4Mj0iNTAiIHkyPSI1MCIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-web-search-native#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-web-search-native"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.3.3"
+      },
+      "versions": [
+        {
+          "version": "0.3.3",
+          "publishTimestamp": 1794219752,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "7386b10887450f97a053b4cb2785991a07ea04c1",
+            "path": "plugins/dsh-web-search-native"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@0imzero/dsh-workspace-menu",
+      "description": "DSH 主页工作区/会话右键与双击增强菜单：置顶、重命名、资源管理器打开、归档、分叉、复制、新窗口等（DSH 0.2.x 适配版）",
+      "homepage": "https://github.com/0imzero/dsh-workspace-menu#readme",
+      "repository": {
+        "url": "https://github.com/0imzero/dsh-workspace-menu"
+      },
+      "metadata": {
+        "category": "ui",
+        "keywords": [],
+        "labels": [
+          "external"
+        ]
+      },
+      "dist-tags": {
+        "latest": "2.1.0"
+      },
+      "versions": [
+        {
+          "version": "2.1.0",
+          "publishTimestamp": 1793614177,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {}
+        }
+      ]
+    },
+    {
+      "name": "@laoyuehanni/dsh-token-usage",
+      "title": {
+        "en": "@laoyuehanni/dsh-token-usage",
+        "zh": "Token 用量"
+      },
+      "description": {
+        "en": "dsh local plugin: persist per-request model token usage (live hook + first-run history backfill + web settings stats page)",
+        "zh": "记录每次请求的 token 用量、费用，按模型、会话统计"
+      },
+      "author": "LaoYueHanNi",
+      "homepage": "https://github.com/LaoYueHanNi/dsh-token-usage#readme",
+      "repository": {
+        "url": "https://github.com/LaoYueHanNi/dsh-token-usage"
+      },
+      "metadata": {
+        "category": "usage",
+        "keywords": [
+          "dsh",
+          "deepseek",
+          "cordis",
+          "plugin",
+          "token-usage",
+          "tokens",
+          "statistics"
+        ],
+        "labels": [
+          "external"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.4.15"
+      },
+      "versions": [
+        {
+          "version": "0.4.15",
+          "publishTimestamp": 1793696211,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {}
+        }
+      ]
+    }
+  ]
+}

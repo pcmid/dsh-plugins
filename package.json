@@ -1,0 +1,13 @@
+{
+  "name": "dsh-plugins",
+  "private": true,
+  "description": "DSH plugin market index and plugin sources of pcmid/dsh-plugins.",
+  "type": "module",
+  "scripts": {
+    "build:index": "node scripts/build-index.mjs",
+    "check:index": "node scripts/build-index.mjs --check"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-plugin-market-index": "0.2.2-rc.1"
+  }
+}
