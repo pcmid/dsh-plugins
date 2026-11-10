@@ -556,17 +556,25 @@ window.__ModuleLoader__.load({
 .${PREFIX}-mmeta[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 .${PREFIX}-mcheck { flex: none; color: var(--dsw-alias-label-primary); }
 
-/* Stage: device views above this DSH's own frame. */
-.${PREFIX}-stage { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
-.${PREFIX}-stage[data-active] { pointer-events: auto; }
-.${PREFIX}-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; visibility: hidden; color-scheme: normal; }
+/* Stage: device views above this DSH's own frame. The stage has no box and resets the app-region the
+   macOS shell gives every body child: a full-window no-drag box after #root would take the window
+   drag away from every chrome row of this DSH, shown or not. */
+.${PREFIX}-stage { display: contents; }
+html[data-platform] body > .${PREFIX}-stage:not(#root) { -webkit-app-region: initial; }
+.${PREFIX}-frame { position: fixed; inset: 0; z-index: 900; width: 100%; height: 100%; border: 0; background: transparent; visibility: hidden; color-scheme: normal; }
+/* The shown device's window drag surface, repeated in this document: the native window reads
+   app-regions from the top document only. The shell's row mark declares the drag and makes its
+   watcher recollect the regions when these boxes change. */
+.${PREFIX}-drag { position: fixed; z-index: 901; pointer-events: none; }
+.${PREFIX}-drag-fallback { position: fixed; z-index: 901; left: 0; top: 0; right: 0; height: 12px; pointer-events: none; }
+.${PREFIX}-pulse { position: fixed; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
 .${PREFIX}-frame[data-current] { visibility: visible; animation: ${PREFIX}-in 180ms var(--ds-ease-in-out, ease) both; }
 html.${PREFIX}-returning #root { animation: ${PREFIX}-in 180ms var(--ds-ease-in-out, ease) both; }
 @keyframes ${PREFIX}-in { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .${PREFIX}-frame[data-current], html.${PREFIX}-returning #root { animation: none; } }
 .${PREFIX}-anchor { position: fixed; pointer-events: none; }
 html.${PREFIX}-remote #root { visibility: hidden !important; }
-.${PREFIX}-chip { position: absolute; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 10px; border: 0; border-radius: 999px; background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); box-shadow: var(--dsw-elevation-prominent, 0 4px 16px rgba(0,0,0,.12)); font: inherit; font-size: 13px; cursor: pointer; }
+.${PREFIX}-chip { position: fixed; z-index: 902; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 10px; border: 0; border-radius: 999px; background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); box-shadow: var(--dsw-elevation-prominent, 0 4px 16px rgba(0,0,0,.12)); font: inherit; font-size: 13px; cursor: pointer; }
 
 /* Add-device dialog */
 .${PREFIX}-dialog { width: min(460px, 100%) !important; }
@@ -667,6 +675,59 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       if (code === 'host-key') return t('err_host_key');
       if (code === 'relay-closed' || code === 'relay-timeout') return t('err_relay');
       return t('err_offline');
+    }
+
+    /** Most rectangles a device view may report for its window drag surface. */
+    const MAX_DRAG_RECTS = 120;
+
+    /**
+     * The window drag surface this document declares, as disjoint `[left, top, right, bottom]`
+     * viewport rectangles. Composition follows the native window: app-region boxes apply in document
+     * order, a drag box adds its area and a no-drag box removes it, so the last box containing a
+     * point decides. Only boxes that reach a marked chrome row can change the result.
+     */
+    function measureDragSurface() {
+      const viewport = [0, 0, window.innerWidth, window.innerHeight];
+      const clip = (rect) => [Math.max(rect.left, viewport[0]), Math.max(rect.top, viewport[1]), Math.min(rect.right, viewport[2]), Math.min(rect.bottom, viewport[3])];
+      const empty = (box) => box[2] - box[0] < 1 || box[3] - box[1] < 1;
+      const rows = [];
+      for (const row of document.querySelectorAll('[data-window-drag]')) {
+        const box = clip(row.getBoundingClientRect());
+        if (!empty(box)) rows.push(box);
+      }
+      if (rows.length === 0) return [];
+      const band = [Math.min(...rows.map((box) => box[0])), Math.min(...rows.map((box) => box[1])), Math.max(...rows.map((box) => box[2])), Math.max(...rows.map((box) => box[3]))];
+      const without = (areas, hole) => {
+        const out = [];
+        for (const area of areas) {
+          const left = Math.max(area[0], hole[0]);
+          const top = Math.max(area[1], hole[1]);
+          const right = Math.min(area[2], hole[2]);
+          const bottom = Math.min(area[3], hole[3]);
+          if (left >= right || top >= bottom) { out.push(area); continue; }
+          if (area[1] < top) out.push([area[0], area[1], area[2], top]);
+          if (bottom < area[3]) out.push([area[0], bottom, area[2], area[3]]);
+          if (area[0] < left) out.push([area[0], top, left, bottom]);
+          if (right < area[2]) out.push([right, top, area[2], bottom]);
+        }
+        return out;
+      };
+      let areas = [];
+      for (const element of document.querySelectorAll('*')) {
+        const rect = element.getBoundingClientRect();
+        if (rect.bottom <= band[1] || rect.top >= band[3] || rect.right <= band[0] || rect.left >= band[2] || rect.width === 0 || rect.height === 0) continue;
+        const style = getComputedStyle(element);
+        const region = style.getPropertyValue('-webkit-app-region');
+        if ((region !== 'drag' && region !== 'no-drag') || style.visibility !== 'visible') continue;
+        const box = clip(rect);
+        if (empty(box)) continue;
+        if (region === 'no-drag') areas = without(areas, box);
+        else if (!areas.some((area) => area[0] <= box[0] && area[1] <= box[1] && area[2] >= box[2] && area[3] >= box[3])) {
+          areas = without(areas, box);
+          areas.push(box);
+        }
+      }
+      return areas.map((area) => area.map((value) => Math.round(value))).filter((area) => !empty(area)).slice(0, MAX_DRAG_RECTS);
     }
 
     function describeFailure(error, t) {
@@ -1153,6 +1214,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         id,
         name: nameOf(id),
         state: remoteOf(id)?.state ?? 'idle',
+        shown: state.current === id,
         pending: pendingInfo(),
         rows: deviceRows(state, t),
         attributes: mirroredAttributes(),
@@ -1169,9 +1231,39 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         frame.contentWindow.postMessage(message, view.origin);
       };
 
+      // ---- Window drag surface of a device view ------------------------------
+
+      // The macOS window takes its drag regions from the top document only, so the view on screen
+      // reports where its own chrome rows would drag and the embedding window repeats those boxes.
+      let dragTimer;
+      let dragSent = null;
+      let dragMeasuredAt = 0;
+      let dragCost = 0;
+      const dragWanted = () => state.mode === 'frame' && state.embed?.shown === true && document.documentElement.getAttribute('data-platform') === 'darwin';
+      const reportDrag = () => {
+        dragTimer = undefined;
+        if (disposed || !dragWanted()) return;
+        const started = performance.now();
+        const rects = measureDragSurface();
+        dragCost = performance.now() - started;
+        dragMeasuredAt = Date.now();
+        const key = JSON.stringify(rects);
+        if (key === dragSent) return;
+        dragSent = key;
+        post(window.parent, { type: 'drag', rects });
+      };
+      const scheduleDrag = () => {
+        if (dragTimer !== undefined || disposed || !dragWanted()) return;
+        // Measuring reads every element's box; keep it to a small share of the main thread.
+        const gap = Math.min(3000, Math.max(400, dragCost * 30));
+        dragTimer = setTimeout(reportDrag, Math.max(30, dragMeasuredAt + gap - Date.now()));
+      };
+
       const afterChange = () => {
         document.documentElement.classList.toggle(`${PREFIX}-remote`, state.mode === 'top' && state.current !== null);
-        if (state.mode === 'top' && state.current !== null) sendContext(state.current);
+        // Every view hears changes, so the one that leaves the screen stops measuring its drag surface.
+        if (state.mode === 'top') for (const id of Object.keys(state.views)) sendContext(id);
+        else scheduleDrag();
       };
 
       const onTopMessage = (event) => {
@@ -1180,9 +1272,20 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         const id = [...frames.entries()].find(([, frame]) => frame.contentWindow === event.source)?.[0];
         if (id === undefined || event.origin !== state.views[id]?.origin) return;
         if (data.type === 'hello') {
+          // `drag` stays unset until the view reports, so the fallback strip covers the first frames.
           if (!state.views[id].hello) setView(id, { hello: true, phase: 'ready' });
           sendContext(id, true);
           checkReadiness();
+          return;
+        }
+        if (data.type === 'drag') {
+          const bounds = [0, 0, window.innerWidth, window.innerHeight];
+          const drag = (Array.isArray(data.rects) ? data.rects : []).slice(0, MAX_DRAG_RECTS)
+            .map((rect) => (Array.isArray(rect) ? rect.slice(0, 4).map(Number) : []))
+            .filter((rect) => rect.length === 4 && rect.every(Number.isFinite))
+            .map((rect) => [Math.max(rect[0], bounds[0]), Math.max(rect[1], bounds[1]), Math.min(rect[2], bounds[2]), Math.min(rect[3], bounds[3])])
+            .filter((rect) => rect[2] > rect[0] && rect[3] > rect[1]);
+          if (JSON.stringify(drag) !== JSON.stringify(state.views[id].drag ?? [])) setView(id, { drag });
           return;
         }
         if (id !== state.current) return;
@@ -1224,7 +1327,10 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             action: text(row?.action),
           })),
         };
-        set({ embed: { id: text(data.id), name: text(data.name), state: text(data.state), pending, rows } });
+        const shown = data.shown === true;
+        // A view that returns to the screen reports again: the window may have dropped its last report.
+        if (shown && state.embed?.shown !== true) dragSent = null;
+        set({ embed: { id: text(data.id), name: text(data.name), state: text(data.state), shown, pending, rows } });
       };
 
       if (mode === 'top') {
@@ -1254,6 +1360,17 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         }, 400);
         post(window.parent, { type: 'hello' });
         cleanups.push(() => { clearInterval(hello); });
+        const moved = new MutationObserver(scheduleDrag);
+        moved.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
+        const heartbeat = setInterval(scheduleDrag, 2500);
+        const motion = ['resize', 'scroll', 'transitionend', 'animationend'];
+        for (const type of motion) window.addEventListener(type, scheduleDrag, true);
+        cleanups.push(() => {
+          moved.disconnect();
+          clearInterval(heartbeat);
+          clearTimeout(dragTimer);
+          for (const type of motion) window.removeEventListener(type, scheduleDrag, true);
+        });
       }
 
       return {
@@ -1749,14 +1866,40 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         h('button', { type: 'submit', hidden: true })));
     }
 
-    /** Full-window layer of the top window: device views, the menu, and the add dialog. */
+    /**
+     * Makes the native window read the document's app-regions again. Electron recollects them only
+     * when a computed app-region value changes (electron#32341), so this box, which has no area,
+     * changes its own value for one frame whenever the surface shown in the window changes.
+     */
+    function RegionPulse({ token }) {
+      const ref = useRef(null);
+      useEffect(() => {
+        const element = ref.current;
+        if (element === null) return undefined;
+        element.style.setProperty('-webkit-app-region', 'no-drag');
+        const frame = requestAnimationFrame(() => { element.style.removeProperty('-webkit-app-region'); });
+        return () => {
+          cancelAnimationFrame(frame);
+          element.style.removeProperty('-webkit-app-region');
+        };
+      }, [token]);
+      return h('i', { ref, className: `${PREFIX}-pulse`, 'aria-hidden': true });
+    }
+
+    /** Layer of the top window above its own frame: device views, the menu, and the add dialog. */
     function SwitcherStage(props) {
       const { t } = props;
       const state = props.useSwitcher((snapshot) => snapshot);
       if (state.mode !== 'top') return null;
       const current = state.current === null ? undefined : state.views[state.current];
       const showChip = current !== undefined && !current.hello;
-      return ReactDOM.createPortal(h('div', { className: `${PREFIX}-stage`, 'data-active': state.current !== null ? true : undefined },
+      // A menu or dialog of this window covers the view; nothing under it may drag the window.
+      const covered = state.menu !== null || state.add !== null;
+      const drag = current !== undefined && !covered && Array.isArray(current.drag) ? current.drag : [];
+      // A device without this plugin version never reports its chrome rows; keep a narrow strip so
+      // the window can still be moved.
+      const fallback = current !== undefined && !covered && !Array.isArray(current.drag);
+      return ReactDOM.createPortal(h('div', { className: `${PREFIX}-stage` },
         h('style', null, CSS),
         Object.entries(state.views).filter(([, view]) => view.src !== null).map(([id, view]) => h('iframe', {
           key: id,
@@ -1771,6 +1914,15 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           tabIndex: id === state.current ? 0 : -1,
           onLoad: () => { props.frameLoaded(id); },
         })),
+        drag.map((rect, index) => h('div', {
+          key: index,
+          className: `${PREFIX}-drag`,
+          'data-window-drag': '',
+          'aria-hidden': true,
+          style: { left: rect[0], top: rect[1], width: rect[2] - rect[0], height: rect[3] - rect[1] },
+        })),
+        fallback ? h('div', { className: `${PREFIX}-drag-fallback`, 'data-window-drag': '', 'aria-hidden': true }) : null,
+        h(RegionPulse, { token: `${state.current ?? ''}|${JSON.stringify(drag)}|${fallback}` }),
         showChip
           ? h('button', { type: 'button', className: `${PREFIX}-chip`, onClick: (event) => {
             const rect = event.currentTarget.getBoundingClientRect();
