@@ -1,18 +1,21 @@
 /**
- * End-to-end fixture: registers the scripted `fixture` model, opens one Web
- * conversation, and gives it a task.
+ * End-to-end fixture: registers the scripted `fixture` model, writes the
+ * guard's settings through the Settings service (the path the plugin page's
+ * form takes), opens one Web conversation, and gives it a task.
  *
  * The model's reply depends on how many assistant messages the request
  * already carries: the first reply writes a three-item task list, the next
  * `config.workSteps` replies each read `notes.txt`, and the last one answers
- * in text without updating the list. Every request appends one JSON line to
- * `config.record` with its user-role messages.
+ * in text without updating the list. Before answering the request that
+ * carries `config.retune.replies` replies, it writes `config.retune.patch`
+ * through the Settings service while the turn runs. Every request appends one
+ * JSON line to `config.record` with its user-role messages.
  */
 import { appendFileSync } from 'node:fs'
 import { createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 
 export const name = 'todo-guard-fixture'
-export const inject = ['llm', 'sessionController', 'appReady']
+export const inject = ['llm', 'sessionController', 'appReady', 'settings']
 
 export const TODOS = [
   { content: 'Read the notes', status: 'in_progress' },
@@ -34,9 +37,11 @@ function* toolCall(id, name, args) {
 }
 
 class FixtureAdapter extends LlmAdapter {
-  constructor(config) {
+  constructor(ctx, config) {
     super()
+    this.ctx = ctx
     this.config = config
+    this.retuned = false
   }
 
   async resolveModel(provider, model) {
@@ -52,6 +57,11 @@ class FixtureAdapter extends LlmAdapter {
       users: options.messages.filter(message => message.role === 'user')
         .map(message => ({ source: message.source, text: text(message.content) })),
     })}\n`)
+    if (replies === this.config.retune.replies && !this.retuned) {
+      this.retuned = true
+      await this.ctx.settings.update('todo-guard', this.config.retune.patch)
+      appendFileSync(this.config.record, `${JSON.stringify({ retuned: this.config.retune.patch })}\n`)
+    }
     if (replies === 0) {
       yield* toolCall('todo-1', 'todo_write', { todos: TODOS })
       return
@@ -70,9 +80,10 @@ class FixtureAdapter extends LlmAdapter {
 }
 
 export function apply(ctx, config) {
-  ctx.llm.registerAdapter(['fixture'], new FixtureAdapter(config))
+  ctx.llm.registerAdapter(['fixture'], new FixtureAdapter(ctx, config))
   ctx.effect(() => ctx.appReady.onReady(() => {
     void (async () => {
+      await ctx.settings.update('todo-guard', config.settings)
       const { sessionId } = await ctx.sessionController.create({ cwd: config.cwd })
       const resolved = await ctx.sessionController.resolveAgent(sessionId)
       if ('error' in resolved) throw resolved.error
