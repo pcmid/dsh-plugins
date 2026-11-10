@@ -1,6 +1,6 @@
 /**
- * DSH remote tunnel protocol, shared by the Host plugin, the computer connector and the browser
- * launcher. The module uses only WebCrypto, WebSocket, Web Streams, EventTarget and TextEncoder,
+ * DSH remote tunnel protocol, shared by the Host plugin (as host, and as a device of other DSH
+ * hosts) and the browser launcher. The module uses only WebCrypto, WebSocket, Web Streams, EventTarget and TextEncoder,
  * so the same file runs in browsers and in Node 22 or later.
  *
  * Layer 1 speaks the openchamber-relay v1 wire protocol: the host keeps one signed `host-control`
@@ -279,7 +279,7 @@ function compactRelay(relayUrl) {
 /**
  * Encode a one-time pairing offer as URL-fragment text.
  * @param {{ relayUrl: string, serverId: string, pairingId: string, secret: string, hostName: string, expiresAt: number }} offer - pairing offer.
- * @returns {string} code usable as a URL fragment and as a connector argument.
+ * @returns {string} code usable as a URL fragment, in a launcher link or a `dsh-remote://pair#…` link.
  */
 export function encodePairing(offer) {
   const params = new URLSearchParams()
