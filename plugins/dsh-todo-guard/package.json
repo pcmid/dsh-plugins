@@ -17,20 +17,23 @@
   },
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
+    "docs/*.md",
     "icon.svg",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./test/hooks.mjs --test test/guard.test.mjs",
+    "test": "node --import ./test/hooks.mjs --test test/guard.test.mjs test/client.test.mjs",
     "test:e2e": "node test/e2e/run.mjs"
   },
   "peerDependencies": {
@@ -44,6 +47,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   }
 }

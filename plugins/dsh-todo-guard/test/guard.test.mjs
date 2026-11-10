@@ -255,7 +255,9 @@ describe('turn-end completion', () => {
 
   it('is off by default', async () => {
     const h = await finishedTurn({ autoCompleteOnTurnEnd: false })
-    assert.equal(h.listeners.has('agent/turn-stopping'), false)
+    const before = h.events.length
+    h.stopTurn(1)
+    assert.equal(h.events.length, before)
   })
 
   it('completes leftover items when the turn ends normally', async () => {
@@ -345,5 +347,42 @@ describe('Config', () => {
     assert.throws(() => Config({ stepThreshold: 0 }))
     assert.throws(() => Config({ callThreshold: 0 }))
     assert.throws(() => Config({ stepThreshold: 1.5 }))
+  })
+
+  it('reads every field when it decides, so a saved setting applies without a reload', async () => {
+    const live = { stepThreshold: 10, callThreshold: 100, autoCompleteOnTurnEnd: false }
+    const config = Object.fromEntries(Object.keys(live).map(key => [key, { get: () => live[key] }]))
+    const listeners = new Map()
+    const events = []
+    const session = {
+      append(type, data) {
+        const event = { type, data }
+        events.push(event)
+        for (const listener of listeners.get('session/event') ?? []) listener(session, event)
+      },
+    }
+    const agent = { session, inbox: { nextStep: [] } }
+    apply({ logger: { warn() {} }, on: (name, listener) => { listeners.set(name, [...listeners.get(name) ?? [], listener]) } }, config)
+    const [post] = listeners.get('tools/post-execute')
+    const step = async (n, name) => {
+      session.append('step/start', { turn: 1, step: n })
+      session.append('assistant/message', { turn: 1, step: n, message: { content: [{ type: 'tool-call', id: `c${n}`, name, arguments: '{}' }] } })
+      if (name === 'todo_write') session.append('todo/write', { todos: PLAN })
+      const decision = await post({ name, agent }, { isError: false }, async () => ({ kind: 'accept' }))
+      session.append('step/end', { turn: 1, step: n })
+      return decision.additionalContexts?.length ?? 0
+    }
+    session.append('turn/start', { turn: 1 })
+    await step(1, 'todo_write')
+    assert.equal(await step(2, 'bash'), 0)
+    live.stepThreshold = 2
+    assert.equal(await step(3, 'bash'), 1, 'the lowered threshold applies to the next decision')
+
+    const stop = () => { for (const listener of listeners.get('agent/turn-stopping')) listener({ agent, turn: 1, signal: new AbortController().signal }) }
+    stop()
+    assert.equal(events.filter(event => event.type === 'todo/write').length, 1)
+    live.autoCompleteOnTurnEnd = true
+    stop()
+    assert.ok(events.at(-1).data.todos.every(item => item.status === 'completed'), 'switched on while running')
   })
 })

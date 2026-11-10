@@ -38,20 +38,27 @@ It is off by default because ending a turn does not mean the work is done. An ag
 
 ## Configuration
 
+Open **Plugins → Todo progress guard**. The plugin's page shows a settings form below its description, built from the same staged-form components as the official plugin cards: edits stay drafts until **Save**, a changed field shows an "Overridden" badge with a reset to its default, and a threshold that is not a whole number of at least 1 blocks the save. The form appears only while the Host serves the `todo-guard` entry.
+
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `stepThreshold` | `5` | Remind after this many steps without a `todo_write` while the list has unfinished items. |
 | `callThreshold` | `10` | Remind after this many tool calls without a `todo_write` while the list has unfinished items. |
 | `autoCompleteOnTurnEnd` | `false` | Mark leftover items completed when a turn ends normally after real work. |
 
-Thresholds must be integers of at least 1; other values fail when the plugin loads. Override fields in the profile's patch layer:
+All three fields are volatile: the form writes them to the profile's patch layer, and the running plugin reads the new values at its next decision, without a reload and without losing a turn's tracking state. Thresholds must be integers of at least 1; other values fail validation. Editing the profile's patch layer by hand works as well:
 
 ```yaml
 - id: todo-guard
+  name: '@pcmid/dsh-todo-guard'
   config:
     stepThreshold: 3
     callThreshold: 8
 ```
+
+A value set in a higher layer (the home patch or a command-line `--patch` overlay) cannot be changed from the form; the form refuses that save.
+
+The plugin's page shows [docs/zh.md](docs/zh.md) or [docs/en.md](docs/en.md) through `meta.detail` in the locale files, so the form is not pushed below this README.
 
 The upstream plugin defaults to 2 steps and 5 calls, with turn-end completion on. These defaults remind less often, so one long task item does not draw a notice every other step.
 
@@ -67,6 +74,9 @@ Each reminder is one user message of about 90 tokens plus one line per item, app
 
 ## Tests
 
-`npm test` runs the offline tests. They resolve `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-llm` from `SCHEMASTERY_ENTRY` and `DSH_LLM_ENTRY` when set, otherwise from a built `deepseek-harness` source checkout next to this directory or next to its repository, otherwise from the devDependencies that `npm install` adds.
+`npm test` runs the offline tests:
 
-`npm run test:e2e` boots the installed Desktop runtime (or `DSH_CLI`) in a temporary `DSH_HOME`. A scripted model writes a list and works seven steps without updating it. The check asserts the reminders in the model's requests and the stored Session log, and the turn-end completion. Set `KEEP_E2E=1` to keep the temporary directory.
+- `test/guard.test.mjs` covers the Host plugin. It resolves `@deepseek-ai/schemastery` and `@deepseek-ai/dsh-llm` from `SCHEMASTERY_ENTRY` and `DSH_LLM_ENTRY` when set, otherwise from a built `deepseek-harness` source checkout next to this directory or next to its repository, otherwise from the devDependencies that `npm install` adds.
+- `test/client.test.mjs` renders the settings form of `client.js` with the real React and `@deepseek-ai/dsh-client-ui-primitives` of a built checkout (or `UI_PRIMITIVES_DIR`), and checks the staged edits, the writes a save sends, the blocked invalid values, the reset, and the read-only state. Without a checkout it is skipped, as in CI.
+
+`npm run test:e2e` boots the installed Desktop runtime (or `DSH_CLI`) in a temporary `DSH_HOME`. The fixture writes the guard's settings through the Settings service, the path the form takes. A scripted model writes a list and works seven steps without updating it, and the fixture lowers `stepThreshold` mid-turn. The check asserts the reminders in the model's requests, which must follow the new threshold at once, the stored Session log, the turn-end completion, and the saved values in the profile patch. Set `KEEP_E2E=1` to keep the temporary directory.

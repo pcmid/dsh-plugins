@@ -42,12 +42,16 @@ const TODO_TOOL = 'todo_write'
  */
 const INTERACTIVE_TOOLS = new Set(['ask_user_question', 'exit_plan_mode'])
 
+/**
+ * Every field is volatile: the settings form on the plugin's page edits them,
+ * and a saved change reaches the running references without a reload.
+ */
 export const Config = z.object({
-  stepThreshold: z.natural().min(1).default(5)
+  stepThreshold: z.natural().min(1).default(5).volatile()
     .description('Remind after this many model steps without a todo_write while the list has unfinished items.'),
-  callThreshold: z.natural().min(1).default(10)
+  callThreshold: z.natural().min(1).default(10).volatile()
     .description('Remind after this many tool calls without a todo_write while the list has unfinished items.'),
-  autoCompleteOnTurnEnd: z.boolean().default(false)
+  autoCompleteOnTurnEnd: z.boolean().default(false).volatile()
     .description('When a turn ends normally after real work, mark the remaining items completed.'),
 })
 
@@ -201,7 +205,7 @@ function withReminder(downstream, reminder) {
 /**
  * Register the guard's listeners.
  * @param ctx - plugin context; listeners are disposed with it.
- * @param config - validated {@link Config}.
+ * @param config - validated {@link Config}; each field is a live reference read with `.get()` at decision time.
  */
 export function apply(ctx, config) {
   const { stepThreshold, callThreshold, autoCompleteOnTurnEnd } = config
@@ -227,7 +231,7 @@ export function apply(ctx, config) {
     if (state === undefined || state.openStep === null) return downstream
     if (state.stepWroteTodos || state.stepInteractive || state.stepReminded) return downstream
     if (!hasUnfinished(state.todos)) return downstream
-    const due = state.stepsSince >= stepThreshold || state.callsSince >= callThreshold
+    const due = state.stepsSince >= stepThreshold.get() || state.callsSince >= callThreshold.get()
     if (!due) return downstream
 
     const reminder = createUserMessage({
@@ -239,9 +243,8 @@ export function apply(ctx, config) {
     return withReminder(downstream, reminder)
   })
 
-  if (!autoCompleteOnTurnEnd) return
-
   ctx.on('agent/turn-stopping', ({ agent, turn, signal }) => {
+    if (!autoCompleteOnTurnEnd.get()) return
     // Queued steering runs another step, so the turn is not over yet.
     if (signal.aborted || agent.inbox.nextStep.length > 0) return
     const session = agent.session
