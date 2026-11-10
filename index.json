@@ -230,8 +230,8 @@
         "zh": "远程访问"
       },
       "description": {
-        "en": "Switch between DSH hosts that have this plugin, or use this DSH from a phone or computer, through your self-hosted OpenChamber relay with end-to-end encryption and paired devices.",
-        "zh": "在装了本插件的几台 DSH 之间切换，或从手机、电脑使用这个 DSH；经自建的 OpenChamber relay 端到端加密，仅限已配对设备。"
+        "en": "Switch between DSH hosts that have this plugin, or use this DSH from a phone, through your self-hosted OpenChamber relay with end-to-end encryption and paired devices.",
+        "zh": "在装了本插件的几台 DSH 之间切换，或从手机使用这个 DSH；经自建的 OpenChamber relay 端到端加密，仅限已配对设备。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPGRlZnM+CiAgICA8bGluZWFyR3JhZGllbnQgaWQ9ImJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+CiAgICAgIDxzdG9wIG9mZnNldD0iMCIgc3RvcC1jb2xvcj0iIzNiN2ZmMiIvPgogICAgICA8c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMxZDRmYzAiLz4KICAgIDwvbGluZWFyR3JhZGllbnQ+CiAgPC9kZWZzPgogIDxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE0IiBmaWxsPSJ1cmwoI2JnKSIvPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiPgogICAgPHJlY3QgeD0iOSIgeT0iMjYiIHdpZHRoPSIxMyIgaGVpZ2h0PSIyMiIgcng9IjMiLz4KICAgIDxyZWN0IHg9IjM0IiB5PSIyNiIgd2lkdGg9IjIxIiBoZWlnaHQ9IjE0IiByeD0iMi41Ii8+CiAgICA8cGF0aCBkPSJNNDAgNDhoOU00NC41IDQwdjgiLz4KICAgIDxwYXRoIGQ9Ik0xNS41IDIxQzE5IDEzIDI1IDEwIDMyIDEwczEzIDMgMTYuNSAxMSIgc3Ryb2tlLWRhc2hhcnJheT0iMC4xIDYiLz4KICA8L2c+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIxMCIgcj0iNC41IiBmaWxsPSIjZmZmIi8+CiAgPGNpcmNsZSBjeD0iMTUuNSIgY3k9IjQzIiByPSIxLjYiIGZpbGw9IiNmZmYiLz4KPC9zdmc+Cg==",
       "author": "pcmid",
@@ -253,11 +253,11 @@
       "versions": [
         {
           "version": "0.2.0",
-          "publishTimestamp": 1794312166,
+          "publishTimestamp": 1794312227,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "5301e52a16577cd75c5457f9a4af93765e8c5a09",
+            "commit": "73cfd6aba6c23046415a7de2f63272786ab770bb",
             "path": "plugins/dsh-remote-relay"
           },
           "engines": {
