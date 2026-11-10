@@ -267,6 +267,49 @@
       ]
     },
     {
+      "name": "@pcmid/dsh-todo-guard",
+      "title": {
+        "en": "Todo progress guard",
+        "zh": "任务进度守卫"
+      },
+      "description": {
+        "en": "When the agent works for several steps without updating its task list, reminds it to update the list, repeating the current items. Optionally marks leftover items completed when a turn ends normally.",
+        "zh": "智能体连续多步没有更新任务列表时，提醒它更新，并附上当前列表。可选：回合正常结束时把剩余任务标为已完成。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzNiNWJkYiIvPgogIDxyZWN0IHg9IjE0IiB5PSIxNiIgd2lkdGg9IjkiIGhlaWdodD0iOSIgcng9IjIiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIi8+CiAgPHBhdGggZD0iTTE1LjUgMjAuNSBMMTggMjMgTDIyLjUgMTcuNSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjIuNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHJlY3QgeD0iMTQiIHk9IjMwIiB3aWR0aD0iOSIgaGVpZ2h0PSI5IiByeD0iMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjMiLz4KICA8cmVjdCB4PSIxNCIgeT0iNDQiIHdpZHRoPSI5IiBoZWlnaHQ9IjkiIHJ4PSIyIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMyIgb3BhY2l0eT0iMC42Ii8+CiAgPHBhdGggZD0iTTI5IDIwLjUgSDUwIE0yOSAzNC41IEg1MCBNMjkgNDguNSBINDQiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-todo-guard#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-todo-guard"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794281057,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "78be7a80ccb67cf5a21907e2b845110bca98cb9f",
+            "path": "plugins/dsh-todo-guard"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
       "name": "@0imzero/dsh-workspace-menu",
       "description": "DSH 主页工作区/会话右键与双击增强菜单：置顶、重命名、资源管理器打开、归档、分叉、复制、新窗口等（DSH 0.2.x 适配版）",
       "homepage": "https://github.com/0imzero/dsh-workspace-menu#readme",
