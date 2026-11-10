@@ -1,34 +1,40 @@
 # @pcmid/dsh-remote-relay
 
-通过自建的 [OpenChamber relay](https://github.com/openchamber/openchamber-relay)，从手机或其他电脑使用这个 DSH。relay 原样部署，不需要修改；它只看得到密文。DSH 的 Web GUI 继续只监听本机，不需要开放端口、配置 `trustedHosts` 或 TLS。
+通过自建的 [OpenChamber relay](https://github.com/openchamber/openchamber-relay)，在几台装了本插件的 DSH 之间切换，或从手机使用这台 DSH。relay 原样部署，不需要修改；它只看得到密文。DSH 的 Web GUI 继续只监听本机，不需要开放端口、配置 `trustedHosts` 或 TLS。
 
-**已配对设备拥有你在本机的全部权限**，包括执行命令和读写文件。只配对自己的设备，不用时在设置里移除。
+**已配对设备拥有你在被访问那台 DSH 上的全部权限**，包括执行命令和读写文件。只配对自己的设备，不用时在设置里移除。
 
 ## 组成
 
 | 部分 | 位置 | 作用 |
 |---|---|---|
 | Host 插件 | `index.js` | 连接 relay，验证设备，把请求转发给本机 Web GUI |
-| 设置页 | `client.js` | “设置 → 远程访问”：开关、relay 地址、配对二维码、设备列表 |
+| 设备切换（Host） | `remotes.js`、`loopback.js` | 本机作为设备连到其他 DSH，在本机回环地址上提供它们的界面 |
+| 设置页和设备切换（Client） | `client.js` | 侧边栏底部的设备按钮；“设置 → 远程访问”：开关、relay 地址、配对链接、设备列表 |
 | 手机启动页 | `launcher/` | 静态网页，部署到任意 HTTPS 站点；手机扫码后在里面打开 DSH |
-| 电脑连接器 | `launcher/dsh-remote.mjs` | 单文件 Node 脚本（Node 22+），在远程电脑上把 DSH 映射到 `http://127.0.0.1:7878` |
 
 ## 使用
 
 1. 部署 relay（Cloudflare Workers、Docker 或 Node，见 relay 仓库的 README），得到 `wss://relay.example.com/ws`。
-2. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。
-3. 在 DSH 中打开“设置 → 远程访问”，开启远程访问，填写 relay 地址和启动页地址。状态变为“在线”后点“配对新设备”。
-4. 手机：用相机扫描二维码，在启动页里点“配对”。之后打开启动页会自动连接上次的 DSH；iOS 可以“添加到主屏幕”。
-5. 电脑：复制设置页里的连接器命令到远程电脑执行，例如：
+2. 在要被访问的 DSH 上打开“设置 → 远程访问”，开启远程访问，填写 relay 地址。状态变为“在线”后点“生成配对链接”。
 
-   ```sh
-   curl -fsSLO https://remote.example.com/dsh-remote.mjs && node dsh-remote.mjs pair '<配对码>'
-   node dsh-remote.mjs connect --open
-   ```
+### 从另一台 DSH 切换过去
 
-   `connect` 打印一个带一次性令牌的本机地址；只有带令牌打开过的浏览器能访问，其他网站和 Host 头不对的请求会被拒绝。
+两台都装本插件。被访问的那台不需要部署启动页。
 
-配对码只能用一次，默认 10 分钟内有效（`pairingMinutes`）。
+1. 复制被访问那台生成的配对链接（`dsh-remote://pair#…`；配置了启动页时是启动页链接，同样可用）。
+2. 在要发起访问的 DSH 上，点侧边栏底部“设置”上方的设备按钮，选“添加设备…”，粘贴链接，点“添加并切换”。
+3. 之后用同一个按钮在“本机”和已添加的设备之间切换。远程那台的界面里同一位置也有这个按钮，用来切回本机或切到别的设备。已添加的设备在“设置 → 远程访问 → 切换到其他设备”里移除；移除时本机会通过隧道让对方同时把本机从它的设备列表里删掉，对方离线时会提示这一步没有完成。重新添加同一台设备时沿用本机原来的设备密钥，对方的列表里不会出现重复的条目。
+
+切换时本机界面保持不动，直到对方的界面加载好才整窗切过去；连接失败不会离开本机，按钮和菜单里会显示原因（离线、被对方移除）和对应操作。已经打开过的设备在本次窗口里保持连接，再次切换是即时的。每台设备有一个由它的身份密钥决定的颜色，在所有 DSH 上都相同。
+
+### 手机
+
+1. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。
+2. 在设置页填写手机启动页地址，生成配对链接后会显示二维码。
+3. 用相机扫描二维码，在启动页里点“配对”。之后打开启动页会自动连接上次的 DSH；iOS 可以“添加到主屏幕”。
+
+配对链接只能用一次，默认 10 分钟内有效（`pairingMinutes`）。
 
 ## 配置
 
@@ -36,29 +42,34 @@
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `enabled` | `false` | 是否保持与 relay 的连接 |
+| `enabled` | `false` | 是否保持与 relay 的连接，让配对过的设备访问本机 |
 | `relayUrl` | 空 | relay 的 WebSocket 地址；只写域名时补全为 `wss://<域名>/ws` |
-| `launcherUrl` | 空 | 启动页地址；为空时没有手机二维码，只能用电脑连接器 |
-| `hostName` | 计算机名 | 设备上显示的名称 |
-| `pairingMinutes` | `10` | 配对码有效分钟数 |
+| `launcherUrl` | 空 | 手机启动页地址；为空时没有二维码，配对链接用 `dsh-remote://pair#…` 形式 |
+| `hostName` | 计算机名 | 其他设备上显示的名称，也是本机配对到其他 DSH 时的默认设备名 |
+| `pairingMinutes` | `10` | 配对链接有效分钟数 |
 
-本机身份密钥和已配对设备保存在 DSH 凭据存储中（`remote-relay/identity`、`remote-relay/devices`）。删除身份记录会换一个新的 `serverId`，所有设备需要重新配对。
+从本机切换到其他设备不需要开启 `enabled`，用的是配对链接里带的 relay 地址。
+
+本插件在 DSH 凭据存储里保存三条记录：
+- `remote-relay/identity`：本机身份密钥。删除后会换一个新的 `serverId`，所有设备都要重新配对。
+- `remote-relay/devices`：可以访问本机的设备。
+- `remote-relay/remotes`：本机能切换到的设备，内容包括本机在对方那里的设备密钥、每台设备的回环地址标签，以及回环端口。
 
 ## 工作方式
 
 ```
-手机启动页 / 电脑连接器 ─wss─► relay（只转发）◄─wss─ DSH Host 插件 ─► 127.0.0.1 上的 Web GUI
+另一台 DSH / 手机启动页 ─wss─► relay（只转发）◄─wss─ DSH Host 插件 ─► 127.0.0.1 上的 Web GUI
 ```
 
 - **relay 协议**：插件实现 openchamber-relay v1 的 host 端。DSH 用一把 ECDSA P-256 密钥签名 `host-control` 和每个 `host-data` 连接；`serverId` 是公钥的 SHA-256。relay 每个 `serverId` 最多 16 个并发设备、每分钟 60 次新连接，所以每台设备的所有 HTTP 请求和 WebSocket 都复用同一条连接。
 - **端到端加密**：设备发送临时 ECDH 公钥和设备公钥；DSH 回复自己的临时公钥、身份公钥和对握手记录的签名，设备检查身份公钥的哈希等于 `serverId`，因此 relay 无法冒充 DSH。双方用 HKDF 派生每个方向各一把 AES-256-GCM 密钥，配对时再混入一次性配对密钥；设备在第一帧里用设备私钥签名握手记录。帧按方向计数，丢失、重放或乱序的帧会导致连接关闭。
-- **转发**：DSH 用自己的浏览器 cookie 登录本机 Web GUI，再把设备的请求和 WebSocket 原样转发过去；cookie 不会发给设备，设备送来的 cookie、Origin 和 `Sec-Fetch-*` 头会被丢弃。
+- **转发**：被访问的 DSH 用自己的浏览器 cookie 登录本机 Web GUI，再把设备的请求和 WebSocket 原样转发过去；cookie 不会发给设备，设备送来的 cookie、Origin 和 `Sec-Fetch-*` 头会被丢弃。
+- **设备切换**：发起访问的 DSH 在 Host 进程里为每台已添加的设备保持一条隧道，并在回环端口上以 `http://<随机标签>.localhost:<端口>/` 提供它的界面。标签有 130 位随机数，是唯一的准入凭据：只有 Host 头是已知标签加本端口的请求才会进入隧道，带了其他 Origin 的请求、跨站的非导航请求都会被拒绝。每台设备的界面因此是独立的源，和本机 DSH、和其他设备都不共享 cookie 和存储。本机界面把它放进一个铺满窗口的 iframe（不允许导航顶层窗口）；两边的插件用 `postMessage` 交换设备列表、当前状态和窗口属性（macOS 桌面版的标题栏布局），菜单由当前显示的那台按自己的主题渲染。粘贴配对链接的对话框始终由本机渲染，远程页面看不到链接。没有请求和 WebSocket 的隧道 2 分钟后关闭。
 - **手机启动页**：Service Worker 把 iframe 里 DSH 页面的请求交给启动页窗口，经隧道转发；页面最前面注入一段脚本，把 DSH 的 `__DSH_TRANSPORT__.createWebSocket` 指向隧道，所以 `/api/remote.mux` 也走隧道。gzip 响应在浏览器里解压。
 
 ## 开发
 
 ```sh
-npm run build:connector   # 由 bin/dsh-remote.mjs 和 launcher/tunnel.js 生成 launcher/dsh-remote.mjs
 # 先在本地启动 relay：git clone openchamber-relay && npm install && PORT=18788 npm start
 RELAY_URL=ws://127.0.0.1:18788/ws npm test
 RELAY_URL=ws://127.0.0.1:18788/ws node --import ./test/hooks.mjs test/launcher.e2e.mjs   # 需要 Chrome 和 playwright-core
@@ -69,6 +80,10 @@ RELAY_URL=ws://127.0.0.1:18788/ws node --import ./test/hooks.mjs test/launcher.e
 ## 已知限制
 
 - 远程设备是 owner 身份，没有只读或受限模式。需要把会话分享给别人时，请使用 DSH 的 Liveshare。
+- 设备切换依赖浏览器把 `*.localhost` 解析到本机。桌面版（Electron）、Chrome、Edge 和 Firefox 可以；Safari 不保证，在 Safari 里打开 DSH 时可能无法显示其他设备。
+- 在 macOS 桌面版里显示其他设备时，窗口顶部能否拖动取决于 Electron 是否认可 iframe 内的拖动区域，尚未在桌面版上验证。
+- 显示其他设备时，粘贴配对链接的对话框使用本机的主题，可能和当前显示的设备主题不同。
+- 远程那台没有装本插件（或版本较旧）时，它的界面里没有设备按钮；本机会在左下角显示一个浮动按钮用来切回。
 - 手机启动页依赖 Service Worker；无痕模式或禁用 Service Worker 的浏览器无法使用。DSH 的 HMR 事件流在 Service Worker 被系统回收后会重连。
-- 本机 Web GUI 使用自签名 TLS 证书时，WebSocket 转发不可用（HTTP 转发可用）。
+- 被访问的 DSH 的 Web GUI 使用自签名 TLS 证书时，WebSocket 转发不可用（HTTP 转发可用）。
 - relay 协议版本由 OpenChamber 维护；请固定 relay 的版本。relay 使用 FSL-1.1-ALv2 许可：可以自建自用，不能拿它对外提供商业中转服务。

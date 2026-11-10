@@ -2,8 +2,10 @@ window.__ModuleLoader__.load({
   id: '@pcmid/dsh-remote-relay',
   factory(require) {
     const React = require('react');
+    const ReactDOM = require('react-dom');
+    const UI = require('@deepseek-ai/dsh-client-ui-primitives');
     const h = React.createElement;
-    const { useEffect, useMemo, useState } = React;
+    const { useEffect, useMemo, useRef, useState } = React;
 
     const NS = 'settings.remoteRelay';
     const NAMESPACE = 'remote-relay';
@@ -12,40 +14,45 @@ window.__ModuleLoader__.load({
     const PREFIX = 'dsh-rr';
     const POLL_MS = 2000;
     const NOTICE_MS = 1600;
+    /** postMessage channel between a device view and the DSH window that embeds it. */
+    const BRIDGE = 'dsh-remote-relay';
+    const BRIDGE_VERSION = 1;
+    /** Window attributes a device view mirrors so it lays out for the same window chrome. */
+    const MIRRORED_ATTRIBUTES = ['data-platform', 'data-fullscreen'];
+    const CURRENT_KEY = 'dsh-remote-relay:current';
 
     const zh = {
       nav: '远程访问',
-      lead: '通过自建的 OpenChamber relay，从手机或其他电脑使用这个 DSH。数据端到端加密，relay 只转发密文。',
-      enable: '启用远程访问',
+      lead: '在几台装有本插件的 DSH 之间切换，或从手机使用这台 DSH。数据经自建的 OpenChamber relay 端到端加密，relay 只转发密文。',
+      hostHeading: '让其他设备访问本机',
+      hostIntro: '开启后，配对过的设备可以通过 relay 使用这台 DSH，本机不需要开放端口。',
+      enable: '开启远程访问',
       enableTip: '开启后，DSH 会保持与 relay 的连接，已配对的设备可以随时连进来。',
       status: '状态',
       relay: 'Relay 地址',
       relayTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws。只写域名时会自动补全。',
       relayPlaceholder: 'wss://relay.example.com/ws',
-      launcher: '启动页地址',
-      launcherTip: '部署了本插件 launcher 目录的 HTTPS 地址。手机扫码后打开它；不填则只能用电脑连接器配对。',
+      launcher: '手机启动页地址',
+      launcherTip: '部署了本插件 launcher 目录的 HTTPS 地址，手机扫码后打开它。只用另一台 DSH 访问时不用填。',
       launcherPlaceholder: 'https://remote.example.com/',
-      hostName: '主机名称',
-      hostNameTip: '在已配对设备上显示的名称。',
+      hostName: '本机名称',
+      hostNameTip: '其他设备切换列表里显示的名称。',
       save: '保存',
       saved: '已保存',
       saveFailed: '保存失败',
       pairHeading: '配对新设备',
-      pairIntro: '手机扫描二维码打开启动页；电脑使用 dsh-remote 连接器。配对码只能使用一次。',
-      pairAction: '配对新设备',
-      pairNeedsOnline: '启用远程访问并连上 relay 后才能配对。',
-      scan: '用手机相机扫描',
-      link: '手机链接',
-      connector: '电脑连接器',
-      connectorTip: '在要连接的电脑上运行（需要 Node 22 或更高版本），之后运行 node dsh-remote.mjs connect。',
-      connectorLocal: 'dsh-remote.mjs 位于本插件的 launcher 目录中，也会随启动页一起部署。',
-      noLauncher: '还没有填写启动页地址，所以没有手机二维码。',
+      pairIntro: '生成一次性配对链接，发到要访问本机的设备上。链接只能使用一次。',
+      pairAction: '生成配对链接',
+      pairNeedsOnline: '开启访问并连上 relay 后才能配对。',
+      pairLink: '配对链接',
+      pairLinkTip: '在另一台装有本插件的 DSH 上，点侧边栏底部的设备按钮 →「添加设备」，粘贴此链接。',
+      scan: '手机扫码打开',
       copy: '复制',
       copied: '已复制',
       expiresIn: '{time} 后失效',
       cancel: '取消',
       risk: '配对后的设备拥有与你在本机相同的全部权限，包括执行命令和读写文件。只配对你自己的设备；不再使用时请移除。',
-      devices: '已配对设备',
+      devices: '可以访问本机的设备',
       noDevices: '还没有配对的设备。',
       online: '已连接',
       pairedAt: '配对于 {date}',
@@ -64,40 +71,84 @@ window.__ModuleLoader__.load({
       state_replaced: '已被另一个 DSH 接管',
       state_error: '出错',
       onlineDetail: '已连接 relay，{count} 台设备在线',
+      remotesHeading: '切换到其他设备',
+      remotesIntro: '用侧边栏底部的设备按钮切换。移除时会让对方同时移除本机，之后要重新配对才能再用。',
+      removing: '正在移除…',
+      removeUnconfirmed: '已从本机移除 {name}。没能连上它，它的设备列表里可能还留着本机；这条记录已经不能用来访问，可以在它的「设置 → 远程访问」里移除。',
+      removeFailed: '移除 {name} 失败：{error}',
+      noRemotes: '还没有添加其他设备。',
+      addedAt: '添加于 {date}',
+      switchTo: '切换',
+      // Device switcher
+      switcher: '切换设备',
+      thisDevice: '本机',
+      remoteTag: '远程',
+      devicesMenu: '设备',
+      addDevice: '添加设备…',
+      addTitle: '添加设备',
+      addIntro: '在另一台装有本插件的 DSH 上打开「设置 → 远程访问」，点「生成配对链接」，复制后粘贴到这里。',
+      linkLabel: '配对链接',
+      linkPlaceholder: '粘贴配对链接',
+      linkPreview: '{host} · {time} 前有效',
+      linkInvalid: '这不是完整的配对链接。',
+      linkExpired: '这个配对链接已过期，请在对方重新生成。',
+      nameLabel: '本机在对方显示为',
+      addRisk: '添加后，本机可以完全控制那台 DSH，包括执行命令和读写文件。',
+      addAction: '添加并切换',
+      adding: '正在配对…',
+      close: '关闭',
+      connectingTo: '正在连接 {name}…',
+      cannotReach: '无法连接 {name}',
+      removedBy: '{name} 已移除本机',
+      device_connected: '已连接',
+      device_connecting: '正在连接…',
+      device_connecting_cancel: '正在连接… 点按取消',
+      device_retrying: '无法连接',
+      device_rejected: '已移除本机，需重新添加',
+      device_idle: '',
+      readdDevice: '重新添加',
+      err_pairing_invalid: '配对链接无效、已使用或已过期，请在对方重新生成。',
+      err_self: '这是本机自己的配对链接，请在另一台 DSH 上生成。',
+      err_unreachable: '连不上对方：{error}',
+      err_timeout: '对方没有响应。请确认那台 DSH 正在运行，并且远程访问显示「在线」。',
+      err_offline: '对方离线或没有响应',
+      err_relay: '连不上 relay',
+      err_host_key: '对方的身份和配对时不一致，请重新添加',
+      retryHint: '{reason} · 点按重试',
+      readdHint: '已移除本机 · 点按重新添加',
     };
     const en = {
       nav: 'Remote access',
-      lead: 'Use this DSH from your phone or another computer through your self-hosted OpenChamber relay. Traffic is end-to-end encrypted; the relay only forwards ciphertext.',
-      enable: 'Enable remote access',
+      lead: 'Switch between DSH hosts that have this plugin, or use this DSH from a phone. Traffic is end-to-end encrypted through your self-hosted OpenChamber relay, which only forwards ciphertext.',
+      hostHeading: 'Let other devices reach this DSH',
+      hostIntro: 'While on, paired devices can use this DSH through the relay; no port is opened on this computer.',
+      enable: 'Turn on remote access',
       enableTip: 'While on, DSH stays connected to the relay so paired devices can reach it at any time.',
       status: 'Status',
       relay: 'Relay address',
       relayTip: 'WebSocket address of your relay, such as wss://relay.example.com/ws. A bare host name is completed automatically.',
       relayPlaceholder: 'wss://relay.example.com/ws',
-      launcher: 'Launcher address',
-      launcherTip: 'HTTPS address where this plugin\'s launcher folder is deployed. Phones open it from the QR code; without it only the computer connector can pair.',
+      launcher: 'Phone launcher address',
+      launcherTip: 'HTTPS address where this plugin\'s launcher folder is deployed; phones open it from the QR code. Not needed when only another DSH connects.',
       launcherPlaceholder: 'https://remote.example.com/',
-      hostName: 'Host name',
-      hostNameTip: 'Name paired devices show for this DSH.',
+      hostName: 'Name of this DSH',
+      hostNameTip: 'Shown in the device list of other devices.',
       save: 'Save',
       saved: 'Saved',
       saveFailed: 'Could not save',
       pairHeading: 'Pair a device',
-      pairIntro: 'Phones scan the QR code to open the launcher; computers use the dsh-remote connector. A pairing code works once.',
-      pairAction: 'Pair a device',
-      pairNeedsOnline: 'Turn on remote access and connect to the relay before pairing.',
-      scan: 'Scan with your phone camera',
-      link: 'Phone link',
-      connector: 'Computer connector',
-      connectorTip: 'Run on the computer you want to connect (Node 22 or later), then run node dsh-remote.mjs connect.',
-      connectorLocal: 'dsh-remote.mjs is in this plugin\'s launcher folder and is deployed with the launcher.',
-      noLauncher: 'No launcher address is set, so there is no phone QR code.',
+      pairIntro: 'Create a one-time pairing link and send it to the device that should reach this DSH. A link works once.',
+      pairAction: 'Create pairing link',
+      pairNeedsOnline: 'Turn on access and connect to the relay before pairing.',
+      pairLink: 'Pairing link',
+      pairLinkTip: 'On another DSH with this plugin, choose the device button at the bottom of the sidebar → Add device, and paste this link.',
+      scan: 'Scan with your phone',
       copy: 'Copy',
       copied: 'Copied',
       expiresIn: 'Expires in {time}',
       cancel: 'Cancel',
       risk: 'A paired device has the same full authority you have on this computer, including running commands and changing files. Pair only devices you own, and remove them when unused.',
-      devices: 'Paired devices',
+      devices: 'Devices that can reach this DSH',
       noDevices: 'No devices are paired yet.',
       online: 'Connected',
       pairedAt: 'Paired {date}',
@@ -116,6 +167,50 @@ window.__ModuleLoader__.load({
       state_replaced: 'Taken over by another DSH',
       state_error: 'Error',
       onlineDetail: 'Connected to the relay, {count} device(s) online',
+      remotesHeading: 'Switch to other devices',
+      remotesIntro: 'Switch with the device button at the bottom of the sidebar. Removing a device also removes this DSH from it; pair again to use it later.',
+      removing: 'Removing…',
+      removeUnconfirmed: '{name} was removed here. It could not be reached, so it may still list this DSH; that entry can no longer be used for access, and you can remove it under its Settings → Remote access.',
+      removeFailed: 'Could not remove {name}: {error}',
+      noRemotes: 'No other devices are added yet.',
+      addedAt: 'Added {date}',
+      switchTo: 'Switch',
+      switcher: 'Switch device',
+      thisDevice: 'This device',
+      remoteTag: 'Remote',
+      devicesMenu: 'Devices',
+      addDevice: 'Add device…',
+      addTitle: 'Add device',
+      addIntro: 'On another DSH with this plugin, open Settings → Remote access, choose Create pairing link, and paste the link here.',
+      linkLabel: 'Pairing link',
+      linkPlaceholder: 'Paste the pairing link',
+      linkPreview: '{host} · valid until {time}',
+      linkInvalid: 'This is not a complete pairing link.',
+      linkExpired: 'This pairing link has expired. Create a new one on the other DSH.',
+      nameLabel: 'Name of this DSH over there',
+      addRisk: 'Once added, this DSH has full control of that DSH, including running commands and changing files.',
+      addAction: 'Add and switch',
+      adding: 'Pairing…',
+      close: 'Close',
+      connectingTo: 'Connecting to {name}…',
+      cannotReach: 'Cannot reach {name}',
+      removedBy: '{name} removed this DSH',
+      device_connected: 'Connected',
+      device_connecting: 'Connecting…',
+      device_connecting_cancel: 'Connecting… choose to cancel',
+      device_retrying: 'Unreachable',
+      device_rejected: 'Removed this DSH; add it again',
+      device_idle: '',
+      readdDevice: 'Add again',
+      err_pairing_invalid: 'The pairing link is invalid, used, or expired. Create a new one on the other DSH.',
+      err_self: 'This pairing link belongs to this DSH. Create one on the other DSH.',
+      err_unreachable: 'Cannot reach the other DSH: {error}',
+      err_timeout: 'The other DSH did not answer. Make sure it is running and its remote access shows Online.',
+      err_offline: 'Offline or not answering',
+      err_relay: 'Cannot reach the relay',
+      err_host_key: 'Its identity changed since pairing; add it again',
+      retryHint: '{reason} · choose to retry',
+      readdHint: 'Removed this DSH · choose to add it again',
     };
 
     // -----------------------------------------------------------------------
@@ -373,6 +468,7 @@ window.__ModuleLoader__.load({
       }, h('rect', { width: path.size, height: path.size, fill: '#ffffff' }), h('path', { d: path.d, fill: '#000000' }));
     }
 
+
     // -----------------------------------------------------------------------
     // Styles
     // -----------------------------------------------------------------------
@@ -418,7 +514,7 @@ window.__ModuleLoader__.load({
 .${PREFIX}-note { margin: 8px 0 4px; padding: 8px 12px; border-radius: var(--dsw-radius-md, 8px); background: var(--dsw-alias-bg-layer-2); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .${PREFIX}-pairing { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-start; padding: 8px 0; }
 .${PREFIX}-qr-box { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.${PREFIX}-qr { width: 184px; height: 184px; border-radius: var(--dsw-radius-md, 8px); }
+.${PREFIX}-qr { width: 152px; height: 152px; border-radius: var(--dsw-radius-md, 8px); }
 .${PREFIX}-fields { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .${PREFIX}-field { display: flex; flex-direction: column; gap: 6px; }
 .${PREFIX}-field-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
@@ -429,12 +525,61 @@ window.__ModuleLoader__.load({
 .${PREFIX}-device-main { flex: 1; min-width: 0; }
 .${PREFIX}-device-name { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .${PREFIX}-badge { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); }
+.${PREFIX}-badge[data-tone="error"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
+.${PREFIX}-badge[data-tone="neutral"] { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); }
 .${PREFIX}-footer { padding: 12px 0 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .${PREFIX}-thumb { transition: none; } }
+
+/* Device switcher trigger: the same row geometry as the Settings trigger below it. */
+.${PREFIX}-sw { flex: 1; min-width: 0; display: flex; align-items: center; gap: var(--dsh-sidebar-label-gap, 8px); height: 42px; margin: 4px 0 0; padding: 0 calc(var(--dsh-sidebar-row-padding, 12px) - var(--dsh-sidebar-paint-inset, 0px)); box-sizing: border-box; border: none; border-inline: var(--dsh-sidebar-paint-inset, 0px) solid transparent; background: transparent; background-clip: padding-box; border-radius: var(--dsw-radius-md, 8px); color: var(--dsw-alias-label-primary); font: inherit; font-size: 14px; line-height: 22px; text-align: start; cursor: pointer; overflow: hidden; }
+.${PREFIX}-sw[data-rail] { flex: none; width: 36px; height: 36px; margin: 8px 0 0; padding: 0; justify-content: center; gap: 0; border-inline: 0; background-clip: border-box; }
+.${PREFIX}-sw[aria-expanded="true"] { background-color: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-layer-2)); }
+@media (hover: hover) { .${PREFIX}-sw:hover { background-color: var(--dsw-alias-interactive-bg-hover, var(--dsw-alias-bg-layer-2)); } }
+.${PREFIX}-sw:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.${PREFIX}-sw-icon { position: relative; flex: none; display: inline-flex; color: var(--dsw-alias-label-primary); }
+.${PREFIX}-sw-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.${PREFIX}-sw[data-tone="error"] .${PREFIX}-sw-label { color: var(--dsw-alias-label-primary); }
+.${PREFIX}-sw-tag { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; color: var(--dsw-alias-label-secondary); box-shadow: inset 0 0 0 0.5px var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); }
+.${PREFIX}-sw-chevron { flex: none; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.${PREFIX}-pip { position: absolute; right: -2px; bottom: -1px; width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 0 1.5px var(--dsw-alias-bg-base, #fff); background: var(--dsw-alias-state-success-primary); }
+.${PREFIX}-pip[data-tone="warn"] { background: var(--dsw-alias-state-warn-primary); }
+.${PREFIX}-pip[data-tone="error"] { background: var(--dsw-alias-state-error-primary); }
+.${PREFIX}-spin { animation: ${PREFIX}-spin 0.9s linear infinite; }
+@keyframes ${PREFIX}-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .${PREFIX}-spin { animation-duration: 2.4s; } }
+
+/* Menu rows */
+.${PREFIX}-mrow { display: flex; align-items: center; gap: 12px; min-width: 216px; }
+.${PREFIX}-mname { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.${PREFIX}-mname > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.${PREFIX}-mmeta { font-size: 12px; line-height: 16px; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.${PREFIX}-mmeta[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
+.${PREFIX}-mcheck { flex: none; color: var(--dsw-alias-label-primary); }
+
+/* Stage: device views above this DSH's own frame. */
+.${PREFIX}-stage { position: fixed; inset: 0; z-index: 900; pointer-events: none; }
+.${PREFIX}-stage[data-active] { pointer-events: auto; }
+.${PREFIX}-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: transparent; visibility: hidden; color-scheme: normal; }
+.${PREFIX}-frame[data-current] { visibility: visible; animation: ${PREFIX}-in 180ms var(--ds-ease-in-out, ease) both; }
+html.${PREFIX}-returning #root { animation: ${PREFIX}-in 180ms var(--ds-ease-in-out, ease) both; }
+@keyframes ${PREFIX}-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .${PREFIX}-frame[data-current], html.${PREFIX}-returning #root { animation: none; } }
+.${PREFIX}-anchor { position: fixed; pointer-events: none; }
+html.${PREFIX}-remote #root { visibility: hidden !important; }
+.${PREFIX}-chip { position: absolute; left: 12px; bottom: 12px; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 10px; border: 0; border-radius: 999px; background: var(--dsw-alias-bg-layer-1, #fff); color: var(--dsw-alias-label-primary); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); box-shadow: var(--dsw-elevation-prominent, 0 4px 16px rgba(0,0,0,.12)); font: inherit; font-size: 13px; cursor: pointer; }
+
+/* Add-device dialog */
+.${PREFIX}-dialog { width: min(460px, 100%) !important; }
+.${PREFIX}-form { display: flex; flex-direction: column; gap: 14px; width: 100%; }
+.${PREFIX}-form .${PREFIX}-input { max-width: none; height: 36px; }
+.${PREFIX}-hint { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.${PREFIX}-hint[data-tone="ok"] { color: var(--dsw-alias-label-primary); }
+.${PREFIX}-hint[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
+.${PREFIX}-actions { display: flex; justify-content: flex-end; gap: 8px; }
 `;
 
     // -----------------------------------------------------------------------
-    // Controller
+    // Shared helpers
     // -----------------------------------------------------------------------
 
     function createStore(initial) {
@@ -453,8 +598,128 @@ window.__ModuleLoader__.load({
       };
     }
 
-    function createController(ctx) {
+    class CallError extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+      }
+    }
+
+    function rpc(ctx) {
+      return async (endpoint, payload = {}) => {
+        const result = await ctx.connection.rpc.call(CHANNEL, `${ENDPOINT}/${endpoint}`, payload);
+        if (!result.ok) throw new CallError(String(result.error?.code ?? '').replace(/^remote-relay\//, ''), result.error?.message ?? 'Request failed');
+        return result.value;
+      };
+    }
+
+    function fill(template, values) {
+      return template.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ''));
+    }
+
+    function formatDate(ms) {
+      try {
+        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms);
+      } catch {
+        return new Date(ms).toLocaleString();
+      }
+    }
+
+    function formatTime(ms) {
+      try {
+        return new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(ms);
+      } catch {
+        return new Date(ms).toLocaleTimeString();
+      }
+    }
+
+    function formatAgo(ms, now) {
+      const seconds = Math.round((ms - now) / 1000);
+      const units = [['day', 86400], ['hour', 3600], ['minute', 60]];
+      try {
+        const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+        for (const [unit, size] of units) if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
+        return format.format(0, 'second');
+      } catch {
+        return formatDate(ms);
+      }
+    }
+
+    /** Read a pairing link or code far enough to preview it; the Host validates it again. */
+    function previewPairing(text) {
+      let value = String(text ?? '').trim();
+      if (value === '') return null;
+      const hash = value.indexOf('#');
+      if (hash >= 0) value = value.slice(hash + 1);
+      const params = new URLSearchParams(value);
+      const serverId = params.get('s') ?? '';
+      const expires = Number.parseInt(params.get('e') ?? '', 36) * 1000;
+      if (!/^[A-Za-z0-9_-]{43}$/.test(serverId) || !params.get('i') || !params.get('k') || !params.get('r') || !Number.isFinite(expires)) {
+        return { valid: false };
+      }
+      return { valid: true, serverId, host: (params.get('n') ?? '').slice(0, 80) || serverId.slice(0, 8), expiresAt: expires, expired: expires < Date.now() };
+    }
+
+    /** Short, localized reason a paired device cannot be reached, from the Host's failure code. */
+    function describeRemote(remote, t) {
+      const code = remote?.code ?? '';
+      if (code === 'unknown-device') return fill(t('removedBy'), { name: remote.name });
+      if (code === 'host-key') return t('err_host_key');
+      if (code === 'relay-closed' || code === 'relay-timeout') return t('err_relay');
+      return t('err_offline');
+    }
+
+    function describeFailure(error, t) {
+      const code = error instanceof CallError ? error.code : '';
+      const message = error instanceof Error ? error.message : String(error);
+      if (code === 'pairing-invalid') return t('err_pairing_invalid');
+      if (code === 'self') return t('err_self');
+      if (code === 'timeout' || code === 'relay-timeout') return t('err_timeout');
+      if (code === 'relay-closed' || code === 'closed') return fill(t('err_unreachable'), { error: message });
+      return message;
+    }
+
+    /**
+     * Identity colors for devices. They are literal values on purpose: a device keeps its color in
+     * every theme and on every DSH, because the color derives only from the device's key id.
+     */
+    const DEVICE_COLORS = ['#4C8DF6', '#8B6CF2', '#C561D9', '#E0628F', '#E8833A', '#2BA59F', '#2A9CC4', '#6AA84F'];
+    function deviceColor(id) {
+      if (typeof id !== 'string' || id === '') return undefined;
+      let hash = 0x811c9dc5;
+      for (let i = 0; i < id.length; i += 1) hash = Math.imul(hash ^ id.charCodeAt(i), 0x01000193) >>> 0;
+      return DEVICE_COLORS[hash % DEVICE_COLORS.length];
+    }
+
+    /** A laptop whose screen carries the device's identity color, plus an optional status pip. */
+    function DeviceGlyph({ size, tone, color }) {
+      const s = size ?? 16;
+      return h('span', { className: `${PREFIX}-sw-icon`, 'aria-hidden': true },
+        h('svg', { width: s, height: s, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.3, strokeLinecap: 'round', strokeLinejoin: 'round' },
+          color ? h('rect', { x: 4.1, y: 4.6, width: 7.8, height: 4.7, rx: 0.6, fill: color, stroke: 'none' }) : null,
+          h('rect', { x: 2.65, y: 3.15, width: 10.7, height: 7.6, rx: 1.35 }),
+          h('path', { d: 'M1.5 13.1h13' })),
+        tone === 'warn' || tone === 'error' ? h('span', { className: `${PREFIX}-pip`, 'data-tone': tone }) : null);
+    }
+
+    function Spinner({ size }) {
+      return h('span', { className: `${PREFIX}-sw-icon ${PREFIX}-spin`, 'aria-hidden': true }, h(UI.IconLoadingOutlineRegular, { size: size ?? 16 }));
+    }
+
+    function deviceTone(state) {
+      if (state === 'connected') return 'ok';
+      if (state === 'connecting') return 'warn';
+      if (state === 'retrying' || state === 'rejected') return 'error';
+      return undefined;
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings controller (this DSH as a host)
+    // -----------------------------------------------------------------------
+
+    function createController(ctx, switcher) {
       const form = ctx.configForms.get(NAMESPACE);
+      const call = rpc(ctx);
       let status = null;
       let loadFailed = false;
       let actionError = null;
@@ -481,12 +746,6 @@ window.__ModuleLoader__.load({
       const store = createStore(projection());
       const publish = () => { if (!disposed) store.set(projection()); };
       const offForm = form.subscribe(publish);
-
-      const call = async (endpoint, payload = {}) => {
-        const result = await ctx.connection.rpc.call(CHANNEL, `${ENDPOINT}/${endpoint}`, payload);
-        if (!result.ok) throw new Error(result.error?.message ?? 'Request failed');
-        return result.value;
-      };
 
       const refresh = async () => {
         const current = ++generation;
@@ -549,14 +808,16 @@ window.__ModuleLoader__.load({
         },
         refresh: () => { if (watchers > 0) void refresh(); },
         face: {
-          hooks: { remoteRelay: store },
+          hooks: { remoteRelay: store, switcher: switcher.store },
           watch() {
             watchers++;
+            const release = switcher.watch();
             if (watchers === 1) {
               void refresh();
               schedule();
             }
             return () => {
+              release();
               watchers--;
               if (watchers === 0) clearTimeout(timer);
             };
@@ -574,37 +835,474 @@ window.__ModuleLoader__.load({
               return false;
             }
           },
+          switchTo: (id) => { switcher.switchTo(id); },
+          openAdd: () => { switcher.openAdd(); },
+          removeRemote: (id) => switcher.remove(id),
         },
       };
     }
 
     // -----------------------------------------------------------------------
-    // Components
+    // Device switcher controller
     // -----------------------------------------------------------------------
 
-    function fill(template, values) {
-      return template.replace(/\{(\w+)\}/g, (_, key) => String(values[key] ?? ''));
+    /**
+     * Top mode runs in a DSH window opened directly: it lists this DSH and the devices it added,
+     * and shows a device by loading its loopback origin in a full-window frame. Frame mode runs in
+     * such a frame: it only renders the trigger and asks the embedding window to open its menu.
+     */
+    function createSwitcher(ctx, t) {
+      const call = rpc(ctx);
+      const mode = window.parent === window ? 'top' : 'frame';
+      let state = {
+        mode,
+        loaded: false,
+        loadFailed: false,
+        local: null,
+        remotes: [],
+        current: null,
+        pending: null,
+        pendingSince: 0,
+        views: {},
+        menu: null,
+        add: null,
+        removing: null,
+        removeNote: null,
+        embed: null,
+        embedGaveUp: false,
+      };
+      const store = createStore(state);
+      const frames = new Map();
+      const cleanups = [];
+      let disposed = false;
+      let watchers = 0;
+      let pollTimer;
+      let refreshing;
+      let generation = 0;
+
+      const set = (patch) => {
+        if (disposed) return;
+        state = { ...state, ...patch };
+        store.set(state);
+        afterChange();
+      };
+      const setView = (id, patch) => {
+        const view = state.views[id];
+        if (view === undefined) return;
+        set({ views: { ...state.views, [id]: { ...view, ...patch } } });
+      };
+      const remoteOf = (id) => state.remotes.find((remote) => remote.id === id);
+      const nameOf = (id) => remoteOf(id)?.name ?? '';
+
+      // ---- Host state -------------------------------------------------------
+
+      const refresh = () => {
+        refreshing ??= (async () => {
+          const current = ++generation;
+          try {
+            const value = await call('remotes');
+            if (current !== generation) return;
+            set({ loaded: true, loadFailed: false, local: value.local, remotes: value.remotes });
+          } catch {
+            if (current === generation) set({ loaded: true, loadFailed: true });
+          } finally {
+            refreshing = undefined;
+          }
+        })();
+        return refreshing;
+      };
+
+      const needsPolling = () => watchers > 0 || state.menu !== null || state.pending !== null || state.add?.busy === true
+        || Object.values(state.views).some((view) => view.failure && !view.ack)
+        || Object.values(state.views).some((view) => view.phase !== 'ready');
+      const schedulePoll = () => {
+        if (pollTimer !== undefined || disposed) return;
+        const interval = needsPolling() ? 1200 : state.current !== null ? 5000 : 0;
+        if (interval === 0) return;
+        pollTimer = setTimeout(async () => {
+          pollTimer = undefined;
+          await refresh();
+          checkReadiness();
+          schedulePoll();
+        }, interval);
+      };
+
+      // ---- Switching --------------------------------------------------------
+
+      const remember = (id) => {
+        try {
+          if (id === null) sessionStorage.removeItem(CURRENT_KEY);
+          else sessionStorage.setItem(CURRENT_KEY, id);
+        } catch { /* storage unavailable: the choice lasts until reload */ }
+      };
+
+      const show = (id) => {
+        const returning = id === null && state.current !== null;
+        if (id !== null && state.views[id]?.failure) setView(id, { failure: null, error: null });
+        set({ current: id, pending: null, menu: null });
+        remember(id);
+        if (returning) {
+          document.documentElement.classList.add(`${PREFIX}-returning`);
+          setTimeout(() => { document.documentElement.classList.remove(`${PREFIX}-returning`); }, 260);
+        }
+        if (id === null) {
+          requestAnimationFrame(() => { document.querySelector('#root textarea, #root [contenteditable="true"]')?.focus?.(); });
+        } else {
+          requestAnimationFrame(() => { frames.get(id)?.focus(); });
+        }
+      };
+
+      const switchTo = async (id) => {
+        if (state.mode !== 'top') return;
+        if (id === null || id === state.current) {
+          show(id);
+          return;
+        }
+        if (state.views[id]?.phase === 'ready' && remoteOf(id)?.state === 'connected') {
+          show(id);
+          return;
+        }
+        set({ pending: id, pendingSince: Date.now(), menu: null });
+        const view = state.views[id];
+        if (view === undefined || view.origin === null || view.phase === 'failed') {
+          try {
+            const opened = await call('remote-open', { id });
+            const previous = state.views[id];
+            set({ views: { ...state.views, [id]: {
+              origin: opened.origin,
+              src: previous?.src ?? null,
+              phase: previous?.src ? 'loading' : 'connecting',
+              hello: false,
+              loadedAt: 0,
+              startedAt: Date.now(),
+              error: null,
+              reloads: (previous?.reloads ?? 0) + (previous?.src ? 1 : 0),
+            } } });
+          } catch (error) {
+            set({ views: { ...state.views, [id]: { origin: null, src: null, phase: 'failed', failure: 'error', ack: false, hello: false, loadedAt: 0, startedAt: Date.now(), error: describeFailure(error, t), reloads: 0 } } });
+            if (state.pending === id) set({ pending: null });
+            return;
+          }
+        } else if (view.phase === 'ready') {
+          // A view that loaded before keeps its page; the switch waits for its tunnel to return.
+          void call('remote-open', { id }).catch(() => {});
+        }
+        await refresh();
+        checkReadiness();
+        schedulePoll();
+      };
+
+      const retry = (id) => {
+        const view = state.views[id];
+        if (view !== undefined) setView(id, { phase: 'failed' });
+        void switchTo(id);
+      };
+
+      const cancelPending = () => { set({ pending: null }); };
+
+      const runRow = (id, action) => {
+        const remote = remoteOf(id);
+        if (remote === undefined) return;
+        if (action === 'readd') openAdd({ name: remote.name });
+        else if (action === 'cancel') cancelPending();
+        else if (action === 'retry') retry(id);
+        else void switchTo(id);
+      };
+
+      const fail = (id, failure, error) => { setView(id, { phase: 'failed', failure, ack: false, error }); };
+
+      const checkReadiness = () => {
+        for (const [id, view] of Object.entries(state.views)) {
+          const remote = remoteOf(id);
+          if (remote === undefined) continue;
+          if (view.phase !== 'failed' && remote.state === 'rejected') {
+            fail(id, 'removed', fill(t('removedBy'), { name: remote.name }));
+            // The device refused this DSH: its page cannot work any more, so leave it.
+            if (state.current === id) show(null);
+          } else if (view.phase === 'connecting' && remote.state === 'connected') {
+            // Load the view only through an open tunnel, so its first page cannot be a relay timeout.
+            const src = view.reloads > 0 ? `${view.origin}/?r=${Date.now().toString(36)}` : `${view.origin}/`;
+            setView(id, { phase: 'loading', src, loadedAt: 0, hello: false });
+          } else if (view.phase === 'connecting' && Date.now() - view.startedAt > 25_000) {
+            fail(id, 'unreachable', describeRemote(remote, t));
+          } else if (view.phase === 'loading' && view.loadedAt > 0 && !view.hello && Date.now() - view.loadedAt > 6000) {
+            // A device without this plugin version never says hello; show it once its page has loaded.
+            setView(id, { phase: 'ready' });
+          }
+        }
+        const pending = state.pending;
+        const pendingView = pending === null ? undefined : state.views[pending];
+        if (pendingView === undefined) return;
+        if (pendingView.phase === 'ready' && remoteOf(pending)?.state === 'connected') show(pending);
+        else if (pendingView.phase === 'failed') set({ pending: null });
+        else if (pendingView.phase === 'ready' && Date.now() - state.pendingSince > 25_000) {
+          // The page stays loaded for a later attempt; this attempt reports the tunnel failure.
+          set({ pending: null });
+          setView(pending, { failure: 'unreachable', ack: false, error: describeRemote(remoteOf(pending), t), phase: 'ready' });
+        }
+      };
+
+      const frameLoaded = (id) => {
+        setView(id, { loadedAt: Date.now() });
+        sendContext(id);
+        schedulePoll();
+      };
+
+      // ---- Menu and dialogs -------------------------------------------------
+
+      const openMenu = (rect, options = {}) => {
+        if (state.mode === 'frame') {
+          set({ menu: { rect, keyboard: options.keyboard === true, returnFocus: options.returnFocus ?? null } });
+          post(window.parent, { type: 'menu-open' });
+          return;
+        }
+        set({ menu: { rect, keyboard: options.keyboard === true, returnFocus: options.returnFocus ?? null } });
+        acknowledge();
+        void refresh();
+        schedulePoll();
+      };
+      const acknowledge = () => {
+        const views = { ...state.views };
+        let changed = false;
+        for (const [id, view] of Object.entries(views)) {
+          if (view.failure && !view.ack) { views[id] = { ...view, ack: true }; changed = true; }
+        }
+        if (changed) set({ views });
+      };
+      const closeMenu = () => { if (state.menu !== null) set({ menu: null }); };
+
+      const openAdd = (preset) => {
+        if (state.mode === 'frame') {
+          post(window.parent, { type: 'add' });
+          return;
+        }
+        set({ menu: null, add: { busy: false, error: null, readd: preset ?? null } });
+      };
+      const closeAdd = () => { if (state.add?.busy !== true) set({ add: null }); };
+
+      const add = async (code, name) => {
+        if (state.add === null || state.add.busy) return;
+        set({ add: { ...state.add, busy: true, error: null } });
+        try {
+          const value = await call('remote-add', { code, name });
+          set({ local: value.local, remotes: value.remotes, add: null });
+          const stale = state.views[value.added];
+          if (stale !== undefined) {
+            const views = { ...state.views };
+            delete views[value.added];
+            set({ views });
+          }
+          void switchTo(value.added);
+        } catch (error) {
+          set({ add: { ...state.add, busy: false, error: describeFailure(error, t) } });
+        }
+      };
+
+      const remove = async (id) => {
+        if (state.removing !== null) return false;
+        const name = nameOf(id);
+        // The Host first asks that device to remove this DSH, which can take a few seconds.
+        set({ removing: id, removeNote: null });
+        try {
+          const value = await call('remote-remove', { id });
+          generation += 1;
+          const views = { ...state.views };
+          delete views[id];
+          frames.delete(id);
+          set({
+            local: value.local,
+            remotes: value.remotes,
+            views,
+            current: state.current === id ? null : state.current,
+            pending: state.pending === id ? null : state.pending,
+            removing: null,
+            removeNote: value.forgotten === false ? { tone: 'warn', text: fill(t('removeUnconfirmed'), { name }) } : null,
+          });
+          if (state.current === null) remember(null);
+          return true;
+        } catch (error) {
+          set({ removing: null, removeNote: { tone: 'error', text: fill(t('removeFailed'), { name, error: describeFailure(error, t) }) } });
+          return false;
+        }
+      };
+
+      // ---- Bridge between a device view and the window that shows it ---------
+
+      // The embedding window's origin is unknown to a view (dsh-app:// or the Web GUI); the
+      // messages carry no secrets, and the embedding window checks their source frame.
+      const post = (target, message) => {
+        try {
+          target.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, ...message }, '*');
+        } catch { /* the embedding window is gone */ }
+      };
+
+      const mirroredAttributes = () => Object.fromEntries(MIRRORED_ATTRIBUTES.map((name) => [name, document.documentElement.getAttribute(name)]));
+
+      const pendingInfo = () => {
+        if (state.pending === null) {
+          const failed = Object.entries(state.views).find(([id, view]) => view.failure && !view.ack && id !== state.current);
+          return failed === undefined ? null : { name: nameOf(failed[0]), state: failed[1].failure === 'removed' ? 'removed' : 'failed', error: failed[1].error };
+        }
+        return { name: nameOf(state.pending), state: 'connecting', error: null };
+      };
+
+      const contextOf = (id) => ({
+        channel: BRIDGE,
+        v: BRIDGE_VERSION,
+        type: 'context',
+        id,
+        name: nameOf(id),
+        state: remoteOf(id)?.state ?? 'idle',
+        pending: pendingInfo(),
+        rows: deviceRows(state, t),
+        attributes: mirroredAttributes(),
+      });
+      const sentContext = new Map();
+      const sendContext = (id, force = false) => {
+        const frame = frames.get(id);
+        const view = state.views[id];
+        if (frame?.contentWindow == null || view === undefined) return;
+        const message = contextOf(id);
+        const key = JSON.stringify(message);
+        if (!force && sentContext.get(id) === key) return;
+        sentContext.set(id, key);
+        frame.contentWindow.postMessage(message, view.origin);
+      };
+
+      const afterChange = () => {
+        document.documentElement.classList.toggle(`${PREFIX}-remote`, state.mode === 'top' && state.current !== null);
+        if (state.mode === 'top' && state.current !== null) sendContext(state.current);
+      };
+
+      const onTopMessage = (event) => {
+        const data = event.data;
+        if (data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return;
+        const id = [...frames.entries()].find(([, frame]) => frame.contentWindow === event.source)?.[0];
+        if (id === undefined || event.origin !== state.views[id]?.origin) return;
+        if (data.type === 'hello') {
+          if (!state.views[id].hello) setView(id, { hello: true, phase: 'ready' });
+          sendContext(id, true);
+          checkReadiness();
+          return;
+        }
+        if (id !== state.current) return;
+        if (data.type === 'menu-open') {
+          acknowledge();
+          // The view renders the menu; fresh rows arrive with the next context message.
+          void refresh().then(() => { sendContext(id); });
+        } else if (data.type === 'add') {
+          openAdd();
+        } else if (data.type === 'local') {
+          show(null);
+        } else if (data.type === 'row' && typeof data.id === 'string') {
+          runRow(data.id, ['switch', 'cancel', 'retry', 'readd'].includes(data.action) ? data.action : 'switch');
+        }
+      };
+
+      const onFrameMessage = (event) => {
+        const data = event.data;
+        if (event.source !== window.parent || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION || data.type !== 'context') return;
+        for (const name of MIRRORED_ATTRIBUTES) {
+          const value = data.attributes?.[name];
+          if (typeof value === 'string') document.documentElement.setAttribute(name, value);
+          else document.documentElement.removeAttribute(name);
+        }
+        const pending = data.pending && typeof data.pending.name === 'string'
+          ? { name: data.pending.name, state: ['failed', 'removed'].includes(data.pending.state) ? data.pending.state : 'connecting' }
+          : null;
+        const text = (value) => String(value ?? '').slice(0, 200);
+        const rows = {
+          local: { id: text(data.rows?.local?.id), name: text(data.rows?.local?.name), current: false },
+          remotes: (Array.isArray(data.rows?.remotes) ? data.rows.remotes : []).slice(0, 50).map((row) => ({
+            id: text(row?.id),
+            name: text(row?.name),
+            meta: text(row?.meta),
+            metaTone: row?.metaTone === 'error' ? 'error' : undefined,
+            tone: ['ok', 'warn', 'error'].includes(row?.tone) ? row.tone : undefined,
+            current: row?.current === true,
+            busy: row?.busy === true,
+            action: text(row?.action),
+          })),
+        };
+        set({ embed: { id: text(data.id), name: text(data.name), state: text(data.state), pending, rows } });
+      };
+
+      if (mode === 'top') {
+        window.addEventListener('message', onTopMessage);
+        cleanups.push(() => { window.removeEventListener('message', onTopMessage); });
+        const observer = new MutationObserver(() => {
+          for (const id of Object.keys(state.views)) sendContext(id);
+        });
+        observer.observe(document.documentElement, { attributes: true, attributeFilter: MIRRORED_ATTRIBUTES });
+        cleanups.push(() => { observer.disconnect(); });
+        void refresh().then(() => {
+          let saved = null;
+          try { saved = sessionStorage.getItem(CURRENT_KEY); } catch { saved = null; }
+          if (saved !== null && remoteOf(saved) !== undefined) void switchTo(saved);
+        });
+      } else {
+        window.addEventListener('message', onFrameMessage);
+        cleanups.push(() => { window.removeEventListener('message', onFrameMessage); });
+        const started = Date.now();
+        const hello = setInterval(() => {
+          if (state.embed !== null || Date.now() - started > 12_000) {
+            clearInterval(hello);
+            if (state.embed === null) set({ embedGaveUp: true });
+            return;
+          }
+          post(window.parent, { type: 'hello' });
+        }, 400);
+        post(window.parent, { type: 'hello' });
+        cleanups.push(() => { clearInterval(hello); });
+      }
+
+      return {
+        store,
+        watch() {
+          watchers++;
+          void refresh();
+          schedulePoll();
+          return () => { watchers--; };
+        },
+        switchTo: (id) => { void switchTo(id); },
+        openAdd,
+        remove,
+        refresh: () => { void refresh(); },
+        dispose() {
+          disposed = true;
+          clearTimeout(pollTimer);
+          for (const cleanup of cleanups) cleanup();
+          document.documentElement.classList.remove(`${PREFIX}-remote`);
+        },
+        face: {
+          hooks: { switcher: store },
+          openMenu,
+          closeMenu,
+          cancelPending,
+          retry,
+          runRow: (id, action) => {
+            if (state.mode === 'frame') post(window.parent, { type: 'row', id, action });
+            else runRow(id, action);
+          },
+          switchTo: (id) => {
+            if (state.mode === 'frame') post(window.parent, id === null ? { type: 'local' } : { type: 'row', id, action: 'switch' });
+            else void switchTo(id);
+          },
+          openAdd,
+          closeAdd,
+          add: (code, name) => { void add(code, name); },
+          registerFrame: (id, element) => {
+            if (element === null) frames.delete(id);
+            else frames.set(id, element);
+          },
+          frameLoaded,
+        },
+      };
     }
 
-    function formatDate(ms) {
-      try {
-        return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(ms);
-      } catch {
-        return new Date(ms).toLocaleString();
-      }
-    }
-
-    function formatAgo(ms, now) {
-      const seconds = Math.round((ms - now) / 1000);
-      const units = [['day', 86400], ['hour', 3600], ['minute', 60]];
-      try {
-        const format = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
-        for (const [unit, size] of units) if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
-        return format.format(0, 'second');
-      } catch {
-        return formatDate(ms);
-      }
-    }
+    // -----------------------------------------------------------------------
+    // Settings components
+    // -----------------------------------------------------------------------
 
     function Row({ title, desc, children }) {
       return h('div', { className: `${PREFIX}-row` },
@@ -658,7 +1356,7 @@ window.__ModuleLoader__.load({
         return () => { clearTimeout(timer); };
       }, [copied]);
       return h('div', { className: `${PREFIX}-field` },
-        h('span', { className: `${PREFIX}-field-label` }, label),
+        label ? h('span', { className: `${PREFIX}-field-label` }, label) : null,
         h('div', { className: `${PREFIX}-copy-row` },
           h('input', { className: `${PREFIX}-input${mono ? ` ${PREFIX}-mono` : ''}`, type: 'text', readOnly: true, value, 'aria-label': label, onFocus: (event) => { event.target.select(); } }),
           h('button', { type: 'button', className: `${PREFIX}-button`, onClick: async () => { if (await copy(value)) setCopied(true); } }, copied ? t('copied') : t('copy'))));
@@ -682,32 +1380,53 @@ window.__ModuleLoader__.load({
       return 'idle';
     }
 
-    function DeviceRow({ device, now, busy, onRevoke, t }) {
+    function ConfirmButton({ label, confirmLabel, disabled, onConfirm }) {
       const [confirming, setConfirming] = useState(false);
       useEffect(() => {
         if (!confirming) return undefined;
         const timer = setTimeout(() => { setConfirming(false); }, 4000);
         return () => { clearTimeout(timer); };
       }, [confirming]);
+      return h('button', {
+        type: 'button',
+        className: `${PREFIX}-button`,
+        'data-size': 'small',
+        'data-danger': true,
+        disabled,
+        onClick: () => { if (confirming) { setConfirming(false); onConfirm(); } else setConfirming(true); },
+      }, confirming ? confirmLabel : label);
+    }
+
+    function DeviceRow({ device, now, busy, onRevoke, t }) {
       const details = [fill(t('pairedAt'), { date: formatDate(device.pairedAt) })];
       if (device.lastSeenAt) details.push(fill(t('lastSeen'), { time: formatAgo(device.lastSeenAt, now) }));
       return h('div', { className: `${PREFIX}-device` },
         h('div', { className: `${PREFIX}-device-main` },
           h('div', { className: `${PREFIX}-device-name` }, device.name, device.connections > 0 ? h('span', { className: `${PREFIX}-badge` }, t('online')) : null),
           h('div', { className: `${PREFIX}-desc` }, details.join(' · '))),
-        h('button', {
-          type: 'button',
-          className: `${PREFIX}-button`,
-          'data-size': 'small',
-          'data-danger': true,
-          disabled: busy !== null,
-          onClick: () => { if (confirming) onRevoke(device.id); else setConfirming(true); },
-        }, confirming ? t('confirmRemove') : t('remove')));
+        h(ConfirmButton, { label: t('remove'), confirmLabel: t('confirmRemove'), disabled: busy !== null, onConfirm: () => { onRevoke(device.id); } }));
+    }
+
+    function RemoteRow({ remote, removing, onRemove, t }) {
+      // While this row is being removed, its tunnel only carries the removal request.
+      const shown = removing === remote.id ? 'idle' : remote.state;
+      const stateText = shown === 'idle' ? '' : shown === 'retrying' ? describeRemote(remote, t) : t(`device_${shown}`);
+      const badgeTone = deviceTone(shown) === 'error' ? 'error' : shown === 'connected' ? undefined : 'neutral';
+      return h('div', { className: `${PREFIX}-device` },
+        h(DeviceGlyph, { tone: deviceTone(shown), color: deviceColor(remote.id) }),
+        h('div', { className: `${PREFIX}-device-main` },
+          h('div', { className: `${PREFIX}-device-name` }, remote.name,
+            stateText ? h('span', { className: `${PREFIX}-badge`, 'data-tone': badgeTone }, stateText) : null),
+          h('div', { className: `${PREFIX}-desc` }, `${remote.relay} · ${fill(t('addedAt'), { date: formatDate(remote.pairedAt) })}`)),
+        removing === remote.id
+          ? h('span', { className: `${PREFIX}-status`, role: 'status', style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: 'none' } }, h(Spinner, { size: 14 }), t('removing'))
+          : h(ConfirmButton, { label: t('remove'), confirmLabel: t('confirmRemove'), disabled: removing !== null, onConfirm: () => { void onRemove(remote.id); } }));
     }
 
     function RemoteAccessSection(props) {
       const { t } = props;
       const state = props.useRemoteRelay((snapshot) => snapshot);
+      const switcher = props.useSwitcher((snapshot) => snapshot);
       const watch = props.watch;
       useEffect(() => watch(), [watch]);
       const config = state.config ?? {};
@@ -720,17 +1439,31 @@ window.__ModuleLoader__.load({
       const stateDetail = control === 'online' ? fill(t('onlineDetail'), { count: onlineCount }) : status?.control?.error ?? status?.relayError ?? '';
       const pairing = status?.pairing;
       const launcherBase = (config.launcherUrl ?? '').trim();
-      const connectorUrl = launcherBase ? new URL('dsh-remote.mjs', launcherBase.endsWith('/') ? launcherBase : `${launcherBase}/`).href : '';
-      const connectorCommand = pairing
-        ? `${connectorUrl ? `curl -fsSLO ${connectorUrl} && ` : ''}node dsh-remote.mjs pair '${pairing.code}'`
-        : '';
+      const pairLink = pairing ? (pairing.link ?? `dsh-remote://pair#${pairing.code}`) : '';
       let launcherValid = true;
       try { if (launcherBase) new URL(launcherBase); } catch { launcherValid = false; }
 
       return h('div', { className: `${PREFIX}-root` },
         h('style', null, CSS),
         h('p', { className: `${PREFIX}-lead` }, t('lead')),
-        h('section', { className: `${PREFIX}-group`, 'aria-label': t('nav') },
+        switcher.mode === 'top'
+          ? h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-remotes` },
+            h('div', { className: `${PREFIX}-row`, style: { paddingBottom: 4 } },
+              h('div', { className: `${PREFIX}-label` },
+                h('h3', { id: `${PREFIX}-remotes`, className: `${PREFIX}-heading`, style: { margin: 0 } }, t('remotesHeading')),
+                h('div', { className: `${PREFIX}-desc` }, t('remotesIntro'))),
+              h('div', { className: `${PREFIX}-control`, style: { flex: 'none' } },
+                h('button', { type: 'button', className: `${PREFIX}-button`, onClick: props.openAdd }, t('addTitle')))),
+            switcher.remotes.length === 0
+              ? h('div', { className: `${PREFIX}-desc`, style: { padding: '4px 0 8px' } }, t('noRemotes'))
+              : h('div', null, switcher.remotes.map((remote) => h(RemoteRow, { key: remote.id, remote, removing: switcher.removing, onRemove: props.removeRemote, t }))),
+            switcher.removeNote
+              ? h('p', { className: switcher.removeNote.tone === 'error' ? `${PREFIX}-error` : `${PREFIX}-note`, role: switcher.removeNote.tone === 'error' ? 'alert' : 'status' }, switcher.removeNote.text)
+              : null)
+          : null,
+        h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-host` },
+          h('h3', { id: `${PREFIX}-host`, className: `${PREFIX}-heading` }, t('hostHeading')),
+          h('div', { className: `${PREFIX}-desc` }, t('hostIntro')),
           h(Row, { title: t('enable'), desc: t('enableTip') },
             h(WriteStatus, { write: state.writes.enabled, t }),
             h('button', {
@@ -751,28 +1484,25 @@ window.__ModuleLoader__.load({
                 h('span', { className: `${PREFIX}-dot`, 'data-tone': stateTone(control) }),
                 t(`state_${control}`))),
           h(TextSetting, { field: 'relayUrl', title: t('relay'), desc: t('relayTip'), placeholder: t('relayPlaceholder'), value: config.relayUrl ?? '', write: state.writes.relayUrl, disabled: !editable, onSave: props.setField, t }),
-          h(TextSetting, { field: 'launcherUrl', title: t('launcher'), desc: t('launcherTip'), placeholder: t('launcherPlaceholder'), value: config.launcherUrl ?? '', write: state.writes.launcherUrl, disabled: !editable, onSave: props.setField, t }),
-          h(TextSetting, { field: 'hostName', title: t('hostName'), desc: t('hostNameTip'), placeholder: status?.hostName ?? '', value: config.hostName ?? '', write: state.writes.hostName, disabled: !editable, onSave: props.setField, t })),
+          h(TextSetting, { field: 'hostName', title: t('hostName'), desc: t('hostNameTip'), placeholder: status?.hostName ?? '', value: config.hostName ?? '', write: state.writes.hostName, disabled: !editable, onSave: props.setField, t }),
+          h(TextSetting, { field: 'launcherUrl', title: t('launcher'), desc: t('launcherTip'), placeholder: t('launcherPlaceholder'), value: config.launcherUrl ?? '', write: state.writes.launcherUrl, disabled: !editable, onSave: props.setField, t })),
         h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-pair` },
           h('h3', { id: `${PREFIX}-pair`, className: `${PREFIX}-heading` }, t('pairHeading')),
           h('div', { className: `${PREFIX}-desc` }, t('pairIntro')),
           pairing
             ? h('div', { className: `${PREFIX}-pairing` },
+              h('div', { className: `${PREFIX}-fields` },
+                h(CopyField, { label: t('pairLink'), value: pairLink, mono: true, copy: props.copy, t }),
+                h('div', { className: `${PREFIX}-desc`, style: { marginTop: -4 } }, t('pairLinkTip')),
+                h('div', { className: `${PREFIX}-copy-row` },
+                  h(Countdown, { expiresAt: pairing.expiresAt, offset, t }),
+                  h('span', { style: { flex: 1 } }),
+                  h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', disabled: state.busy !== null, onClick: props.cancelPairing }, t('cancel')))),
               pairing.link
                 ? h('div', { className: `${PREFIX}-qr-box` },
                   h(QrCode, { text: pairing.link, label: t('scan') }),
                   h('span', { className: `${PREFIX}-status` }, t('scan')))
-                : null,
-              h('div', { className: `${PREFIX}-fields` },
-                pairing.link
-                  ? h(CopyField, { label: t('link'), value: pairing.link, copy: props.copy, t })
-                  : h('div', { className: `${PREFIX}-status` }, t('noLauncher')),
-                h(CopyField, { label: t('connector'), value: connectorCommand, mono: true, copy: props.copy, t }),
-                h('div', { className: `${PREFIX}-desc` }, t('connectorTip'), ' ', connectorUrl ? '' : t('connectorLocal')),
-                h('div', { className: `${PREFIX}-copy-row` },
-                  h(Countdown, { expiresAt: pairing.expiresAt, offset, t }),
-                  h('span', { style: { flex: 1 } }),
-                  h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', disabled: state.busy !== null, onClick: props.cancelPairing }, t('cancel')))))
+                : null)
             : h('div', { className: `${PREFIX}-row` },
               h('div', { className: `${PREFIX}-label` },
                 control === 'online' ? null : h('div', { className: `${PREFIX}-status` }, t('pairNeedsOnline'))),
@@ -799,17 +1529,286 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M3.75 4.5C5 2.6 6.4 1.75 8 1.75s3 .85 4.25 2.75', strokeDasharray: '0.1 2' }));
     }
 
+    // -----------------------------------------------------------------------
+    // Device switcher components
+    // -----------------------------------------------------------------------
+
+    /** Sidebar-foot trigger: the device this window shows, and the entry to switch or add one. */
+    function SwitcherButton(props) {
+      const { t, wide } = props;
+      const state = props.useSwitcher((snapshot) => snapshot);
+      const ref = useRef(null);
+      if (state.mode === 'frame' && state.embed === null) return null;
+      let name;
+      let tag = null;
+      let tone;
+      let color;
+      let busy = false;
+      let failed = false;
+      if (state.mode === 'frame') {
+        name = state.embed.name;
+        tag = t('remoteTag');
+        tone = deviceTone(state.embed.state);
+        color = deviceColor(state.embed.id);
+        const pendingName = state.embed.pending?.name;
+        if (state.embed.pending?.state === 'connecting') { busy = true; name = fill(t('connectingTo'), { name: pendingName }); tag = null; }
+        else if (state.embed.pending?.state === 'failed') { failed = true; name = fill(t('cannotReach'), { name: pendingName }); tag = null; }
+        else if (state.embed.pending?.state === 'removed') { failed = true; name = fill(t('removedBy'), { name: pendingName }); tag = null; }
+      } else {
+        name = t('thisDevice');
+        color = deviceColor(state.local?.serverId);
+        const pending = state.pending === null ? undefined : state.remotes.find((remote) => remote.id === state.pending);
+        const failedView = Object.entries(state.views).find(([, view]) => view.failure && !view.ack);
+        if (pending !== undefined) { busy = true; name = fill(t('connectingTo'), { name: pending.name }); }
+        else if (failedView !== undefined) {
+          failed = true;
+          const failedName = state.remotes.find((remote) => remote.id === failedView[0])?.name ?? '';
+          name = fill(t(failedView[1].failure === 'removed' ? 'removedBy' : 'cannotReach'), { name: failedName });
+        }
+      }
+      const open = state.menu !== null;
+      const label = wide ? name : `${t('switcher')}: ${name}`;
+      const onActivate = (keyboard) => {
+        const rect = ref.current?.getBoundingClientRect();
+        if (rect === undefined) return;
+        if (open) props.closeMenu();
+        else props.openMenu({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }, { keyboard, returnFocus: () => ref.current });
+      };
+      const button = h('button', {
+        ref,
+        type: 'button',
+        className: `${PREFIX}-sw`,
+        'data-rail': wide ? undefined : true,
+        'data-tone': failed ? 'error' : undefined,
+        'aria-haspopup': 'menu',
+        'aria-expanded': open,
+        'aria-label': wide ? undefined : label,
+        title: wide ? t('switcher') : undefined,
+        onClick: (event) => { onActivate(event.detail === 0); },
+      },
+      busy ? h(Spinner, { size: wide ? 16 : 18 }) : h(DeviceGlyph, { size: wide ? 16 : 18, tone: failed ? 'error' : tone, color }),
+      wide ? h('span', { className: `${PREFIX}-sw-label` }, name) : null,
+      wide && tag ? h('span', { className: `${PREFIX}-sw-tag` }, tag) : null,
+      wide ? h(UI.IconChevronsUpDownOutlineRegular, { size: 14, className: `${PREFIX}-sw-chevron` }) : null);
+      return h(React.Fragment, null,
+        h('style', null, CSS),
+        wide ? button : h(UI.Tooltip, { label, side: 'right', disabled: open }, button),
+        state.mode === 'frame'
+          ? h(DeviceMenu, {
+            open,
+            anchorRef: ref,
+            rows: state.embed.rows,
+            keyboard: state.menu?.keyboard,
+            returnFocus: () => ref.current,
+            onClose: props.closeMenu,
+            onLocal: () => { props.switchTo(null); },
+            onRow: (row) => { props.runRow(row.id, row.action); },
+            onAdd: () => { props.openAdd(); },
+            t,
+          })
+          : null);
+    }
+
+    function MenuRowContent({ name, meta, metaTone, current, busy }) {
+      return h('span', { className: `${PREFIX}-mrow` },
+        h('span', { className: `${PREFIX}-mname` },
+          h('span', null, name),
+          meta ? h('span', { className: `${PREFIX}-mmeta`, 'data-tone': metaTone }, meta) : null),
+        busy ? h(Spinner, { size: 14 }) : current ? h(UI.IconCheckOutlineRegular, { size: 14, className: `${PREFIX}-mcheck` }) : null);
+    }
+
+    /** Menu rows the window that owns the devices computes; device views render the same rows. */
+    function deviceRows(state, t) {
+      const remotes = state.remotes.map((remote) => {
+        const view = state.views[remote.id];
+        const busy = state.pending === remote.id;
+        let meta = t(`device_${remote.state}`);
+        let metaTone;
+        let action = 'switch';
+        if (remote.state === 'rejected') { meta = t('readdHint'); metaTone = 'error'; action = 'readd'; }
+        else if (busy) { meta = t('device_connecting_cancel'); action = 'cancel'; }
+        else if (view?.phase === 'failed' || (view?.failure && remote.state !== 'connected')) { meta = fill(t('retryHint'), { reason: view.error ?? describeRemote(remote, t) }); metaTone = 'error'; action = 'retry'; }
+        else if (remote.state === 'retrying') { meta = describeRemote(remote, t); metaTone = 'error'; }
+        else if (remote.state === 'idle' && remote.lastOpenedAt) meta = fill(t('lastSeen'), { time: formatAgo(remote.lastOpenedAt, Date.now()) });
+        return {
+          id: remote.id,
+          name: remote.name,
+          meta,
+          metaTone,
+          tone: metaTone === 'error' ? 'error' : deviceTone(remote.state),
+          current: state.current === remote.id,
+          busy,
+          action,
+        };
+      });
+      return { local: { id: state.local?.serverId ?? '', name: state.local?.name ?? '', current: state.current === null }, remotes };
+    }
+
+    function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, t }) {
+      return h(UI.Menu, {
+        open,
+        anchor: null,
+        anchorRef,
+        portal: true,
+        side: 'top',
+        align: 'start',
+        autoFocus: keyboard === true,
+        minWidthFromAnchor: true,
+        returnFocus: returnFocus ?? undefined,
+        isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip`) !== null,
+        onClose,
+        items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
+      },
+      h(UI.MenuItemButton, {
+        icon: h(DeviceGlyph, { color: deviceColor(rows.local.id) }),
+        current: rows.local.current,
+        onSelect: () => { onClose(); onLocal(); },
+      }, h(MenuRowContent, { name: t('thisDevice'), meta: rows.local.name, current: rows.local.current })),
+      ...rows.remotes.map((row) => h(UI.MenuItemButton, {
+        key: row.id,
+        icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
+        current: row.current,
+        onSelect: () => { onClose(); onRow(row); },
+      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy }))),
+      h(UI.MenuItemButton, {
+        separatorBefore: true,
+        icon: h(UI.IconPlusOutlineRegular, { size: 16 }),
+        onSelect: () => { onClose(); onAdd(); },
+      }, t('addDevice')));
+    }
+
+    /** The top window's menu, anchored to the trigger rectangle it was opened from. */
+    function StageMenu({ state, closeMenu, runRow, switchTo, openAdd, t }) {
+      const anchorRef = useRef(null);
+      const rect = state.menu?.rect ?? { left: 0, top: 0, width: 0, height: 0 };
+      return h(React.Fragment, null,
+        h('span', { ref: anchorRef, className: `${PREFIX}-anchor`, style: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } }),
+        h(DeviceMenu, {
+          open: state.menu !== null,
+          anchorRef,
+          rows: deviceRows(state, t),
+          keyboard: state.menu?.keyboard,
+          returnFocus: state.menu?.returnFocus,
+          onClose: closeMenu,
+          onLocal: () => { switchTo(null); },
+          onRow: (row) => { runRow(row.id, row.action); },
+          onAdd: () => { openAdd(); },
+          t,
+        }));
+    }
+
+    function AddDeviceDialog({ add, local, addDevice, closeAdd, t }) {
+      const [code, setCode] = useState('');
+      const [name, setName] = useState(local?.name ?? '');
+      const [now, setNow] = useState(() => Date.now());
+      useEffect(() => {
+        const timer = setInterval(() => { setNow(Date.now()); }, 15_000);
+        return () => { clearInterval(timer); };
+      }, []);
+      const preview = useMemo(() => previewPairing(code), [code, now]);
+      let hint = '';
+      let tone;
+      if (add.error) { hint = add.error; tone = 'error'; }
+      else if (preview?.valid === false) { hint = t('linkInvalid'); tone = 'error'; }
+      else if (preview?.expired) { hint = t('linkExpired'); tone = 'error'; }
+      else if (preview?.valid) { hint = fill(t('linkPreview'), { host: preview.host, time: formatTime(preview.expiresAt) }); tone = 'ok'; }
+      const ready = preview?.valid === true && !preview.expired && !add.busy;
+      const submit = () => { if (ready) addDevice(code.trim(), name.trim()); };
+      return h(UI.Modal, {
+        open: true,
+        className: `${PREFIX}-dialog`,
+        title: add.readd ? `${t('readdDevice')} · ${add.readd.name}` : t('addTitle'),
+        closeLabel: t('close'),
+        description: t('addIntro'),
+        onClose: closeAdd,
+        footer: h(React.Fragment, null,
+          h(UI.Button, { variant: 'outline', size: 'sm', onClick: closeAdd, disabled: add.busy }, t('cancel')),
+          h(UI.Button, { variant: 'primary', size: 'sm', onClick: submit, disabled: !ready }, add.busy ? t('adding') : t('addAction'))),
+      },
+      h('form', { className: `${PREFIX}-form`, onSubmit: (event) => { event.preventDefault(); submit(); } },
+        h('label', { className: `${PREFIX}-field` },
+          h('span', { className: `${PREFIX}-field-label` }, t('linkLabel')),
+          h('input', {
+            className: `${PREFIX}-input ${PREFIX}-mono`,
+            type: 'text',
+            value: code,
+            placeholder: t('linkPlaceholder'),
+            spellCheck: false,
+            autoComplete: 'off',
+            'data-modal-autofocus': true,
+            disabled: add.busy,
+            onChange: (event) => { setCode(event.target.value); },
+          }),
+          h('span', { className: `${PREFIX}-hint`, 'data-tone': tone, role: tone === 'error' ? 'alert' : undefined },
+            tone === 'ok' && !add.error ? h(DeviceGlyph, { size: 14, color: deviceColor(preview.serverId) }) : null,
+            hint)),
+        h('label', { className: `${PREFIX}-field` },
+          h('span', { className: `${PREFIX}-field-label` }, t('nameLabel')),
+          h('input', { className: `${PREFIX}-input`, type: 'text', value: name, maxLength: 80, disabled: add.busy, onChange: (event) => { setName(event.target.value); } })),
+        h('div', { className: `${PREFIX}-note`, style: { margin: 0 } }, t('addRisk')),
+        h('button', { type: 'submit', hidden: true })));
+    }
+
+    /** Full-window layer of the top window: device views, the menu, and the add dialog. */
+    function SwitcherStage(props) {
+      const { t } = props;
+      const state = props.useSwitcher((snapshot) => snapshot);
+      if (state.mode !== 'top') return null;
+      const current = state.current === null ? undefined : state.views[state.current];
+      const showChip = current !== undefined && !current.hello;
+      return ReactDOM.createPortal(h('div', { className: `${PREFIX}-stage`, 'data-active': state.current !== null ? true : undefined },
+        h('style', null, CSS),
+        Object.entries(state.views).filter(([, view]) => view.src !== null).map(([id, view]) => h('iframe', {
+          key: id,
+          ref: (element) => { props.registerFrame(id, element); },
+          className: `${PREFIX}-frame`,
+          'data-current': id === state.current ? true : undefined,
+          src: view.src,
+          title: state.remotes.find((remote) => remote.id === id)?.name ?? '',
+          allow: 'clipboard-read; clipboard-write; microphone; fullscreen',
+          sandbox: 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-downloads allow-modals',
+          'aria-hidden': id === state.current ? undefined : true,
+          tabIndex: id === state.current ? 0 : -1,
+          onLoad: () => { props.frameLoaded(id); },
+        })),
+        showChip
+          ? h('button', { type: 'button', className: `${PREFIX}-chip`, onClick: (event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            props.openMenu({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }, { keyboard: event.detail === 0 });
+          } }, h(DeviceGlyph, { color: deviceColor(state.current) }), state.remotes.find((remote) => remote.id === state.current)?.name ?? '', h(UI.IconChevronsUpDownOutlineRegular, { size: 14 }))
+          : null,
+        h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, t }),
+        state.add !== null ? h(AddDeviceDialog, { add: state.add, local: state.local, addDevice: props.add, closeAdd: props.closeAdd, t }) : null),
+      document.body);
+    }
+
     return {
       inject: ['slots', 'locale', 'connection', 'configForms'],
       apply(ctx) {
         const t = ctx.locale.bind(NS);
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'remote-relay: dictionaries');
-        const controller = createController(ctx);
+        const switcher = createSwitcher(ctx, t);
+        ctx.effect(() => () => { switcher.dispose(); }, 'remote-relay: device switcher');
+        const controller = createController(ctx, switcher);
         ctx.effect(() => () => { controller.dispose(); }, 'remote-relay: controller');
         ctx.effect(() => {
-          const off = ctx.on('connection/reset', () => { controller.refresh(); });
+          const off = ctx.on('connection/reset', () => { controller.refresh(); switcher.refresh(); });
           return () => { off(); };
         }, 'remote-relay: reconnect refresh');
+        ctx.effect(() => ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
+          name: 'sidebar.footer.action',
+          id: 'remote-relay.switcher',
+          order: 100,
+          label: () => t('switcher'),
+          locale: NS,
+          inject: () => switcher.face,
+        }, SwitcherButton)), 'remote-relay: switcher trigger');
+        ctx.effect(() => ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+          name: 'shell.overlay',
+          id: 'remote-relay.stage',
+          locale: NS,
+          inject: () => switcher.face,
+        }, SwitcherStage)), 'remote-relay: device stage');
         ctx.effect(() => ctx.configForms.whileServed([NAMESPACE], () => {
           const offSection = ctx.slots.inject('settings.section', () => ctx.slots.register({
             name: 'settings.section',

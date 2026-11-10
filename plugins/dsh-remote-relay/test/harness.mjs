@@ -29,9 +29,13 @@ const FAKE_INDEX = `<!doctype html><html><head><base href="./"><script src="asse
 export const TOKEN = 'launch-token'
 export const COOKIE = 'dsh-auth-test=v1.signed'
 
-/** Fake DSH Web GUI: token exchange, cookie-gated routes, and a cookie-gated echo WebSocket. */
+/**
+ * Fake DSH Web GUI: token exchange, cookie-gated routes, and a cookie-gated echo WebSocket.
+ * Assign `rpc` on the result to answer `/api/remote-relay/<endpoint>` like the plugin's own routes.
+ */
 export async function startFakeGui() {
   const seen = []
+  const gui = { rpc: undefined }
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x')
     seen.push({ method: req.method, path: req.url, host: req.headers.host, cookie: req.headers.cookie, origin: req.headers.origin })
@@ -53,6 +57,12 @@ export async function startFakeGui() {
       const chunks = []
       for await (const chunk of req) chunks.push(chunk)
       res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'leak=1' }).end(JSON.stringify({ body: Buffer.concat(chunks).toString(), method: req.method }))
+    } else if (url.pathname.startsWith('/api/remote-relay/') && gui.rpc !== undefined) {
+      const chunks = []
+      for await (const chunk of req) chunks.push(chunk)
+      const envelope = JSON.parse(Buffer.concat(chunks).toString())
+      const result = await gui.rpc(url.pathname.slice('/api/remote-relay/'.length), envelope.payload)
+      res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ rpcId: envelope.rpcId, result }))
     } else if (url.pathname === '/asset.js') {
       const body = gzipSync(Buffer.from('window.__assetLoaded = true;' + '/* padding */'.repeat(2000)))
       res.writeHead(200, { 'content-type': 'text/javascript', 'content-encoding': 'gzip', 'content-length': body.length }).end(body)
@@ -71,7 +81,7 @@ export async function startFakeGui() {
     })
   })
   await new Promise((resolve) => { server.listen(0, '127.0.0.1', resolve) })
-  return { origin: `http://127.0.0.1:${server.address().port}`, seen, close: () => { wss.close(); server.closeAllConnections(); server.close() } }
+  return Object.assign(gui, { origin: `http://127.0.0.1:${server.address().port}`, seen, close: () => { wss.close(); server.closeAllConnections(); server.close() } })
 }
 
 export function fakeContext(origin, settings) {

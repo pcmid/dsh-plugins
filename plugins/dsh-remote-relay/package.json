@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-remote-relay",
-  "version": "0.1.0",
-  "description": "Reach this DSH from a phone or another computer through a self-hosted OpenChamber relay, end-to-end encrypted.",
+  "version": "0.2.0",
+  "description": "Switch between DSH hosts that have this plugin, or reach this DSH from a phone, through a self-hosted OpenChamber relay, end-to-end encrypted.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-remote-relay#readme",
   "repository": {
@@ -14,9 +14,6 @@
   "engines": {
     "dsh": ">=0.2.2-rc.1 <0.3.0-0"
   },
-  "bin": {
-    "dsh-remote": "./bin/dsh-remote.mjs"
-  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -27,16 +24,16 @@
   "files": [
     "index.js",
     "client.js",
+    "remotes.js",
+    "loopback.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "bin/dsh-remote.mjs",
     "launcher/",
     "README.md"
   ],
   "scripts": {
-    "build:connector": "node scripts/build-connector.mjs",
-    "test": "node --import ./test/hooks.mjs --test test/qr.test.mjs test/protocol.test.mjs test/host.test.mjs"
+    "test": "node --import ./test/hooks.mjs --test test/qr.test.mjs test/protocol.test.mjs test/host.test.mjs test/switcher.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
