@@ -1,0 +1,11 @@
+{
+  "name": "@pcmid-test/todo-guard-fixture",
+  "version": "0.0.0",
+  "private": true,
+  "description": "End-to-end fixture for @pcmid/dsh-todo-guard: a scripted model and one conversation.",
+  "type": "module",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1 <0.3.0-0"
+  }
+}

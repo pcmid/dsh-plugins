@@ -23,6 +23,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-web-search-native`](plugins/dsh-web-search-native) | 本仓库 | 工具与能力 | 用模型接口自带的网页搜索（目前是 Anthropic Messages）为 `web_search` 提供后端 |
 | [`@pcmid/dsh-auto-restart`](plugins/dsh-auto-restart) | 本仓库 | 工具与能力 | agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话 |
 | [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
+| [`@pcmid/dsh-todo-guard`](plugins/dsh-todo-guard) | 本仓库 | 工具与能力 | agent 连续多步没更新 `todo_write` 任务列表时提醒它更新；可选在回合结束时把剩余任务标为完成 |
 | [`@0imzero/dsh-workspace-menu`](https://github.com/0imzero/dsh-workspace-menu) | npm `2.1.0` | 界面增强 | 主页工作区/会话的右键与双击增强菜单 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/LaoYueHanNi/dsh-token-usage) | npm `0.4.15` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页 |
 
@@ -59,7 +60,7 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 **收录或升级第三方插件**：在 `catalog.json` 里加一项或改版本号，例如 `{ "npm": "<包名>", "version": "<版本>", "category": "...", "labels": ["external"] }`，然后 `npm run build:index`。第三方插件固定到这里写的版本；标题、描述和图标从该版本在 npm 上的包里读取，下载的包会按 registry 记录的完整性哈希校验。
 
-`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor` 和 `dsh-auto-restart` 的离线测试。
+`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor`、`dsh-auto-restart` 和 `dsh-todo-guard` 的离线测试。
 
 ## 生成规则
 
