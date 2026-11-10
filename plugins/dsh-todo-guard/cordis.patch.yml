@@ -1,0 +1,6 @@
+# Bundle patch of @pcmid/dsh-todo-guard: reminds the agent to update an
+# unfinished todo_write list during long turns. Override `config` by id from
+# the profile's patch layer to change the thresholds or enable turn-end completion.
+- insert:
+    - id: todo-guard
+      name: '@pcmid/dsh-todo-guard'

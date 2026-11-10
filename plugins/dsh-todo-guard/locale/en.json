@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Todo progress guard",
+    "description": "When the agent works for several steps without updating its task list, reminds it to update the list, repeating the current items. Optionally marks leftover items completed when a turn ends normally."
+  }
+}

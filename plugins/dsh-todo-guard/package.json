@@ -1,0 +1,49 @@
+{
+  "name": "@pcmid/dsh-todo-guard",
+  "version": "0.1.0",
+  "description": "Reminds the agent to update its todo_write list during long tool-heavy turns, and can complete leftover items when a turn ends normally.",
+  "author": "pcmid",
+  "license": "MIT",
+  "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-todo-guard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-todo-guard"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --import ./test/hooks.mjs --test test/guard.test.mjs",
+    "test:e2e": "node test/e2e/run.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
