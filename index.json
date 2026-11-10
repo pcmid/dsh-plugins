@@ -296,11 +296,11 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1794281057,
+          "publishTimestamp": 1794307205,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "78be7a80ccb67cf5a21907e2b845110bca98cb9f",
+            "commit": "164b49fb7a42531ff521da8e3b74a604edb10068",
             "path": "plugins/dsh-todo-guard"
           },
           "engines": {
