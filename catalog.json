@@ -19,6 +19,7 @@
     }
   },
   "plugins": [
+    { "path": "plugins/dsh-codex-provider", "category": "model", "labels": ["own"] },
     { "path": "plugins/dsh-model-defaults", "category": "model", "labels": ["own"] },
     { "path": "plugins/dsh-retry-advisor", "category": "model", "labels": ["own"] },
     { "path": "plugins/dsh-web-search-native", "category": "tools", "labels": ["own"] },

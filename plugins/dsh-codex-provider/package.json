@@ -1,0 +1,37 @@
+{
+  "name": "@pcmid/dsh-codex-provider",
+  "version": "0.1.0",
+  "description": "Use the local Codex app-server as a DSH model provider, with tools executed by DSH.",
+  "author": "pcmid",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-codex-provider"
+  },
+  "engines": { "dsh": ">=0.2.2-rc.1 <0.3.0-0", "node": ">=24" },
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "rpc.js", "protocol.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
+  "scripts": {
+    "test": "node --import ./test/hooks.mjs --test --test-isolation=none test/bridge.test.mjs test/rpc.test.mjs",
+    "test:codex": "node --import ./test/hooks.mjs --test --test-isolation=none test/codex.test.mjs",
+    "test:e2e": "node --import ./test/hooks.mjs --test --test-isolation=none test/e2e.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.2-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+}

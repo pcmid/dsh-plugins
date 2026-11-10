@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex Provider",
+    "description": "Connect through the local Codex app-server using your CLI login; DSH executes tools and manages the conversation."
+  }
+}

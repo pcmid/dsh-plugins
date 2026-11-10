@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex Provider",
+    "description": "通过本机 Codex app-server 接入，复用 CLI 登录状态，由 DSH 执行工具并管理对话。"
+  }
+}
