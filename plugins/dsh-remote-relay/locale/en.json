@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Remote access",
-    "description": "Use this DSH from a phone or another computer through your self-hosted OpenChamber relay, with end-to-end encryption and paired devices."
+    "description": "Switch between DSH hosts that have this plugin, or use this DSH from a phone or computer, through your self-hosted OpenChamber relay with end-to-end encryption and paired devices."
   }
 }

@@ -24,6 +24,7 @@ import {
   TunnelError, Mux, acceptHost, createIdentity, encodePairing, fromBase64Url, hostSocketUrl, importIdentity,
   normalizeRelayUrl, openSocket, randomToken, relayHealthUrl,
 } from './launcher/tunnel.js'
+import { RemoteDevices } from './remotes.js'
 
 /** Cordis plugin name; the patch row id `remote-relay` is the settings namespace. */
 export const name = 'remote-relay'
@@ -44,7 +45,7 @@ export const Config = z.object({
 
 /** Exact `/api` routes this plugin answers; only owner Peers reach exact routes. */
 const API_PREFIX = '/api/remote-relay'
-const OPERATIONS = ['status', 'pair', 'cancel-pairing', 'revoke', 'rename']
+const OPERATIONS = ['status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close']
 const OWNER = { principal: { kind: 'owner' } }
 const IDENTITY_KEY = 'remote-relay/identity'
 const DEVICES_KEY = 'remote-relay/devices'
@@ -132,6 +133,11 @@ class RemoteRelayHost {
     this.loadFailure = undefined
     this.lastSeenTimer = undefined
     this.ready = this.load()
+    this.remotes = new RemoteDevices(ctx, {
+      log: (level, message) => { this.log(level, message) },
+      localServerId: () => this.identity?.id,
+      localName: () => this.settings().hostName,
+    })
   }
 
   log(level, message) {
@@ -618,7 +624,7 @@ class RemoteRelayHost {
         url.hash = code
         link = url.href
       } catch (_invalid) {
-        // An invalid launcher address leaves only the connector code; the UI shows the field error.
+        // An invalid launcher address leaves only the dsh-remote:// link; the UI shows the field error.
         link = null
       }
     }
@@ -665,6 +671,22 @@ class RemoteRelayHost {
           return ok(await this.revoke(String(payload?.id ?? '')))
         case 'rename':
           return ok(await this.rename(String(payload?.id ?? ''), payload?.name))
+        case 'remotes':
+          return ok(await this.remotesSnapshot())
+        case 'remote-add': {
+          await this.ready
+          const id = await this.remotes.add(String(payload?.code ?? ''), payload?.name)
+          return ok({ ...await this.remotesSnapshot(), added: id })
+        }
+        case 'remote-remove': {
+          const { forgotten } = await this.remotes.remove(String(payload?.id ?? ''))
+          return ok({ ...await this.remotesSnapshot(), forgotten })
+        }
+        case 'remote-open':
+          return ok(await this.remotes.open(String(payload?.id ?? '')))
+        case 'remote-close':
+          this.remotes.close(String(payload?.id ?? ''))
+          return ok(await this.remotesSnapshot())
         default:
           return failure('not-found', `Unknown operation ${endpoint}`)
       }
@@ -673,8 +695,20 @@ class RemoteRelayHost {
     }
   }
 
+  /** Local identity and the other DSH hosts this one can switch to. */
+  async remotesSnapshot() {
+    await this.ready
+    await this.remotes.ready
+    return {
+      local: { name: this.settings().hostName, serverId: this.identity?.id ?? null },
+      remotes: this.remotes.list(),
+      now: Date.now(),
+    }
+  }
+
   dispose() {
     this.disposed = true
+    this.remotes.dispose()
     clearTimeout(this.lastSeenTimer)
     this.stopRunner()
     if (this.lastSeenTimer !== undefined) {
