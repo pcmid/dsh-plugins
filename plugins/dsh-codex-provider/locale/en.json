@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Codex Provider",
-    "description": "Enable local Codex from model settings, reuse your CLI login, and optionally intercept native tools."
+    "description": "Use your local Codex login and models from model settings; DeepSeek Harness runs the tools and keeps one Codex thread per session."
   }
 }
