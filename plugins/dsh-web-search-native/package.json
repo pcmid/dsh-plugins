@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-web-search-native",
-  "version": "0.3.3",
-  "description": "Web search provider that uses the model API's built-in web search on the small model, or on the conversation's current model. Currently supports Anthropic Messages routes.",
+  "version": "0.5.0",
+  "description": "Web search provider that runs the model API's built-in web search, following the conversation or on one pinned channel, and adds a search-channel section to the Web search plugin page.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-web-search-native#readme",
   "repository": {
@@ -11,17 +11,22 @@
   },
   "private": true,
   "type": "module",
+  "scripts": {
+    "test": "node --import ./test/hooks.mjs --test test/backend.test.mjs test/client.test.mjs"
+  },
   "engines": {
     "dsh": ">=0.2.2-rc.1 <0.3.0-0"
   },
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
     "index.js",
+    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
@@ -33,6 +38,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   }
 }
