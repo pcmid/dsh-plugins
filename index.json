@@ -22,12 +22,6 @@
           "zh": "工具与能力"
         }
       },
-      "ui": {
-        "title": {
-          "en": "UI enhancements",
-          "zh": "界面增强"
-        }
-      },
       "usage": {
         "title": {
           "en": "Usage & billing",
@@ -348,34 +342,6 @@
           "engines": {
             "dsh": ">=0.2.2-rc.1 <0.3.0-0"
           }
-        }
-      ]
-    },
-    {
-      "name": "@0imzero/dsh-workspace-menu",
-      "description": "DSH 主页工作区/会话右键与双击增强菜单：置顶、重命名、资源管理器打开、归档、分叉、复制、新窗口等（DSH 0.2.x 适配版）",
-      "homepage": "https://github.com/0imzero/dsh-workspace-menu#readme",
-      "repository": {
-        "url": "https://github.com/0imzero/dsh-workspace-menu"
-      },
-      "metadata": {
-        "category": "ui",
-        "keywords": [],
-        "labels": [
-          "external"
-        ]
-      },
-      "dist-tags": {
-        "latest": "2.1.0"
-      },
-      "versions": [
-        {
-          "version": "2.1.0",
-          "publishTimestamp": 1793614177,
-          "source": {
-            "type": "npm"
-          },
-          "engines": {}
         }
       ]
     },

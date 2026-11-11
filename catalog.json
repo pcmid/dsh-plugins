@@ -10,7 +10,6 @@
     "categories": {
       "model": { "title": { "en": "Models & providers", "zh": "模型与接入" } },
       "tools": { "title": { "en": "Tools & capabilities", "zh": "工具与能力" } },
-      "ui": { "title": { "en": "UI enhancements", "zh": "界面增强" } },
       "usage": { "title": { "en": "Usage & billing", "zh": "用量与计费" } }
     },
     "labels": {
@@ -26,7 +25,6 @@
     { "path": "plugins/dsh-auto-restart", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-remote-relay", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-todo-guard", "category": "tools", "labels": ["own"] },
-    { "npm": "@0imzero/dsh-workspace-menu", "version": "2.1.0", "category": "ui", "labels": ["external"] },
     { "npm": "@laoyuehanni/dsh-token-usage", "version": "0.4.15", "category": "usage", "labels": ["external"] }
   ]
 }

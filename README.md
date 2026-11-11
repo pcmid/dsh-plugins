@@ -25,7 +25,6 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-auto-restart`](plugins/dsh-auto-restart) | 本仓库 | 工具与能力 | agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话 |
 | [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
 | [`@pcmid/dsh-todo-guard`](plugins/dsh-todo-guard) | 本仓库 | 工具与能力 | agent 连续多步没更新 `todo_write` 任务列表时提醒它更新；可选在回合结束时把剩余任务标为完成 |
-| [`@0imzero/dsh-workspace-menu`](https://github.com/0imzero/dsh-workspace-menu) | npm `2.1.0` | 界面增强 | 主页工作区/会话的右键与双击增强菜单 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/LaoYueHanNi/dsh-token-usage) | npm `0.4.15` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页 |
 
 `@pcmid/dsh-web-search-native` 会优先使用 `@pcmid/dsh-model-defaults` 提供的小模型，两者建议一起安装。
@@ -67,5 +66,5 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 - 自研插件以 Git 来源发布（`source.type: git`，固定提交 + `path`），`publishTimestamp` 取该提交的提交时间；第三方插件以 npm 来源发布，`publishTimestamp` 取 npm 的发布时间。
 - 标题和描述取自插件导出的 `locale/*.json` 的 `meta.title` / `meta.description`，缺英文时用包名或 `package.json` 的 `description` 补上；图标不超过 32 KiB 时内联为 `data:` URL。
-- `engines.dsh` 原样复制插件 `package.json` 的声明。两个第三方插件没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它们显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。
+- `engines.dsh` 原样复制插件 `package.json` 的声明。第三方插件 `@laoyuehanni/dsh-token-usage` 没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。
 - 自研插件使用 `@pcmid/` 包名，但没有发布到 npm，只能从本仓库的 Git 地址安装。
