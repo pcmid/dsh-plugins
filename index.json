@@ -52,6 +52,48 @@
   },
   "plugins": [
     {
+      "name": "@pcmid/dsh-codex-provider",
+      "title": {
+        "en": "Codex Provider",
+        "zh": "Codex Provider"
+      },
+      "description": {
+        "en": "Use your local Codex login and models from model settings; DeepSeek Harness runs the tools and keeps one Codex thread per session.",
+        "zh": "在模型设置中启用后使用本机 Codex 的登录和模型；工具由 DeepSeek Harness 执行，每个会话保持一个 Codex 线程。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzE3Njk1YiIvPgogIDxwYXRoIGQ9Im0yNCAyMC0xMiAxMiAxMiAxMm0xNi0yNCAxMiAxMi0xMiAxMk0zNiAxN2wtOCAzMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K",
+      "author": "pcmid",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-codex-provider"
+      },
+      "metadata": {
+        "category": "model",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.2.0"
+      },
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1794384177,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "b84694d3b58a5d63ecd6ce3ccb2df39748244a87",
+            "path": "plugins/dsh-codex-provider"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
       "name": "@pcmid/dsh-model-defaults",
       "title": {
         "en": "Default models",

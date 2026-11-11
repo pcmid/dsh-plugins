@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Codex Provider",
+    "description": "Use your local Codex login and models from model settings; DeepSeek Harness runs the tools and keeps one Codex thread per session."
+  }
+}

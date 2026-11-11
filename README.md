@@ -18,6 +18,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 
 | 插件 | 来源 | 分类 | 说明 |
 |---|---|---|---|
+| [`@pcmid/dsh-codex-provider`](plugins/dsh-codex-provider) | 本仓库 | 模型与接入 | Codex Provider：通过本机 app-server 接入模型，由 DSH 调度工具（实验性） |
 | [`@pcmid/dsh-model-defaults`](plugins/dsh-model-defaults) | 本仓库 | 模型与接入 | 在模型设置页顶部设置新会话默认值（模型、智能体、权限）和小模型 |
 | [`@pcmid/dsh-retry-advisor`](plugins/dsh-retry-advisor) | 本仓库 | 模型与接入 | 内置机制不再重试的模型请求失败，交给模型分析是否值得重发 |
 | [`@pcmid/dsh-web-search-native`](plugins/dsh-web-search-native) | 本仓库 | 工具与能力 | 用模型接口自带的网页搜索（目前是 Anthropic Messages）为 `web_search` 提供后端 |
@@ -60,7 +61,7 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 **收录或升级第三方插件**：在 `catalog.json` 里加一项或改版本号，例如 `{ "npm": "<包名>", "version": "<版本>", "category": "...", "labels": ["external"] }`，然后 `npm run build:index`。第三方插件固定到这里写的版本；标题、描述和图标从该版本在 npm 上的包里读取，下载的包会按 registry 记录的完整性哈希校验。
 
-`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor`、`dsh-auto-restart` 和 `dsh-todo-guard` 的离线测试。
+`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor`、`dsh-auto-restart`、`dsh-todo-guard` 和 `dsh-codex-provider` 的离线测试。
 
 ## 生成规则
 

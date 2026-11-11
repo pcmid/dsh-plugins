@@ -34,3 +34,6 @@ jobs:
       - name: dsh-todo-guard tests
         working-directory: plugins/dsh-todo-guard
         run: npm install --no-save --no-package-lock && npm test
+      - name: dsh-codex-provider tests
+        working-directory: plugins/dsh-codex-provider
+        run: npm install --no-save --no-package-lock && npm test
