@@ -4,7 +4,7 @@ import { existsSync } from 'node:fs'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { createDeveloperMessage } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../index.js'
-import { CodexAdapter, apply, name } from '../index.js'
+import { CodexAdapter, Config, apply, name } from '../index.js'
 import { wireName, projectRequest } from '../protocol.js'
 
 const user = text => ({ role: 'user', content: [{ type: 'text', text }] })
@@ -15,6 +15,9 @@ const completed = event('rawResponse/completed', { usage: { inputTokens: 10, cac
 const call = (id, tool = 'read') => event('rawResponseItem/completed', { item: {
   type: 'function_call', name: wireName(tool), call_id: id, arguments: '{"path":"notes.txt"}',
 } })
+const customCall = id => event('rawResponseItem/completed', { item: {
+  type: 'custom_tool_call', name: wireName('read'), namespace: 'functions', call_id: id, input: '{"path":"notes.txt"}',
+} })
 const answer = [event('item/agentMessage/delta', { itemId: 'message', delta: 'Done.' }), completed,
   event('turn/completed', { turn: { id: 'turn', status: 'completed' } })]
 
@@ -23,7 +26,7 @@ function factory(scripts) {
   return { clients, create(_command, _args, options) {
     const events = [...(scripts[clients.length] ?? [])]
     const client = {
-      calls: [], writes: [], options, isClosed: false,
+      calls: [], writes: [], read: [], options, isClosed: false,
       async request(method, params) {
         this.calls.push({ method, params })
         if (method === 'config/read') return { config: { mcp_servers: { 'with.dot': {} }, plugins: { 'some@market': { enabled: true } } } }
@@ -36,7 +39,9 @@ function factory(scripts) {
       async next() {
         options.signal?.throwIfAborted()
         assert.ok(events.length, 'Must finish at the response boundary, without waiting for tool results')
-        return events.shift()
+        const message = events.shift()
+        this.read.push(message)
+        return message
       },
       async close() { this.isClosed = true },
     }
@@ -47,13 +52,14 @@ function factory(scripts) {
 
 test('DSH owns two parallel tool calls and the next step replays actual DSH tool results', async () => {
   const f = factory([[
-    event('item/tool/call', { tool: wireName('read') }), call('a'), call('b'), completed,
+    event('item/tool/call', { tool: wireName('read') }), call('a'), customCall('b'), customCall('b'), completed,
   ], answer])
   const adapter = new CodexAdapter({}, f.create)
   const first = await Array.fromAsync(adapter.stream(request))
   assert.equal(first.at(-1).reason.kind, 'tool-calls')
   const toolBlocks = first.filter(c => c.type === 'block-end').map(c => c.block)
   assert.deepEqual(toolBlocks.map(b => [b.id, b.name]), [['a', 'read'], ['b', 'read']])
+  assert.deepEqual(toolBlocks.map(b => b.arguments), ['{"path":"notes.txt"}', '{"path":"notes.txt"}'])
   assert.deepEqual(first.find(c => c.type === 'usage').usage, { inputTokens: 6, outputTokens: 3, cacheReadTokens: 4, cacheWriteTokens: 0, reasoningTokens: 1 })
   assert.ok(f.clients[0].isClosed)
   assert.ok(!existsSync(f.clients[0].options.cwd))
@@ -73,9 +79,12 @@ test('DSH owns two parallel tool calls and the next step replays actual DSH tool
   assert.equal(started.config['mcp_servers."with.dot".enabled'], false)
   assert.equal(started.config['plugins."some@market".enabled'], false)
   assert.match(started.config['model_providers."openai".http_headers']['user-agent'], /deepseek/i)
-  assert.deepEqual(started.environments, [])
+  assert.equal(started.environments, undefined)
   const injected = f.clients[1].calls.find(c => c.method === 'thread/inject_items').params.items
   assert.equal(injected[1].name, wireName('read'))
+  assert.equal(injected[2].type, 'function_call')
+  assert.equal(injected[2].call_id, 'b')
+  assert.equal(injected[2].arguments, '{"path":"notes.txt"}')
   assert.equal(injected.at(-2).output, 'file contents')
   assert.equal(injected.at(-1).output, 'Tool failed:\nPermission denied by DSH')
   assert.ok(f.clients.every(c => c.isClosed))
@@ -88,10 +97,8 @@ test('raw tool requests do not require Codex turn/completed and parallel batch i
   assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
 })
 
-test('native tools, approvals and incompatible raw event protocols fail closed', async () => {
+test('incompatible protocols and generation errors still fail explicitly', async () => {
   for (const script of [
-    [event('rawResponseItem/completed', { item: { type: 'function_call', name: 'exec_command', call_id: 'x', arguments: '{}' } })],
-    [{ ...event('item/commandExecution/requestApproval'), id: 98 }],
     [event('turn/completed', { turn: { status: 'completed' } })],
     [event('turn/completed', { turn: { status: 'failed', error: { message: 'authentication required' } } })],
   ]) {
@@ -99,6 +106,116 @@ test('native tools, approvals and incompatible raw event protocols fail closed',
     await assert.rejects(Array.fromAsync(new CodexAdapter({}, f.create).stream(request)))
     assert.ok(f.clients[0].isClosed)
     assert.ok(!existsSync(f.clients[0].options.cwd))
+  }
+})
+
+test('DSH custom calls reject invalid JSON inputs', async () => {
+  for (const [overrides, error] of [
+    [{ input: 'read notes.txt' }, SyntaxError],
+    [{ input: { path: 'notes.txt' } }, /expected a JSON string/],
+    [{ input: undefined }, /expected a JSON string/],
+  ]) {
+    const message = customCall('a')
+    Object.assign(message.params.item, overrides)
+    const f = factory([[message, completed]])
+    await assert.rejects(Array.fromAsync(new CodexAdapter({}, f.create).stream(request)), error)
+    assert.ok(f.clients[0].isClosed)
+    assert.ok(!existsSync(f.clients[0].options.cwd))
+  }
+})
+
+test('native tool results stay in Codex and usage includes every upstream response', async () => {
+  for (const item of [
+    { type: 'custom_tool_call', call_id: 'native', name: 'exec', input: 'text(1 + 1)' },
+    { type: 'function_call', call_id: 'native', name: 'exec_command', arguments: '{}' },
+    { ...customCall('native').params.item, namespace: 'foreign' },
+  ]) {
+    const f = factory([[
+      event('rawResponseItem/completed', { item }), completed,
+      event('rawResponseItem/completed', { item: { type: item.type + '_output', call_id: 'native', output: '2' } }),
+      ...answer,
+    ]])
+    const chunks = await Array.fromAsync(new CodexAdapter({}, f.create).stream(request))
+    assert.equal(chunks.at(-1).reason.kind, 'stop')
+    assert.deepEqual(chunks.filter(c => c.type === 'block-end').map(c => c.block), [{ type: 'text', text: 'Done.' }])
+    assert.deepEqual(chunks.filter(c => c.type === 'usage').map(c => c.usage), [
+      { inputTokens: 12, outputTokens: 6, cacheReadTokens: 8, cacheWriteTokens: 0, reasoningTokens: 2 },
+    ])
+  }
+})
+
+test('mixed native and DSH batches wait for native completion before closing Codex', async () => {
+  const f = factory([[
+    event('rawResponseItem/completed', { item: { type: 'custom_tool_call', call_id: 'native', name: 'exec', input: 'text(2)' } }),
+    call('dsh'), completed,
+    event('rawResponseItem/completed', { item: { type: 'custom_tool_call_output', call_id: 'native', output: '2' } }),
+  ]])
+  const chunks = await Array.fromAsync(new CodexAdapter({}, f.create).stream(request))
+  assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+  assert.deepEqual(chunks.filter(c => c.type === 'tool-call-delta').map(c => c.name), ['read'])
+  assert.equal(f.clients[0].read.at(-1).params.item.output, '2')
+})
+
+test('hosted native items wait for Codex completion without becoming DSH calls', async () => {
+  for (const type of ['local_shell_call', 'tool_search_call', 'web_search_call', 'image_generation_call']) {
+    const outputType = type === 'local_shell_call' ? 'function_call_output' : type === 'tool_search_call' ? 'tool_search_output' : undefined
+    const f = factory([[
+      event('rawResponseItem/completed', { item: { type, call_id: 'native', status: 'completed' } }),
+      ...(outputType ? [event('rawResponseItem/completed', { item: { type: outputType, call_id: 'native', output: 'done' } })] : []),
+      ...answer,
+    ]])
+    const chunks = await Array.fromAsync(new CodexAdapter({}, f.create).stream(request))
+    assert.equal(chunks.at(-1).reason.kind, 'stop')
+    assert.equal(chunks.filter(c => c.type === 'tool-call-delta').length, 0)
+    assert.equal(f.clients[0].read.at(-1).method, 'turn/completed')
+  }
+})
+
+test('native client interactions are declined to Codex without failing the user request', async () => {
+  const f = factory([[
+    { ...event('item/commandExecution/requestApproval'), id: 91 },
+    { ...event('item/fileChange/requestApproval'), id: 92 },
+    { ...event('item/permissions/requestApproval'), id: 93 },
+    { ...event('item/tool/requestUserInput'), id: 94 },
+    { ...event('unknown/nativeRequest'), id: 95 },
+    ...answer,
+  ]])
+  const chunks = await Array.fromAsync(new CodexAdapter({}, f.create).stream(request))
+  assert.equal(chunks.at(-1).reason.kind, 'stop')
+  assert.deepEqual(f.clients[0].writes.slice(1, 5), [
+    { id: 91, result: { decision: 'decline' } }, { id: 92, result: { decision: 'decline' } },
+    { id: 93, result: { permissions: {}, scope: 'turn' } }, { id: 94, result: { answers: {} } },
+  ])
+  assert.equal(f.clients[0].writes.at(-1).error.code, -32601)
+})
+
+test('DSH tools nested inside exec receive a direct-call instruction instead of deadlocking', async () => {
+  const f = factory([[
+    event('rawResponseItem/completed', { item: { type: 'custom_tool_call', call_id: 'native', name: 'exec', input: 'await tools.read({})' } }),
+    completed,
+    { ...event('item/tool/call', { tool: wireName('read'), callId: 'nested' }), id: 91 },
+    event('rawResponseItem/completed', { item: { type: 'custom_tool_call_output', call_id: 'native', output: 'Call the tool directly.' } }),
+    call('direct'), completed,
+  ]])
+  const chunks = await Array.fromAsync(new CodexAdapter({}, f.create).stream(request))
+  assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+  assert.deepEqual(chunks.filter(c => c.type === 'tool-call-delta').map(c => c.id), ['direct'])
+  assert.equal(f.clients[0].writes.at(-1).result.success, false)
+  assert.match(f.clients[0].writes.at(-1).result.contentItems[0].text, /directly/)
+})
+
+test('advanced options default to PATH and native execution; interception disables code mode', async () => {
+  assert.deepEqual(Config({}).providers, {})
+  assert.equal(Config({ providers: { 'codex-provider': {} } }).providers['codex-provider'].advanced.interceptNativeTools, false)
+  assert.equal(new CodexAdapter({ command: '   ' }).config.command, 'codex')
+  assert.equal(new CodexAdapter({ command: '/opt/codex cli' }).config.command, '/opt/codex cli')
+  for (const interceptNativeTools of [false, true]) {
+    const f = factory([answer])
+    await Array.fromAsync(new CodexAdapter({ interceptNativeTools }, f.create).stream(request))
+    const started = f.clients[0].calls.find(c => c.method === 'thread/start').params
+    assert.equal(started.config['features.code_mode'], !interceptNativeTools)
+    assert.deepEqual(started.environments, interceptNativeTools ? [] : undefined)
+    assert.equal(started.config['features.shell_tool'], interceptNativeTools ? false : undefined)
   }
 })
 
@@ -137,10 +254,15 @@ test('model listing and plugin registration expose the agreed name', async () =>
   const fixed = new CodexAdapter({ models: ['custom-model'] }, () => { throw new Error('Must not spawn for a configured catalog') })
   assert.equal((await fixed.listModels('codex-provider'))[0].id, 'custom-model')
   assert.equal(fixed.providerInfo('codex-provider').name, 'Codex Provider')
-  let routes
-  apply({ llm: { registerAdapter(ids) { routes = ids; return () => {} } }, effect: f => f(), on() {} }, {})
+  let routes, configuredAdapter
+  const ctx = { llm: { registerAdapter(ids, adapter) { routes = ids; configuredAdapter = adapter; return () => {} }, registerConfigurableProviders() {} },
+    inject() {}, effect: f => f(), on() {} }
+  apply(ctx, {})
+  assert.equal(routes, undefined, 'Installing the bundle must not activate Codex')
+  apply(ctx, { command: '/legacy/codex', providers: { 'codex-provider': {} } })
   assert.equal(name, 'codex-provider')
   assert.deepEqual(routes, ['codex-provider'])
+  assert.equal(configuredAdapter.config.command, 'codex', 'A blank advanced path uses PATH, even after an upgrade')
 })
 
 test('history retains roles and tool IDs; unsupported input fails explicitly', () => {
@@ -157,7 +279,11 @@ test('history retains roles and tool IDs; unsupported input fails explicitly', (
 test('real DSH runtime loads/unloads the plugin and projects tool updates before dispatch', async () => {
   const ctx = new Context()
   const runtime = await ctx.plugin(LlmRuntime)
-  const fork = await ctx.plugin(plugin, { models: ['fixture'] })
+  const dormant = await ctx.plugin(plugin, {})
+  assert.ok(!ctx.llm.listProviders().some(provider => provider.id === 'codex-provider'))
+  assert.ok(ctx.llm.listConfigurableProviders().some(provider => provider.provider === 'codex-provider'))
+  await dormant.dispose()
+  const fork = await ctx.plugin(plugin, { providers: { 'codex-provider': {} }, models: ['fixture'] })
   assert.ok(ctx.llm.listProviders().some(provider => provider.id === 'codex-provider'))
   assert.equal((await ctx.llm.listModels('codex-provider'))[0].id, 'fixture')
   await fork.dispose()

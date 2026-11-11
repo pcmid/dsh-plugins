@@ -16,6 +16,9 @@ export function projectRequest(options) {
   const instructions = [options.system ?? '']
   const items = []
   for (const message of options.messages) {
+    const nativeItems = message.source?.provider === options.provider
+      ? message.source?.replayState?.response?.codexNativeItems : undefined
+    if (message.role === 'assistant' && Array.isArray(nativeItems)) items.push(...nativeItems)
     if (message.role === 'system') {
       instructions.push(textContent(message.content))
       continue
@@ -72,12 +75,18 @@ export function* completeBlock(index, block) {
   yield { type: 'block-end', index, block }
 }
 
-// This consumes exactly ONE upstream model response, before Codex can run another step.
+// Codex finishes native tools; DSH receives its own calls at a complete response boundary.
 export async function* readStep(rpc, threadId, turnId, names) {
   let index = 0
   const blocks = new Map()
   const ended = new Set()
   const calls = new Set()
+  const nativeCalls = new Set()
+  const nativeItems = []
+  let nativeResponse = false
+  let responseReady = false
+  let responses = 0
+  let usage
   const blockFor = (key, type) => {
     if (!blocks.has(key)) blocks.set(key, { index: index++, block: { type, text: '' }, started: false })
     return blocks.get(key)
@@ -89,13 +98,35 @@ export async function* readStep(rpc, threadId, turnId, names) {
     }
     blocks.clear()
   }
+  const finish = function* () {
+    if (usage) yield { type: 'usage', usage }
+    yield* finishText()
+    yield { type: 'finish', reason: { kind: calls.size ? 'tool-calls' : 'stop' },
+      ...(nativeItems.length ? { replayState: { response: { codexNativeItems: nativeItems } } } : {}) }
+  }
   while (true) {
     const message = await rpc.next()
     const p = message.params ?? {}
     if (message.id !== undefined) {
       // Leave dynamic calls unanswered. DSH executes them AFTER this stream ends.
-      if (message.method === 'item/tool/call' && p.threadId === threadId && names.has(p.tool)) continue
-      throw new Error(`Unexpected Codex server request: ${message.method}; only DSH tools are allowed`)
+      if (message.method === 'item/tool/call' && p.threadId === threadId && names.has(p.tool)) {
+        if (nativeCalls.size && !calls.has(p.callId)) {
+          rpc.write({ id: message.id, result: { success: false, contentItems: [{ type: 'inputText',
+            text: `Call ${p.tool} directly as a function tool, outside exec. DSH executes this tool and supplies its result in the next step.` }] } })
+        }
+        continue
+      }
+      // This model provider has no approval/input UI; let Codex report the refusal to the model.
+      if (message.method === 'item/commandExecution/requestApproval' || message.method === 'item/fileChange/requestApproval') {
+        rpc.write({ id: message.id, result: { decision: 'decline' } })
+      } else if (message.method === 'item/permissions/requestApproval') {
+        rpc.write({ id: message.id, result: { permissions: {}, scope: 'turn' } })
+      } else if (message.method === 'item/tool/requestUserInput') {
+        rpc.write({ id: message.id, result: { answers: {} } })
+      } else {
+        rpc.write({ id: message.id, error: { code: -32601, message: `Unsupported client interaction: ${message.method}` } })
+      }
+      continue
     }
     if (p.threadId !== threadId || (p.turnId ?? p.turn?.id) !== turnId) continue
     if (message.method === 'error' && !p.willRetry) throw new Error(p.error?.message ?? 'Codex generation failed')
@@ -121,30 +152,52 @@ export async function* readStep(rpc, threadId, turnId, names) {
     }
     if (message.method === 'rawResponseItem/completed') {
       const item = p.item
-      if (item.type === 'function_call') {
+      if (item.type === 'function_call' || item.type === 'custom_tool_call') {
         const name = names.get(item.name)
         if (!name || (item.namespace && item.namespace !== 'functions')) {
-          throw new Error(`Codex attempted a non-DSH tool: ${item.name}`)
+          nativeItems.push(item)
+          nativeCalls.add(item.call_id)
+          nativeResponse = true
+          continue
         }
         if (!calls.has(item.call_id)) {
-          JSON.parse(item.arguments)
+          const args = item.type === 'custom_tool_call' ? item.input : item.arguments
+          if (typeof args !== 'string') throw new Error(`Invalid Codex tool arguments for ${name}: expected a JSON string`)
+          JSON.parse(args)
           calls.add(item.call_id)
           yield* finishText()
-          yield* completeBlock(index++, { type: 'tool-call', id: item.call_id, name, arguments: item.arguments })
+          yield* completeBlock(index++, { type: 'tool-call', id: item.call_id, name, arguments: args })
         }
-      } else if (!['message', 'reasoning'].includes(item.type)) {
+      } else if (['function_call_output', 'custom_tool_call_output', 'tool_search_output'].includes(item.type)) {
+        if (nativeCalls.has(item.call_id)) nativeItems.push(item)
+        nativeCalls.delete(item.call_id)
+      } else if (['local_shell_call', 'tool_search_call', 'web_search_call', 'image_generation_call'].includes(item.type)) {
+        nativeItems.push(item)
+        if (['local_shell_call', 'tool_search_call'].includes(item.type) && item.call_id) nativeCalls.add(item.call_id)
+        nativeResponse = true
+      } else if (!['message', 'reasoning', 'compaction'].includes(item.type)) {
         throw new Error(`Unexpected Codex response item: ${item.type}`)
       }
     }
     if (message.method === 'rawResponse/completed') {
-      if (p.usage) yield usageChunk(p.usage)
+      responses++
+      if (p.usage) {
+        usage ??= {}
+        for (const [key, value] of Object.entries(usageChunk(p.usage).usage)) usage[key] = (usage[key] ?? 0) + value
+      }
       yield* finishText()
-      yield { type: 'finish', reason: { kind: calls.size ? 'tool-calls' : 'stop' } }
+      responseReady = calls.size > 0 || !nativeResponse
+      nativeResponse = false
+    }
+    if (responseReady && !nativeCalls.size) {
+      yield* finish()
       return
     }
     if (message.method === 'turn/completed') {
       if (p.turn.status !== 'completed') throw new Error(p.turn.error?.message ?? `Codex turn ${p.turn.status}`)
-      throw new Error('Codex did not emit rawResponse/completed; this bridge requires Codex 0.167.0 experimental APIs')
+      if (!responses) throw new Error('Codex did not emit rawResponse/completed; this bridge requires Codex 0.167.0 experimental APIs')
+      yield* finish()
+      return
     }
   }
 }

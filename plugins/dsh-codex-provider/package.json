@@ -14,14 +14,16 @@
   "engines": { "dsh": ">=0.2.2-rc.1 <0.3.0-0", "node": ">=24" },
   "exports": {
     ".": "./index.js",
+    "./client": "./client.js",
     "./package.json": "./package.json",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "rpc.js", "protocol.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
+  "files": ["index.js", "client.js", "rpc.js", "protocol.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE"],
   "scripts": {
     "test": "node --import ./test/hooks.mjs --test --test-isolation=none test/bridge.test.mjs test/rpc.test.mjs",
     "test:codex": "node --import ./test/hooks.mjs --test --test-isolation=none test/codex.test.mjs",
+    "test:client": "node --test test/client.test.mjs",
     "test:e2e": "node --import ./test/hooks.mjs --test --test-isolation=none test/e2e.test.mjs"
   },
   "peerDependencies": {
@@ -33,5 +35,8 @@
     "@deepseek-ai/dsh-llm": "0.2.2-rc.1",
     "@deepseek-ai/schemastery": "^3.18.4"
   },
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } }
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web", "inject": ["@deepseek-ai/dsh-client-ui-settings", "@deepseek-ai/dsh-client-ui-settings-models"] }
+  }
 }
