@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Codex Provider",
-    "description": "在模型设置中选择后启用本机 Codex，复用 CLI 登录，可选拦截原生工具。"
+    "description": "在模型设置中启用后使用本机 Codex 的登录和模型；工具由 DeepSeek Harness 执行，每个会话保持一个 Codex 线程。"
   }
 }
