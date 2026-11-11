@@ -58,8 +58,8 @@
         "zh": "默认模型"
       },
       "description": {
-        "en": "Adds new-session defaults (model, agent, permissions) and a small model to the top of the Models settings page.",
-        "zh": "在模型设置页顶部增加新会话默认值（模型、智能体、权限）和小模型。"
+        "en": "Adds new-session defaults (model, agent, permissions) to the top of the Models settings page.",
+        "zh": "在模型设置页顶部增加新会话默认值（模型、智能体、权限）。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzViNGJkYiIvPgogIDxwYXRoIGQ9Ik0yNiAxNWwzLjQgOS42TDM5IDI4bC05LjYgMy40TDI2IDQxbC0zLjQtOS42TDEzIDI4bDkuNi0zLjR6IiBmaWxsPSIjZmZmZmZmIi8+CiAgPHBhdGggZD0iTTQ1IDM2bDEuOSA1LjFMNTIgNDNsLTUuMSAxLjlMNDUgNTBsLTEuOS01LjFMMzggNDNsNS4xLTEuOXoiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
       "author": "pcmid",
@@ -76,16 +76,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.3.0"
+        "latest": "0.4.0"
       },
       "versions": [
         {
-          "version": "0.3.0",
-          "publishTimestamp": 1794220069,
+          "version": "0.4.0",
+          "publishTimestamp": 1794383284,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
+            "commit": "8a23d42791ab8c8c86dc668e1bf1253b1c5c7f36",
             "path": "plugins/dsh-model-defaults"
           },
           "engines": {
@@ -101,8 +101,8 @@
         "zh": "AI 重试判断"
       },
       "description": {
-        "en": "When a model request fails and no built-in handler retries it, asks a model to analyze the cause and decide whether and when to resend. If the analysis itself fails, the request is not retried.",
-        "zh": "模型请求失败且内置机制不再重试时，让模型分析错误原因，决定是否重发、等多久再发。分析本身失败时不重试。"
+        "en": "When a model request fails and no built-in handler retries it, analyzes the cause on the conversation's model and reasoning effort, decides whether and when to resend, and shows the decision in the conversation. If the analysis itself fails, the request is not retried.",
+        "zh": "模型请求失败且内置机制不再重试时，用会话当前的模型和思考等级分析错误原因，决定是否重发、等多久再发，并在对话里显示判断结果。分析本身失败时不重试。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBmOGE1ZiIvPgogIDxwYXRoIGQ9Ik00NS4yIDI3LjIgQTE0IDE0IDAgMSAxIDM0LjQgMTguMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxwb2x5Z29uIHBvaW50cz0iNDEuNSwxOS41IDMzLjMsMTAuOCAzMS4wLDI1LjAiIGZpbGw9IiNmZmZmZmYiLz4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSI0IiBmaWxsPSIjZmZmZmZmIi8+Cjwvc3ZnPgo=",
       "author": "pcmid",
@@ -119,16 +119,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.1.0"
+        "latest": "0.2.0"
       },
       "versions": [
         {
-          "version": "0.1.0",
-          "publishTimestamp": 1794220069,
+          "version": "0.2.0",
+          "publishTimestamp": 1794383284,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
+            "commit": "2a473640ace6d5302ebe4141598c6461ebcb392f",
             "path": "plugins/dsh-retry-advisor"
           },
           "engines": {
@@ -144,8 +144,8 @@
         "zh": "接口原生网页搜索"
       },
       "description": {
-        "en": "Backs the web_search tool with the model API's built-in web search, running on the small model or the conversation's current model. Currently supports Anthropic Messages routes.",
-        "zh": "用模型接口自带的网页搜索为 web_search 工具提供后端，优先使用小模型，否则使用当前对话的模型。目前支持 Anthropic Messages 路由。"
+        "en": "Backs the web_search tool with the model API's built-in web search, running on the conversation's provider with a per-provider search model. Supports Anthropic Messages and OpenAI Responses routes.",
+        "zh": "用模型接口自带的网页搜索为 web_search 工具提供后端，在会话所用的供应商上执行，每个供应商可指定自己的搜索模型。支持 Anthropic Messages 和 OpenAI Responses 路由。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzFmNWVmZiIvPgogIDxjaXJjbGUgY3g9IjI4IiBjeT0iMjgiIHI9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iNCIvPgogIDxlbGxpcHNlIGN4PSIyOCIgY3k9IjI4IiByeD0iNiIgcnk9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjE0IiB5MT0iMjgiIHgyPSI0MiIgeTI9IjI4IiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjM4LjUiIHkxPSIzOC41IiB4Mj0iNTAiIHkyPSI1MCIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
       "author": "pcmid",
@@ -162,16 +162,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.3.3"
+        "latest": "0.5.0"
       },
       "versions": [
         {
-          "version": "0.3.3",
-          "publishTimestamp": 1794220069,
+          "version": "0.5.0",
+          "publishTimestamp": 1794383284,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "12fb0d7a24b1fa754d7df87a606185bb1a7a1ee1",
+            "commit": "7844eba02e92c2f90e3e7e872466615464ee10a0",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {
