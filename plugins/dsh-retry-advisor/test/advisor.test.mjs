@@ -29,6 +29,7 @@ function payload(overrides = {}) {
 function harness(cfg, analysis) {
   const logger = fakeLogger()
   const records = []
+  const shown = []
   const sleeps = []
   const calls = []
   const listener = createListener({ logger }, cfg, {
@@ -37,12 +38,13 @@ function harness(cfg, analysis) {
       return analysis(input)
     },
     writeLog: async (record) => { records.push(record) },
+    appendRecord: (_session, data) => { shown.push(data) },
     sleep: async (ms, signal) => {
       sleeps.push(ms)
       return !signal.aborted
     },
   })
-  return { listener, logger, records, sleeps, calls }
+  return { listener, logger, records, shown, sleeps, calls }
 }
 
 const route = { provider: 'ccmax', model: 'claude-opus-5-5' }
@@ -177,11 +179,12 @@ describe('analyze', () => {
     { type: 'finish', reason: { kind: 'stop' } },
   ]
 
-  it('runs on the conversation model with the configured low effort', async () => {
+  it('runs on the conversation model with its reasoning effort and default output cap', async () => {
     const fake = fakeLlm(answer)
     const result = await analyze(fake, config(), { ...payload(), attempts: [] })
-    assert.deepEqual(result.route, route)
-    assert.equal(fake.seen.controls.reasoningEffort, 'low')
+    assert.deepEqual(result.route, { ...route, reasoningEffort: 'xhigh' })
+    assert.equal(fake.seen.controls.reasoningEffort, 'xhigh')
+    assert.equal(fake.seen.callConfig.maxTokens, undefined)
     assert.equal(fake.seen.options.purpose, 'retry-advisor')
     assert.equal(fake.seen.options.messages[0].role, 'user')
     assert.match(fake.seen.options.messages[0].content[0].text, /MALFORMED_RESPONSE/)

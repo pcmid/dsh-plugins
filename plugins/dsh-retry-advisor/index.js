@@ -10,13 +10,16 @@
  * terminal and the turn ends as before.
  *
  * A retry re-sends the identical request; nothing about the request changes.
- * Decisions are written to the Host log and, unless disabled, appended to a
- * JSONL decision log.
+ * Decisions are written to the Host log, appended to the conversation's Session
+ * log as `plugin:retry-advisor/decision` records that the Chat view shows, and,
+ * unless disabled, appended to a JSONL decision log.
  *
  * @module @pcmid/dsh-retry-advisor
  */
 
 import z from '@deepseek-ai/schemastery'
+import { appendPluginRecord } from '@deepseek-ai/dsh-session'
+import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -30,16 +33,25 @@ export const inject = ['llm']
 /** Request purpose attached to the analysis call. */
 export const PURPOSE = 'retry-advisor'
 
+/**
+ * Session record type of one shown decision. Every record of one failure
+ * carries the same `id` and the complete current state; the latest wins.
+ */
+export const RECORD = 'plugin:retry-advisor/decision'
+
+/** Failure-message characters kept in a shown decision record. */
+const RECORD_FAILURE_CHARS = 1000
+
 export const Config = z.object({
   provider: z.string()
     .description('Provider route for the analysis request. Set together with model; when both are empty, the analysis runs on the failed conversation\'s current model.'),
   model: z.string()
     .description('Model id for the analysis request. Set together with provider.'),
-  reasoningEffort: z.string().default('low')
-    .description('Reasoning effort for the analysis request, applied only when the analysis model offers it.'),
-  maxTokens: z.natural().min(256).default(4096)
-    .description('Output-token cap of the analysis request; thinking output counts toward it.'),
-  timeoutMs: z.natural().min(1000).max(600000).default(60000)
+  reasoningEffort: z.string()
+    .description('Reasoning effort of the analysis request. Empty uses the conversation\'s current effort. An effort the analysis model does not offer is dropped and the model default applies.'),
+  maxTokens: z.natural().min(256)
+    .description('Output-token cap of the analysis request; thinking output counts toward it. Empty uses the analysis model\'s default, as conversation requests do.'),
+  timeoutMs: z.natural().min(1000).max(600000).default(180000)
     .description('Deadline of one analysis request. A timed-out analysis counts as a failed analysis, so the request is not retried.'),
   maxRetriesPerStep: z.natural().default(3)
     .description('Maximum retries this plugin grants within one step. After that the failure stays terminal without analysis.'),
@@ -67,11 +79,12 @@ export function buildSystemPrompt(config) {
     'You decide how a coding agent recovers from one failed model request.',
     '',
     'The agent sent a request to its model provider and the request failed. Every built-in recovery handler (automatic retry for known transient error codes, context compaction, image offload) has already declined or given up.',
-    'If you choose to retry, the harness re-sends exactly the same request: same conversation, same tools, same model. Nothing in the request can be changed, so a retry helps only when the failure came from something transient or random in the provider, gateway, network, or response stream.',
+    'If you choose to retry, the harness re-sends exactly the same request: same conversation, same tools, same model. Nothing in the request can be changed, so a retry helps only when the outcome can differ between attempts: the failure came from something transient or random in the provider, gateway, network, or response stream, or from a provider check that judges the newly sampled output.',
     '',
     'Failures that usually succeed on retry:',
     '- gateway, proxy, network, or server errors; overload; rate limits (wait longer, and honor any retry-after hint)',
     '- truncated, duplicated, garbled, or empty response streams, including tool-call arguments that are not valid JSON because the stream was cut off or replayed',
+    '- a provider safety, usage-policy, or terms-of-service block, such as "This request was blocked as it seems to violate ... Terms of Service", "Output blocked by content filtering policy", or a refusal stop reason. These come from automated classifiers that also judge the output the model is generating, so on ordinary software work they are often false positives and a resend that samples new output passes. Retry once after a short delay of a few seconds. Do not retry when the same block already appears among the earlier failures listed for this step.',
     '- unclassified errors whose text points to a temporary condition',
   ]
   if (config.allowGiveUp) {
@@ -79,7 +92,7 @@ export function buildSystemPrompt(config) {
       '',
       'Failures where re-sending the identical request fails the same way, so do not retry:',
       '- authentication, permission, missing or invalid credential, quota or billing exhaustion',
-      '- the request itself rejected as invalid (bad parameter, unsupported field, payload too large, unknown model)',
+      '- the request itself rejected as invalid (bad parameter, unsupported field, payload too large, unknown model); a safety or policy block is not an invalid request',
       '- context window exceeded',
       '- the same deterministic error already repeated in earlier attempts listed for this step',
     )
@@ -194,22 +207,38 @@ function describeError(error) {
 }
 
 /**
- * Run one analysis request.
- * @returns the parsed decision and the route that produced it.
+ * Choose the analysis route: the configured provider and model, otherwise the
+ * conversation's current model.
+ * @param config - resolved plugin config.
+ * @param selection - the conversation's current model selection, when known.
+ * @returns the route, or undefined when neither is available.
+ */
+export function analysisRoute(config, selection) {
+  if (config.provider && config.model) return { provider: config.provider, model: config.model }
+  return selection === undefined ? undefined : { provider: selection.provider, model: selection.model }
+}
+
+/**
+ * Run one analysis request. It uses the conversation's reasoning effort unless
+ * `reasoningEffort` is configured, and the model's default output cap unless
+ * `maxTokens` is configured.
+ * @returns the parsed decision and the route and effort that produced it.
  * @throws when the route cannot be resolved, the request fails or times out, or the answer is unusable.
  */
 export async function analyze(ctx, config, { agent, provider, turn, step, failure, attempts, signal }) {
   const selection = agent.model.current()
-  const route = config.provider && config.model
-    ? { provider: config.provider, model: config.model }
-    : selection === undefined ? undefined : { provider: selection.provider, model: selection.model }
+  const route = analysisRoute(config, selection)
   if (route === undefined) throw new Error('no analysis model: configure provider and model, or select a conversation model')
+  const effort = config.reasoningEffort || selection?.reasoningEffort
 
   const callSignal = AbortSignal.any([signal, AbortSignal.timeout(config.timeoutMs)])
-  const call = await ctx.llm.prepareCall({ ...route, maxTokens: config.maxTokens }, callSignal, (controls, model) => {
+  const call = await ctx.llm.prepareCall({
+    ...route,
+    ...config.maxTokens === undefined ? {} : { maxTokens: config.maxTokens },
+  }, callSignal, (controls, model) => {
     const efforts = model.reasoning?.efforts ?? []
-    return config.reasoningEffort && efforts.some(effort => effort.id === config.reasoningEffort)
-      ? { ...controls, reasoningEffort: config.reasoningEffort }
+    return effort && efforts.some(offered => offered.id === effort)
+      ? { ...controls, reasoningEffort: effort }
       : controls
   })
   const input = buildAnalysisInput({ provider, selection, turn, step, failure, attempts, config })
@@ -234,14 +263,18 @@ export async function analyze(ctx, config, { agent, provider, turn, step, failur
     error.code = finish.failure?.code
     throw error
   }
-  return { decision: parseDecision(text, config), route }
+  const usedEffort = call.config?.reasoningEffort
+  return {
+    decision: parseDecision(text, config),
+    route: usedEffort === undefined ? route : { ...route, reasoningEffort: usedEffort },
+  }
 }
 
 /**
  * Build the `agent/request-error` listener.
  * @param ctx - plugin context exposing `llm` and `logger`.
  * @param config - resolved plugin config.
- * @param deps - replaceable analysis and logging functions.
+ * @param deps - replaceable analysis, logging, Session-record, and wait functions.
  * @returns the waterfall listener.
  */
 export function createListener(ctx, config, deps = {}) {
@@ -252,6 +285,7 @@ export function createListener(ctx, config, deps = {}) {
       await appendFile(config.decisionLog, `${JSON.stringify(record)}\n`)
     }
     : async () => {})
+  const appendRecord = deps.appendRecord ?? ((session, data) => appendPluginRecord(session, RECORD, data))
   const wait = deps.sleep ?? sleep
   /** Failures seen in the current step, keyed by Session. */
   const steps = new WeakMap()
@@ -260,6 +294,15 @@ export function createListener(ctx, config, deps = {}) {
     writeLog({ time: new Date().toISOString(), ...entry }).catch((error) => {
       ctx.logger.warn(`retry-advisor: could not write the decision log: ${describeError(error)}`)
     })
+  }
+
+  /** Append one complete decision state to the conversation; a failed append is only logged. */
+  function show(session, data) {
+    try {
+      appendRecord(session, data)
+    } catch (error) {
+      ctx.logger.warn(`retry-advisor: could not show the decision in the conversation: ${describeError(error)}`)
+    }
   }
 
   return async function onRequestError(payload, next) {
@@ -275,12 +318,26 @@ export function createListener(ctx, config, deps = {}) {
     }
     const base = { sessionId: agent.session.id, turn, step, provider, code: failure.code }
     const granted = state.attempts.filter(entry => entry.retry === true).length
+    const shown = {
+      id: randomUUID(),
+      turn,
+      step,
+      provider,
+      code: failure.code,
+      failure: clip(String(failure.message ?? ''), RECORD_FAILURE_CHARS),
+      granted,
+      maxRetries: config.maxRetriesPerStep,
+    }
     if (granted >= config.maxRetriesPerStep) {
       ctx.logger.info(`retry-advisor: ${failure.code} in turn ${turn} step ${step} stays terminal; ${granted} retries already granted`)
       record({ ...base, outcome: 'budget-exhausted', granted })
+      show(agent.session, { ...shown, outcome: 'budget-exhausted' })
       return downstream
     }
 
+    const planned = analysisRoute(config, agent.model.current())
+    const plannedModel = planned === undefined ? {} : { analysisModel: `${planned.provider}/${planned.model}` }
+    show(agent.session, { ...shown, outcome: 'analyzing', ...plannedModel })
     let result
     try {
       result = await runAnalysis({ agent, provider, turn, step, failure, attempts: [...state.attempts], signal })
@@ -288,14 +345,19 @@ export function createListener(ctx, config, deps = {}) {
       if (signal.aborted) return downstream
       ctx.logger.warn(`retry-advisor: analysis failed, ${failure.code} stays terminal: ${describeError(error)}`)
       record({ ...base, outcome: 'analysis-failed', error: describeError(error) })
+      show(agent.session, { ...shown, outcome: 'analysis-failed', ...plannedModel, error: describeError(error) })
       return downstream
     }
 
     const { decision, route } = result
     state.attempts.push({ code: failure.code, message: String(failure.message ?? ''), ...decision })
-    const summary = `${failure.code} → ${decision.retry ? `retry in ${decision.delayMs}ms` : 'no retry'} (${route.provider}/${route.model}): ${decision.cause} ${decision.reason}`
+    const analysisModel = `${route.provider}/${route.model}`
+    const effort = route.reasoningEffort === undefined ? {} : { reasoningEffort: route.reasoningEffort }
+    const summary = `${failure.code} → ${decision.retry ? `retry in ${decision.delayMs}ms` : 'no retry'} (${analysisModel}${route.reasoningEffort === undefined ? '' : `, ${route.reasoningEffort}`}): ${decision.cause} ${decision.reason}`
     ctx.logger.info(`retry-advisor: ${summary}`)
-    record({ ...base, outcome: decision.retry ? 'retry' : 'give-up', analysisModel: `${route.provider}/${route.model}`, ...decision })
+    const outcome = decision.retry ? 'retry' : 'give-up'
+    record({ ...base, outcome, analysisModel, ...effort, ...decision })
+    show(agent.session, { ...shown, outcome, analysisModel, ...effort, delayMs: decision.delayMs, cause: decision.cause, reason: decision.reason })
     if (!decision.retry) return downstream
     if (!(await wait(decision.delayMs, signal))) return downstream
     return { kind: 'retry' }
