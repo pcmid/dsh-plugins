@@ -1,17 +1,14 @@
 /**
- * Host half of the model defaults bundle: owns the small model selection and
- * keeps the conversation default from following composer switches.
+ * Host half of the model defaults bundle: keeps the conversation default from
+ * following composer switches.
  *
- * The small model is the model auxiliary work runs on instead of the
- * conversation's model. It is stored as this row's config and read through the
- * `smallModel` service; the Client half edits it on the Models settings page.
- * The conversation default stays owned by `@deepseek-ai/dsh-agent-default-model`.
+ * The page's own values — the new-session model, agent, and permissions — are
+ * Harness settings, written through the settings API; this row holds no
+ * configuration of its own. The conversation default stays owned by
+ * `@deepseek-ai/dsh-agent-default-model`.
  *
  * @module @pcmid/dsh-model-defaults
  */
-
-import { Service } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'model-defaults'
@@ -44,40 +41,12 @@ export function keepDefaultFromSessionSwitches(defaults, warn) {
   return () => { delete defaults.saveSelection }
 }
 
-/** Small model selection; omitting provider or model configures none, and `enabled: false` keeps the choice but stops using it. */
-export class SmallModelConfig extends Service {
-  static Config = z.object({
-    enabled: z.boolean().volatile(),
-    provider: z.string().volatile(),
-    model: z.string().volatile(),
-    reasoningEffort: z.string().volatile(),
+/** Keep the conversation default from following composer switches. */
+export function apply(ctx) {
+  ctx.inject(['agentDefaultModel'], (child) => {
+    child.effect(
+      () => keepDefaultFromSessionSwitches(child.agentDefaultModel, message => child.logger.warn(message)),
+      'model-defaults: keep the default from session switches',
+    )
   })
-
-  constructor(ctx, config) {
-    super(ctx, 'smallModel')
-    this.config = config
-    // Edited by this bundle's own section, so no generated settings page.
-    ctx.inject(['settings'], (child) => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
-    ctx.inject(['agentDefaultModel'], (child) => {
-      child.effect(
-        () => keepDefaultFromSessionSwitches(child.agentDefaultModel, message => child.logger.warn(message)),
-        'model-defaults: keep the default from session switches',
-      )
-    })
-  }
-
-  /**
-   * Read the small model selection consumers should use.
-   * @returns a detached provider, model, and optional effort, or undefined while it is switched off or until both provider and model are set.
-   */
-  currentSelection() {
-    if (this.config.enabled.get() === false) return undefined
-    const provider = this.config.provider.get()
-    const model = this.config.model.get()
-    if (!provider || !model) return undefined
-    const reasoningEffort = this.config.reasoningEffort.get()
-    return { provider, model, ...reasoningEffort ? { reasoningEffort } : {} }
-  }
 }
-
-export default SmallModelConfig

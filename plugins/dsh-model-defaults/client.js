@@ -11,7 +11,6 @@ window.__ModuleLoader__.load({
     const SAVED_NOTICE_MS = 1600;
     const NAMESPACES = {
       conversation: 'agent-default-model',
-      small: 'model-defaults',
       permission: 'permission',
       agent: 'agent-preset-registry',
     };
@@ -34,7 +33,6 @@ window.__ModuleLoader__.load({
     const zh = {
       title: '默认设置',
       newSessions: '新会话',
-      otherModels: '其他模型',
       providers: '供应商',
       modelLabel: '模型',
       modelTip: '新会话始终使用这个模型。在输入框切换模型只影响当前会话。',
@@ -42,9 +40,6 @@ window.__ModuleLoader__.load({
       agentTip: '新会话默认使用的智能体。已开始的会话不受影响。',
       permissionLabel: '权限',
       permissionTip: '新会话的默认权限，不影响已开始的会话。当前会话的权限在输入框切换。',
-      useSmall: '使用默认小模型',
-      useSmallTip: '开启后，网页搜索使用下面的小模型；关闭后，跟随当前会话的模型。',
-      smallLabel: '小模型',
       chooseModel: '选择模型',
       chooseHint: '选择后生效',
       effortDefault: '默认',
@@ -66,7 +61,6 @@ window.__ModuleLoader__.load({
     const en = {
       title: 'Defaults',
       newSessions: 'New sessions',
-      otherModels: 'Other models',
       providers: 'Providers',
       modelLabel: 'Model',
       modelTip: 'New sessions always start with this model. Switching models in the composer only affects the current session.',
@@ -74,9 +68,6 @@ window.__ModuleLoader__.load({
       agentTip: 'The agent new sessions start with. Sessions already started keep theirs.',
       permissionLabel: 'Permissions',
       permissionTip: 'The default permissions for new sessions. Sessions already started keep theirs; switch the current one in the composer.',
-      useSmall: 'Use default small model',
-      useSmallTip: 'When on, web search uses the small model below. When off, it follows the session\'s model.',
-      smallLabel: 'Small model',
       chooseModel: 'Choose a model',
       chooseHint: 'Takes effect once chosen',
       effortDefault: 'Default',
@@ -223,12 +214,11 @@ ${SECTION} > ul { margin-top: 0; }
     function createController(ctx) {
       const forms = {
         conversation: ctx.configForms.get(NAMESPACES.conversation),
-        small: ctx.configForms.get(NAMESPACES.small),
         permission: ctx.configForms.get(NAMESPACES.permission),
         agent: ctx.configForms.get(NAMESPACES.agent),
       };
       const developerTools = ctx.configForms.developerTools.enabled;
-      const fields = ['conversation', 'small', 'smallEnabled', 'agent', 'permission'];
+      const fields = ['conversation', 'agent', 'permission'];
       const writes = Object.fromEntries(fields.map(field => [field, { saving: false, failed: false, saved: false, notice: null }]));
       const timers = new Map();
       const resources = {
@@ -249,8 +239,6 @@ ${SECTION} > ul { margin-top: 0; }
 
       const projection = () => {
         const snapshots = Object.fromEntries(Object.entries(forms).map(([key, form]) => [key, form.getSnapshot()]));
-        const smallValue = snapshots.small.value;
-        const small = selectionOf(smallValue);
         const permissionCatalog = resources.permissions.value;
         return {
           modelsReady: resources.catalog.status === 'ready' || resources.catalog.groups.length > 0,
@@ -263,14 +251,6 @@ ${SECTION} > ul { margin-top: 0; }
             enabled: snapshots.conversation.status === 'ready' && snapshots.conversation.writable,
             visible: snapshots.conversation.status !== 'unavailable',
           },
-          small: {
-            ...writes.small,
-            selected: small,
-            on: smallValue?.enabled ?? small !== undefined,
-            enabled: snapshots.small.status === 'ready' && snapshots.small.writable,
-            visible: snapshots.small.status !== 'unavailable',
-          },
-          smallEnabled: writes.smallEnabled,
           agent: {
             ...writes.agent,
             options: agentOptions().map(row => ({ id: row.id, ...row.name === undefined ? {} : { name: row.name } })),
@@ -421,9 +401,6 @@ ${SECTION} > ul { margin-top: 0; }
           retry: loadAll,
           pickConversationModel: (key) => { pickModel('conversation', forms.conversation, key); },
           pickConversationEffort: (effort) => { pickEffort('conversation', forms.conversation, effort); },
-          pickSmallModel: (key) => { pickModel('small', forms.small, key); },
-          pickSmallEffort: (effort) => { pickEffort('small', forms.small, effort); },
-          setSmallOn: (on) => { void run('smallEnabled', () => forms.small.set('enabled', on)); },
           pickAgent(id) {
             const blank = mainBlankSession();
             void run('agent', async () => {
@@ -727,8 +704,7 @@ ${SECTION} > ul { margin-top: 0; }
       const { t, load } = props;
       const state = props.useModelDefaults(snapshot => snapshot);
       useEffect(() => { load(); }, [load]);
-      const { conversation, small, smallEnabled, agent, permission, groups, modelsReady } = state;
-      const smallOn = small.on;
+      const { conversation, agent, permission, groups, modelsReady } = state;
       const hasNewSessions = conversation.visible || agent.visible || permission.visible;
       const agentOptions = agent.options.map(option => ({ value: option.id, label: props.agentLabel(option) }));
       const agentCurrent = agentOptions.find(option => option.value === agent.current);
@@ -781,39 +757,6 @@ ${SECTION} > ul { margin-top: 0; }
                   }),
                 h(WriteStatus, { write: permission, t }))
               : null)
-          : null,
-        small.visible
-          ? h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-other` },
-            h('h3', { id: `${PREFIX}-other`, className: `${PREFIX}-heading` }, t('otherModels')),
-            h('div', { className: `${PREFIX}-row` },
-              h('div', { className: `${PREFIX}-label`, style: { flexBasis: 'auto' } },
-                h('label', { className: `${PREFIX}-checkbox` },
-                  h('input', {
-                    type: 'checkbox',
-                    checked: smallOn,
-                    disabled: !small.enabled || smallEnabled.saving,
-                    onChange: (event) => { props.setSmallOn(event.target.checked); },
-                  }),
-                  t('useSmall')),
-                h(Tip, { label: t('useSmall'), text: t('useSmallTip'), t })),
-              h(WriteStatus, { write: smallEnabled, t })),
-            h(Row, { label: t('smallLabel'), muted: !smallOn, t },
-              h(ModelControls, {
-                label: t('smallLabel'),
-                row: small,
-                groups,
-                ready: modelsReady,
-                t,
-                disabled: !small.enabled || small.saving || !smallOn,
-                placeholder: t('chooseModel'),
-                onModel: props.pickSmallModel,
-                onEffort: props.pickSmallEffort,
-              }),
-              h(WriteStatus, {
-                write: small,
-                t,
-                ...smallOn && small.selected === undefined && modelsReady ? { hint: t('chooseHint') } : {},
-              })))
           : null,
         state.loadFailed
           ? h('div', { className: `${PREFIX}-load-error` },

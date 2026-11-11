@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Default models",
-    "description": "Adds new-session defaults (model, agent, permissions) and a small model to the top of the Models settings page."
+    "description": "Adds new-session defaults (model, agent, permissions) to the top of the Models settings page."
   }
 }
