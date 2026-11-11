@@ -84,7 +84,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "b84694d3b58a5d63ecd6ce3ccb2df39748244a87",
+            "commit": "148bf85cf144c486141e969842fb48e9cfa91fa8",
             "path": "plugins/dsh-codex-provider"
           },
           "engines": {
@@ -127,7 +127,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "8a23d42791ab8c8c86dc668e1bf1253b1c5c7f36",
+            "commit": "688090aaad881a6f5deb039907a59fb17b83eab0",
             "path": "plugins/dsh-model-defaults"
           },
           "engines": {
@@ -170,7 +170,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "2a473640ace6d5302ebe4141598c6461ebcb392f",
+            "commit": "2a7e0df3c8c5d165a0cee21e4256266fdc526376",
             "path": "plugins/dsh-retry-advisor"
           },
           "engines": {
@@ -213,7 +213,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7844eba02e92c2f90e3e7e872466615464ee10a0",
+            "commit": "71fe17771513dc8de3a2d5f41e10db8c513b60cf",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {
@@ -256,7 +256,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "545edb555ca12a456628185c5fef3e712cd78dd3",
+            "commit": "39d7c4c0ac0f87e18cc837017003eb648bcdad9f",
             "path": "plugins/dsh-auto-restart"
           },
           "engines": {
@@ -299,7 +299,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "73cfd6aba6c23046415a7de2f63272786ab770bb",
+            "commit": "47b3531174df5ae2a803ad760573a5cc0a1c2578",
             "path": "plugins/dsh-remote-relay"
           },
           "engines": {
@@ -342,7 +342,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "164b49fb7a42531ff521da8e3b74a604edb10068",
+            "commit": "9bebc60bd590a7547c2db1399cc58df28bd8d1dc",
             "path": "plugins/dsh-todo-guard"
           },
           "engines": {
