@@ -1,6 +1,7 @@
 // Browser test of the phone launcher against a running openchamber-relay, the Host plugin, and a fake
 // Web GUI: pairs from the QR link, loads the embedded page through the service worker, and checks
-// fetch, a gzip asset, and a WebSocket through the injected transport.
+// fetch, a gzip asset, and a WebSocket through the injected transport. A second host then checks the
+// device menu bridge the DSH page's client plugin uses: the rows it gets, switching, and leaving.
 // Usage: RELAY_URL=ws://127.0.0.1:18788/ws PLAYWRIGHT=/path/to/playwright-core/index.mjs \
 //   node --import ./test/hooks.mjs test/launcher.e2e.mjs
 import assert from 'node:assert/strict'
@@ -36,10 +37,28 @@ const launcher = await serveLauncher()
 const launcherUrl = `http://localhost:${launcher.address().port}/`
 const settings = { enabled: true, relayUrl, launcherUrl, hostName: 'e2e-host', pairingMinutes: 5 }
 const host = fakeContext(gui.origin, settings)
+const second = fakeContext(gui.origin, { ...settings, hostName: 'e2e-second' })
+const BRIDGE = { channel: 'dsh-remote-relay', v: 1 }
+
+/** Say hello from the embedded page as the client plugin does, and return the launcher's context. */
+function hello(frame) {
+  return frame.evaluate((bridge) => new Promise((resolve) => {
+    addEventListener('message', (event) => { if (event.data?.channel === bridge.channel && event.data.type === 'context') resolve(event.data) })
+    parent.postMessage({ ...bridge, type: 'hello' }, '*')
+  }), BRIDGE)
+}
+
+async function probedFrame(page, label, except) {
+  const frame = await until(() => page.frames().find((candidate) => candidate !== except && candidate.url().includes('/app/')), label)
+  await frame.waitForFunction(() => window.__probe !== undefined, null, { timeout: 20_000 })
+  return frame
+}
 const browser = await chromium.launch({ executablePath: process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true })
 try {
   apply(host.ctx, host.config)
+  apply(second.ctx, second.config)
   await until(async () => (await host.call('status')).value.control.state === 'online', 'relay online')
+  await until(async () => (await second.call('status')).value.control.state === 'online', 'second relay online')
   const { link } = (await host.call('pair')).value.pairing
   const page = await browser.newPage()
   page.on('console', (message) => { if (message.type() === 'error') console.log('[page]', message.text()) })
@@ -61,6 +80,30 @@ try {
   await reopened.waitForFunction(() => window.__probe !== undefined, null, { timeout: 20_000 })
   assert.equal((await reopened.evaluate(() => window.__probe)).ws, 'mux:frame')
 
+  // The device menu: pair a second host, then switch back from its page.
+  await page.goto((await second.call('pair')).value.pairing.link)
+  await page.waitForSelector('#pair-card:not([hidden])')
+  await page.fill('#device-name', 'e2e phone 2')
+  await page.click('#pair-confirm')
+  const onSecond = await probedFrame(page, 'second host frame')
+  const context = await hello(onSecond)
+  const hostId = (await host.call('status')).value.serverId
+  const secondId = (await second.call('status')).value.serverId
+  assert.equal(context.id, secondId)
+  assert.equal(context.state, 'connected')
+  assert.equal(context.rows.local.name, 'e2e phone 2')
+  assert.deepEqual(context.rows.remotes.map((row) => [row.id, row.current, row.action]).sort(), [[hostId, false, 'switch'], [secondId, true, 'switch']].sort())
+  await page.waitForSelector('#chip', { state: 'hidden' })
+  await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])
+  const backOnFirst = await probedFrame(page, 'switched frame', onSecond)
+  assert.equal(await page.evaluate(() => localStorage.getItem('dsh-remote:last')), hostId)
+  await until(async () => (await host.call('status')).value.devices[0].connections === 1, 'first host connection')
+  assert.equal((await hello(backOnFirst)).id, hostId)
+  await backOnFirst.evaluate((bridge) => { parent.postMessage({ ...bridge, type: 'local' }, '*') }, BRIDGE)
+  await page.waitForSelector('#home:not([hidden])')
+  await page.locator('#hosts .row', { hasText: 'e2e-host' }).locator('button.primary').click()
+  await probedFrame(page, 'reopened from the list')
+
   // Removing the device ends access.
   await host.call('revoke', { id: status.devices[0].id })
   await page.waitForSelector('#chip[data-state="rejected"]', { timeout: 20_000 })
@@ -68,6 +111,7 @@ try {
 } finally {
   await browser.close()
   host.dispose()
+  second.dispose()
   gui.close()
   launcher.close()
 }
