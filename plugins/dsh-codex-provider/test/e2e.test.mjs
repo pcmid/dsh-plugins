@@ -10,7 +10,8 @@ import { CodexAdapter } from '../index.js'
 import { wireName } from '../protocol.js'
 
 // Runs the installed Codex against a loopback Responses fixture. No account or paid API call.
-test('real Codex returns a whole tool batch; the next request contains DSH results', { timeout: 45000 }, async () => {
+for (const interceptNativeTools of [false, true]) {
+test(`real Codex handles native exec, DSH tools and replay (intercept=${interceptNativeTools})`, { timeout: 45000 }, async () => {
   const recorded = []
   const server = createServer(async (req, res) => {
     try {
@@ -19,9 +20,11 @@ test('real Codex returns a whole tool batch; the next request contains DSH resul
       if (req.headers['content-encoding'] === 'zstd') data = zstdDecompressSync(data)
       const body = JSON.parse(data)
       recorded.push({ headers: req.headers, body })
-      const output = recorded.length === 1 ? ['a', 'b'].map(id => ({
-        type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name: wireName('read'),
-        arguments: JSON.stringify({ path: `${id}.txt` }), status: 'completed',
+      const output = recorded.length === 1 ? [{ type: 'custom_tool_call', id: 'ctc_native', call_id: 'native', name: 'exec',
+        input: 'text(1 + 1)', status: 'completed' }] : recorded.length === 2 ? ['a', 'b'].map(id => ({
+        type: id === 'a' ? 'function_call' : 'custom_tool_call', id: `${id === 'a' ? 'fc' : 'ctc'}_${id}`,
+        call_id: `call_${id}`, name: wireName('read'), status: 'completed',
+        [id === 'a' ? 'arguments' : 'input']: JSON.stringify({ path: `${id}.txt` }),
       })) : [{ type: 'message', id: 'msg_answer', role: 'assistant', status: 'completed',
         content: [{ type: 'output_text', text: 'Both files read.', annotations: [], logprobs: [] }] }]
       const response = { id: `resp_${recorded.length}`, object: 'response', model: 'fixture-model',
@@ -51,7 +54,7 @@ test('real Codex returns a whole tool batch; the next request contains DSH resul
       '[model_providers.fixture]', 'name="Fixture"', 'wire_api="responses"',
       `base_url="http://127.0.0.1:${server.address().port}/v1"`, 'requires_openai_auth=false',
     ].join('\n'))
-    adapter = new CodexAdapter({ command: process.env.CODEX_BIN ?? 'codex', codexHome, timeoutMs: 15000 })
+    adapter = new CodexAdapter({ command: process.env.CODEX_BIN ?? 'codex', codexHome, timeoutMs: 15000, interceptNativeTools })
     const options = { provider: 'codex-provider', model: 'fixture-model',
       tools: [{ name: 'read', description: 'Read a file', parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }],
       messages: [{ role: 'user', content: [{ type: 'text', text: 'Read a.txt and b.txt' }] }],
@@ -60,15 +63,32 @@ test('real Codex returns a whole tool batch; the next request contains DSH resul
     assert.equal(first.at(-1).reason.kind, 'tool-calls')
     const calls = first.filter(chunk => chunk.type === 'block-end' && chunk.block.type === 'tool-call').map(chunk => chunk.block)
     assert.deepEqual(calls.map(call => call.id), ['call_a', 'call_b'])
-    assert.equal(recorded.length, 1, 'Codex must not continue the tool loop on its own')
+    assert.deepEqual(calls.map(call => JSON.parse(call.arguments)), [{ path: 'a.txt' }, { path: 'b.txt' }])
+    assert.equal(recorded.length, 2, 'Codex continues native tools, but leaves DSH tools unanswered')
+    const nativeOutput = recorded[1].body.input.find(item => item.type === 'custom_tool_call_output' && item.call_id === 'native')
+    if (interceptNativeTools) {
+      assert.match(JSON.stringify(nativeOutput.output), /unsupported custom tool call: exec/)
+      assert.ok(!recorded[0].body.tools.some(tool => tool.name === 'exec'))
+    } else {
+      assert.match(JSON.stringify(nativeOutput.output), /Script completed/)
+      assert.ok(nativeOutput.output.some(item => item.text === '2'), 'The real Codex exec must run, not just be ignored')
+      assert.ok(recorded[0].body.tools.some(tool => tool.name === 'exec'))
+    }
     const second = await Array.fromAsync(adapter.stream({ ...options, messages: [
-      ...options.messages, { role: 'assistant', content: calls },
+      ...options.messages, { role: 'assistant', content: calls,
+        source: { kind: 'model', provider: options.provider, model: options.model, replayState: first.at(-1).replayState } },
       ...calls.map(call => ({ role: 'tool', toolCallId: call.id, content: [{ type: 'text', text: `DSH result for ${call.id}` }] })),
     ] }))
     assert.equal(second.at(-1).reason.kind, 'stop')
     assert.equal(second.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'Both files read.')
-    assert.equal(recorded.length, 2)
-    const results = recorded[1].body.input.filter(item => item.type === 'function_call_output')
+    assert.equal(recorded.length, 3)
+    assert.deepEqual(recorded[2].body.input.find(item => item.type === 'custom_tool_call_output' && item.call_id === 'native').output,
+      nativeOutput.output, 'Native results survive the next DSH step')
+    const replayed = recorded[2].body.input.filter(item => item.type === 'function_call')
+    assert.deepEqual(replayed.map(item => [item.call_id, JSON.parse(item.arguments)]), [
+      ['call_a', { path: 'a.txt' }], ['call_b', { path: 'b.txt' }],
+    ])
+    const results = recorded[2].body.input.filter(item => item.type === 'function_call_output')
     assert.equal(results.length, 2)
     assert.match(JSON.stringify(results), /DSH result for call_a/)
     assert.match(recorded[0].headers['user-agent'], /deepseek/i)
@@ -79,3 +99,4 @@ test('real Codex returns a whole tool batch; the next request contains DSH resul
     await rm(codexHome, { recursive: true, force: true })
   }
 })
+}

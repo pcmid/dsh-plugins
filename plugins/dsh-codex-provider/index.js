@@ -8,22 +8,30 @@ import { projectRequest, readStep } from './protocol.js'
 
 export const name = 'codex-provider'
 export const inject = ['llm']
+const profile = z.object({
+  advanced: z.object({
+    command: z.string().description('Optional Codex executable path; empty uses codex from PATH.'),
+    interceptNativeTools: z.boolean().default(false).description('Block native Codex tools and let the model continue with DSH tools.'),
+  }).description('Advanced settings').collapse(),
+})
 export const Config = z.object({
-  command: z.string().default('codex').description('Path to the Codex CLI (tested with 0.167.0).'),
+  providers: z.dict(profile).default({}),
+  command: z.string().hidden().description('Legacy Codex executable path.'),
   codexHome: z.string().description('Optional CODEX_HOME; uses the CLI login from this directory.'),
   models: z.array(z.string()).default([]).description('Model IDs to show; empty discovers models through app-server.'),
   contextWindow: z.natural().min(1).default(128000).description('Conservative DSH context budget. Set this to the capacity of the selected model.'),
   timeoutMs: z.natural().min(1000).max(2147483647).default(600000).description('Maximum time for one model step, including startup.'),
 })
 
-const disabledFeatures = ['shell_tool', 'apps', 'hooks', 'memories', 'multi_agent', 'multi_agent_v2',
-  'code_mode', 'code_mode_only', 'computer_use', 'browser_use', 'image_generation', 'view_image',
-  'token_budget', 'goals', 'sleep_tool', 'request_permissions_tool', 'tool_suggest']
+const disabledFeatures = ['apps', 'hooks', 'memories', 'multi_agent', 'multi_agent_v2',
+  'code_mode_only', 'computer_use', 'browser_use', 'image_generation',
+  'token_budget', 'goals', 'request_permissions_tool', 'tool_suggest']
 
 export class CodexAdapter extends LlmAdapter {
   constructor(config = {}, clientFactory = (command, args, options) => new AppServer(command, args, options)) {
     super()
-    this.config = { command: 'codex', models: [], contextWindow: 128000, timeoutMs: 600000, ...config }
+    this.config = { models: [], contextWindow: 128000, timeoutMs: 600000, interceptNativeTools: false, ...config }
+    this.config.command = config.command?.trim() || 'codex'
     this.clientFactory = clientFactory
     this.clients = new Set()
     this.disposed = false
@@ -102,9 +110,13 @@ export class CodexAdapter extends LlmAdapter {
 
   async startStep({ rpc, cwd }, options, projected) {
     const { config } = await rpc.request('config/read', { includeLayers: false })
-    const threadConfig = { web_search: 'disabled', project_doc_max_bytes: 0,
+    const threadConfig = { web_search: this.config.interceptNativeTools ? 'disabled' : config.web_search ?? 'disabled', project_doc_max_bytes: 0,
       model_auto_compact_token_limit: Number.MAX_SAFE_INTEGER,
       ...Object.fromEntries(disabledFeatures.map(feature => [`features.${feature}`, false])) }
+    threadConfig['features.code_mode'] = !this.config.interceptNativeTools
+    if (this.config.interceptNativeTools) {
+      for (const feature of ['shell_tool', 'view_image', 'sleep_tool']) threadConfig[`features.${feature}`] = false
+    }
     const provider = config.model_provider ?? 'openai'
     threadConfig[`model_providers.${JSON.stringify(provider)}.name`] = config.model_providers?.[provider]?.name ?? provider
     threadConfig[`model_providers.${JSON.stringify(provider)}.http_headers`] = {
@@ -113,10 +125,10 @@ export class CodexAdapter extends LlmAdapter {
     for (const key of Object.keys(config.mcp_servers ?? {})) threadConfig[`mcp_servers.${JSON.stringify(key)}.enabled`] = false
     for (const key of Object.keys(config.plugins ?? {})) threadConfig[`plugins.${JSON.stringify(key)}.enabled`] = false
     const started = await rpc.request('thread/start', {
-      model: options.model, cwd, ephemeral: true, environments: [], selectedCapabilityRoots: [],
+      model: options.model, cwd, ephemeral: true, ...(this.config.interceptNativeTools ? { environments: [] } : {}), selectedCapabilityRoots: [],
       approvalPolicy: 'never', sandbox: 'read-only', experimentalRawEvents: true,
       baseInstructions: projected.instructions || 'Follow the conversation instructions.',
-      developerInstructions: 'DeepSeek Harness owns all tools and scheduling. Call only the supplied dsh_ tools. Do not use native Codex tools. Use workspace paths supplied by Harness, not this provider temporary directory. Tool results arrive through the conversation history.',
+      developerInstructions: `DeepSeek Harness executes the supplied dsh_ tools. Call these directly as function tools, outside exec; their results arrive through conversation history. Use DSH tools for workspace access, with paths supplied by Harness, not this provider temporary directory. ${this.config.interceptNativeTools ? 'Native Codex tools are disabled. If a native tool is unavailable, continue using the supplied DSH tools.' : 'Codex executes its own available native tools and can continue after their results.'}`,
       dynamicTools: projected.dynamicTools, config: threadConfig,
     })
     const threadId = started.thread.id
@@ -135,6 +147,7 @@ export class CodexAdapter extends LlmAdapter {
       yield* readStep(rpc, threadId, turnId, projected.names)
     } finally {
       // Closing also cancels unanswered dynamic-tool RPCs; no tool success is fabricated.
+      // shortcut: Native background cells end at a DSH batch; retain instances if cross-step execution is needed.
       await this.close(instance)
     }
   }
@@ -146,7 +159,13 @@ export class CodexAdapter extends LlmAdapter {
 }
 
 export function apply(ctx, config) {
-  const adapter = new CodexAdapter(config)
+  const settingsNs = ctx.fiber?.entry?.options.id ?? name
+  ctx.llm.registerConfigurableProviders([{ provider: name, displayName: 'Codex Provider', settingsNs,
+    settingsPath: ['providers', name], nativeAuth: { env: [], oauth: true } }])
+  ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
+  const selected = config.providers?.[name]
+  if (!selected) return
+  const adapter = new CodexAdapter({ ...config, ...selected.advanced, command: selected.advanced?.command })
   ctx.effect(() => ctx.llm.registerAdapter(['codex-provider'], adapter))
   ctx.on('dispose', () => adapter.dispose())
 }
