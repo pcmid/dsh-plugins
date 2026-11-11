@@ -16,6 +16,7 @@
 
 import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
+import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'web-search-native'
@@ -37,6 +38,18 @@ const MESSAGES_API = 'anthropic-messages'
 
 /** Route protocol that searches through the OpenAI search endpoints. */
 const RESPONSES_API = 'openai-responses'
+
+/**
+ * Protocol a route that names no `api` runs, as `llm-pi-ai` resolves it: the
+ * one protocol all of the installed catalog's models for that route share.
+ * @param provider - the route id.
+ * @returns the shared protocol, or undefined when the catalog has no such
+ * route or its models use more than one protocol.
+ */
+export function catalogApi(provider) {
+  const apis = new Set(getBuiltinModels(provider).map(model => model.api))
+  return apis.size === 1 ? [...apis][0] : undefined
+}
 
 /** Continuations allowed when the API pauses a long server-tool turn (`stop_reason: pause_turn`). */
 const MAX_PAUSE_CONTINUATIONS = 3
@@ -397,7 +410,7 @@ export class NativeSearchProvider {
     }
     const route = this.routeOf(selection.provider)
     if (route === undefined) {
-      throw new Error(`${this.id}: provider "${selection.provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API}, a baseURL, and an apiKeyEnv`)
+      throw new Error(`${this.id}: provider "${selection.provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API} (set on the route or used by its built-in catalog), a baseURL, and an apiKeyEnv`)
     }
     const apiKey = await this.apiKey(route)
     if (apiKey === undefined) {
@@ -424,7 +437,7 @@ export class NativeSearchProvider {
   async pinnedTarget(provider) {
     const route = this.routeOf(provider)
     if (route === undefined) {
-      throw new Error(`${this.id}: pinned provider "${provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API}, a baseURL, and an apiKeyEnv`)
+      throw new Error(`${this.id}: pinned provider "${provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API} (set on the route or used by its built-in catalog), a baseURL, and an apiKeyEnv`)
     }
     const apiKey = await this.apiKey(route)
     if (apiKey === undefined) {
@@ -450,10 +463,12 @@ export class NativeSearchProvider {
 
   /**
    * Connection facts of one route, read from its `llm-pi-ai` profile on every
-   * call so a route edit applies to the next search.
-   * @returns the endpoint, key reference, headers, and profile, or undefined
-   * when the route runs neither supported protocol or names no `baseURL` or
-   * `apiKeyEnv`. Catalog routes and other adapters' routes declare neither.
+   * call so a route edit applies to the next search. A built-in catalog route
+   * may leave out `api` and `baseURL`; they then come from the catalog, as
+   * they do for the route's own chat requests.
+   * @returns the protocol, endpoint, key reference, headers, and profile, or
+   * undefined when the route runs neither supported protocol, has no
+   * endpoint, or names no `apiKeyEnv`. Other adapters' routes have no profile here.
    */
   routeOf(provider) {
     const row = this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
@@ -461,9 +476,12 @@ export class NativeSearchProvider {
     const owner = [...this.ctx.loader.entries()]
       .find(entry => entry.options.id === row.settingsNs && entry.options.name === ROUTE_OWNER_PACKAGE)
     const profile = owner?.fiber?.effectiveConfig?.providers?.get()?.[provider]
-    if (profile?.api !== MESSAGES_API && profile?.api !== RESPONSES_API) return undefined
-    if (!profile.baseURL || !profile.apiKeyEnv) return undefined
-    return { baseURL: profile.baseURL, apiKeyRef: profile.apiKeyEnv, headers: profile.headers ?? {}, profile }
+    if (profile === undefined) return undefined
+    const api = profile.api ?? catalogApi(provider)
+    if (api !== MESSAGES_API && api !== RESPONSES_API) return undefined
+    const baseURL = profile.baseURL || row.defaultBaseURL
+    if (!baseURL || !profile.apiKeyEnv) return undefined
+    return { api, baseURL, apiKeyRef: profile.apiKeyEnv, headers: profile.headers ?? {}, profile }
   }
 
   /**
@@ -563,9 +581,9 @@ export class NativeSearchProvider {
 
   async search(request, signal) {
     const target = await this.target()
-    this.ctx.logger.info(`native web search on ${target.provider}/${target.model} via ${target.route.profile.api}${this.pinnedProvider === '' ? ' (following the conversation)' : ' (pinned)'}`)
+    this.ctx.logger.info(`native web search on ${target.provider}/${target.model} via ${target.route.api}${this.pinnedProvider === '' ? ' (following the conversation)' : ' (pinned)'}`)
 
-    const collected = target.route.profile.api === MESSAGES_API
+    const collected = target.route.api === MESSAGES_API
       ? await this.searchMessages(target, request, signal)
       : await this.searchOpenAI(target, request, signal)
     return this.finalize(request, collected)

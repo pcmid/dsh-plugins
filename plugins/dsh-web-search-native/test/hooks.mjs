@@ -16,6 +16,7 @@ function locate(variable, relative) {
 
 const entries = {
   '@deepseek-ai/schemastery': locate('SCHEMASTERY_ENTRY', 'vendor/schemastery/lib/index.mjs'),
+  '@earendil-works/pi-ai/providers/all': locate('PI_AI_PROVIDERS_ENTRY', 'packages/llm/llm-pi-ai/node_modules/@earendil-works/pi-ai/dist/providers/all.js'),
 }
 
 registerHooks({

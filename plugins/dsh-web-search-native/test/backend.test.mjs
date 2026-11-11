@@ -42,12 +42,12 @@ const ROUTES = {
 /** Distinguishes "no selection given" from "no conversation initiated the search". */
 const NONE = Symbol('none')
 
-function harness({ selection = { provider: 'pool', model: 'gpt-6-astra' }, routes = ROUTES, keys = {}, config = {}, respond } = {}) {
+function harness({ selection = { provider: 'pool', model: 'gpt-6-astra' }, routes = ROUTES, directory = {}, keys = {}, config = {}, respond } = {}) {
   const calls = []
   const ctx = {
     credentials: { resolve: async ref => ({ value: keys[ref] ?? 'secret' }) },
     agents: { currentInitiator: () => (selection === NONE ? undefined : { model: { current: () => selection } }) },
-    llm: { listConfigurableProviders: () => Object.keys(routes).map(provider => ({ provider, settingsNs: 'llm' })) },
+    llm: { listConfigurableProviders: () => Object.keys(routes).map(provider => ({ provider, settingsNs: 'llm', ...directory[provider] })) },
     loader: { entries: () => [{ options: { id: 'llm', name: '@deepseek-ai/dsh-llm-pi-ai' }, fiber: { effectiveConfig: { providers: { get: () => routes } } } }] },
     logger: { info: () => {} },
     web: { registerSearchProvider: () => {} },
@@ -278,6 +278,39 @@ test('an Anthropic route sends the server tool, its version header, and the sear
   assert.deepEqual(calls[0].body.thinking, { type: 'adaptive' })
   assert.deepEqual(calls[0].body.output_config, { effort: 'low' })
   assert.equal(result.content, 'The answer.')
+})
+
+test('a built-in catalog route without api or baseURL searches with the catalog protocol and endpoint', async () => {
+  const { provider, calls } = harness({
+    // The shipped `anthropic` route as a profile usually configures it: a key and models, no api.
+    routes: { anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY', models: [{ id: 'claude-haiku-5-5', name: 'Haiku' }] } },
+    directory: { anthropic: { declared: false, defaultBaseURL: 'https://api.anthropic.com' } },
+    selection: { provider: 'anthropic', model: 'claude-haiku-5-5' },
+    respond: () => ({ status: 200, data: { stop_reason: 'end_turn', content: [
+      { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'https://a.example', title: 'A' }] },
+    ] } }),
+  })
+  assert.equal(await provider.ready('anthropic'), true)
+  await provider.search({ query: 'q' })
+  assert.equal(calls[0].url, 'https://api.anthropic.com/v1/messages')
+  assert.deepEqual(calls[0].body.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }])
+})
+
+test('a route keeps its own api and baseURL over the catalog, and an uncatalogued route still needs an api', async () => {
+  const { provider, calls } = harness({
+    routes: { anthropic: { baseURL: 'https://relay.example/', apiKeyEnv: 'ANTHROPIC_API_KEY' } },
+    directory: { anthropic: { defaultBaseURL: 'https://api.anthropic.com' } },
+    selection: { provider: 'anthropic', model: 'claude-haiku-5-5' },
+    respond: () => ({ status: 200, data: { stop_reason: 'end_turn', content: [
+      { type: 'web_search_tool_result', content: [{ type: 'web_search_result', url: 'https://a.example' }] },
+    ] } }),
+  })
+  await provider.search({ query: 'q' })
+  assert.equal(calls[0].url, 'https://relay.example/v1/messages')
+  const relabelled = harness({ routes: { anthropic: { api: 'openai-images', baseURL: 'https://x.example', apiKeyEnv: 'K' } }, selection: { provider: 'anthropic', model: 'm' } })
+  assert.equal(await relabelled.provider.ready('anthropic'), false, 'an explicit api wins over the catalog')
+  const custom = harness({ routes: { gateway: { baseURL: 'https://gw.example', apiKeyEnv: 'GW_KEY' } }, selection: { provider: 'gateway', model: 'm' } })
+  assert.equal(await custom.provider.ready('gateway'), false)
 })
 
 test('answers can be switched off, and maxResults truncates the sources', async () => {
