@@ -7,4 +7,4 @@
 - 新插件要在 `catalog.json` 的 `plugins` 里登记：`{ "path": "plugins/<name>", "category": "<已声明的分类>", "labels": ["own"] }`。第三方插件写成 `{ "npm": "<包名>", "version": "<精确版本>", ... }`。
 - `index.json` 由 `scripts/build-index.mjs` 生成，不要手改。顺序是：提交插件改动 → `npm run build:index` → 提交 `index.json` → 推送。插件目录里有未提交的改动时脚本会报错；索引会把每个插件固定到最后一次修改它目录的提交。
 - 发布新版本时提高插件 `package.json` 的 `version`。
-- CI（`.github/workflows/index.yml`）运行 `npm run check:index`，以及 `plugins/dsh-retry-advisor`、`plugins/dsh-auto-restart` 和 `plugins/dsh-todo-guard` 的测试。
+- CI（`.github/workflows/index.yml`）运行 `npm run check:index`，以及 `plugins/dsh-retry-advisor`、`plugins/dsh-auto-restart`、`plugins/dsh-web-search-native`、`plugins/dsh-model-defaults`、`plugins/dsh-todo-guard` 和 `plugins/dsh-codex-provider` 的测试。

@@ -61,7 +61,7 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 **收录或升级第三方插件**：在 `catalog.json` 里加一项或改版本号，例如 `{ "npm": "<包名>", "version": "<版本>", "category": "...", "labels": ["external"] }`，然后 `npm run build:index`。第三方插件固定到这里写的版本；标题、描述和图标从该版本在 npm 上的包里读取，下载的包会按 registry 记录的完整性哈希校验。
 
-`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor`、`dsh-auto-restart`、`dsh-todo-guard` 和 `dsh-codex-provider` 的离线测试。
+`npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，CI 在每次推送时运行它，并运行 `dsh-retry-advisor`、`dsh-auto-restart`、`dsh-web-search-native`、`dsh-model-defaults`、`dsh-todo-guard` 和 `dsh-codex-provider` 的离线测试。
 
 ## 生成规则
 
