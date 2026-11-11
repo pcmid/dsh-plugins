@@ -1,15 +1,17 @@
 // Decodes QR codes produced by the settings page encoder with jsQR across many payload lengths.
-// Usage: JSQR=/path/to/jsQR.js node --test test/qr.test.mjs
+// Uses the launcher's vendored jsQR; JSQR=/path/to/jsQR.js overrides it.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { test } from 'node:test'
 
 const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
 const start = source.indexOf('const ECC_PER_BLOCK_M')
 const end = source.indexOf('function QrCode')
 const encodeQr = new Function(`${source.slice(start, end)}\nreturn encodeQr`)()
-const jsQR = createRequire(import.meta.url)(process.env.JSQR ?? '/tmp/qrv/jsqr-1.4.0/dist/jsQR.js')
+// The vendored file is a browser script; run it with a stand-in for the page global.
+const browserGlobal = {}
+new Function('self', readFileSync(process.env.JSQR ?? new URL('../launcher/vendor/jsQR.js', import.meta.url), 'utf8'))(browserGlobal)
+const jsQR = browserGlobal.jsQR
 
 function decode(modules) {
   const scale = 4

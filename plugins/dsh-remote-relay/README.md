@@ -11,7 +11,7 @@
 | Host 插件 | `index.js` | 连接 relay，验证设备，把请求转发给本机 Web GUI |
 | 设备切换（Host） | `remotes.js`、`loopback.js` | 本机作为设备连到其他 DSH，在本机回环地址上提供它们的界面 |
 | 设置页和设备切换（Client） | `client.js` | 侧边栏底部的设备按钮；“设置 → 远程访问”：开关、relay 地址、配对链接、设备列表 |
-| 手机启动页 | `launcher/` | 静态网页，部署到任意 HTTPS 站点；手机扫码后在里面打开 DSH |
+| 手机启动页 | `launcher/` | 静态网页，部署到任意 HTTPS 站点；手机扫码或粘贴配对链接后在里面打开 DSH |
 
 ## 使用
 
@@ -33,6 +33,8 @@
 1. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。
 2. 在设置页填写手机启动页地址，生成配对链接后会显示二维码。
 3. 用相机扫描二维码，在启动页里点“配对”。之后打开启动页会自动连接上次的 DSH；iOS 可以“添加到主屏幕”。
+
+也可以先打开启动页，在“添加 DSH”里粘贴配对链接，或点“扫描二维码”用启动页自己打开摄像头扫码。iOS 上添加到主屏幕的启动页和 Safari 不共享已配对的设备，在主屏幕版本里配对时用这种方式。浏览器有原生二维码识别（`BarcodeDetector`，如 Android 上的 Chrome）时直接使用；否则（如 Safari）按需加载 `launcher/vendor/jsQR.js`（[jsQR](https://github.com/cozmo/jsQR) 1.4.0，Apache-2.0，许可证见同目录的 `jsQR.LICENSE`）。
 
 配对链接只能用一次，默认 10 分钟内有效（`pairingMinutes`）。
 

@@ -519,6 +519,7 @@ window.__ModuleLoader__.load({
 .${PREFIX}-field { display: flex; flex-direction: column; gap: 6px; }
 .${PREFIX}-field-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
 .${PREFIX}-copy-row { display: flex; gap: 8px; align-items: center; }
+.${PREFIX}-countdown { font-variant-numeric: tabular-nums; }
 .${PREFIX}-copy-row .${PREFIX}-input { max-width: none; }
 .${PREFIX}-device { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2)); }
 .${PREFIX}-device:last-child { border-bottom: none; }
@@ -782,6 +783,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const form = ctx.configForms.get(NAMESPACE);
       const call = rpc(ctx);
       let status = null;
+      // Local clock minus Host clock, measured when the status arrives rather than at each render.
+      let offset = 0;
       let loadFailed = false;
       let actionError = null;
       let busy = null;
@@ -798,6 +801,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           configReady: snapshot.status === 'ready',
           writable: snapshot.writable === true,
           status,
+          offset,
           loadFailed,
           actionError,
           busy,
@@ -814,6 +818,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           const value = await call('status');
           if (disposed || current !== generation) return;
           status = value;
+          offset = Date.now() - value.now;
           loadFailed = false;
         } catch {
           if (disposed || current !== generation) return;
@@ -834,6 +839,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         publish();
         try {
           status = await call(endpoint, payload);
+          offset = Date.now() - status.now;
           generation++;
         } catch (error) {
           actionError = error instanceof Error ? error.message : String(error);
@@ -1480,14 +1486,18 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     }
 
     function Countdown({ expiresAt, offset, t }) {
-      const [now, setNow] = useState(() => Date.now());
+      // The local deadline is fixed per pairing: each status poll measures a slightly different offset.
+      const deadline = useMemo(() => expiresAt + offset, [expiresAt]);
+      const [tick, setTick] = useState(0);
+      const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       useEffect(() => {
-        const timer = setInterval(() => { setNow(Date.now()); }, 1000);
-        return () => { clearInterval(timer); };
-      }, []);
-      const left = Math.max(0, Math.round((expiresAt - now - offset) / 1000));
+        if (left === 0) return undefined;
+        // Wake just after the next whole second so each second is shown once.
+        const timer = setTimeout(() => { setTick((n) => n + 1); }, ((deadline - Date.now()) % 1000) + 20);
+        return () => { clearTimeout(timer); };
+      }, [deadline, tick]);
       const text = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-      return h('span', { className: `${PREFIX}-status` }, fill(t('expiresIn'), { time: text }));
+      return h('span', { className: `${PREFIX}-status ${PREFIX}-countdown` }, fill(t('expiresIn'), { time: text }));
     }
 
     function stateTone(state) {
@@ -1550,7 +1560,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const status = state.status;
       const enabled = config.enabled === true;
       const control = status?.control?.state ?? 'starting';
-      const offset = status ? Date.now() - status.now : 0;
+      const offset = state.offset;
       const editable = state.configReady && state.writable;
       const onlineCount = (status?.devices ?? []).filter((device) => device.connections > 0).length;
       const stateDetail = control === 'online' ? fill(t('onlineDetail'), { count: onlineCount }) : status?.control?.error ?? status?.relayError ?? '';
