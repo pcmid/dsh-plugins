@@ -25,6 +25,12 @@ jobs:
       - name: dsh-auto-restart tests
         working-directory: plugins/dsh-auto-restart
         run: npm install --no-save --no-package-lock && npm test
+      - name: dsh-web-search-native tests
+        working-directory: plugins/dsh-web-search-native
+        run: npm install --no-save --no-package-lock && npm test
+      - name: dsh-model-defaults tests
+        working-directory: plugins/dsh-model-defaults
+        run: npm install --no-save --no-package-lock && npm test
       - name: dsh-todo-guard tests
         working-directory: plugins/dsh-todo-guard
         run: npm install --no-save --no-package-lock && npm test
