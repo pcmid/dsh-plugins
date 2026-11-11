@@ -30,7 +30,7 @@
 
 ### 手机
 
-1. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。
+1. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。升级插件后重新部署整个目录；`index.html` 用 `app.js?v=<版本>` 加载脚本，所以 CDN 只要不长时间缓存 `index.html`，其他文件缓存多久都不会新旧混用。
 2. 在设置页填写手机启动页地址，生成配对链接后会显示二维码。
 3. 用相机扫描二维码，在启动页里点“配对”。之后打开启动页会自动连接上次的 DSH；iOS 可以“添加到主屏幕”。
 
