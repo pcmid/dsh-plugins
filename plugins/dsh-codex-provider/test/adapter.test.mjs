@@ -1,5 +1,6 @@
 import test from 'node:test'
-import { homedir } from 'node:os'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
@@ -332,6 +333,24 @@ test('model catalog, reasoning efforts and the reported context window', async (
   } finally { await adapter.dispose() }
 })
 
+test('models.dev supplies the window until Codex reports one; the config overrides both', async () => {
+  const f = fakes([[message('m1', 'Hi')]])
+  let loads = 0
+  const modelsDev = { load: async () => { loads++ }, window: model => ({ 'gpt-test': 400000 })[model] }
+  const adapter = new CodexAdapter({}, f.connect, modelsDev)
+  try {
+    assert.equal((await adapter.listModels(provider))[0].context.contextWindow, 400000)
+    await run(adapter, base)
+    f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
+    assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 258400)
+    assert.equal(loads, 2, 'Listing and resolving both check the cache')
+    const fixed = new CodexAdapter({ models: ['gpt-test', 'unlisted'], contextWindow: 64000 }, undefined, modelsDev)
+    assert.deepEqual((await fixed.listModels(provider)).map(m => m.context.contextWindow), [64000, 64000])
+    const listed = new CodexAdapter({ models: ['gpt-test', 'unlisted'] }, undefined, modelsDev)
+    assert.deepEqual((await listed.listModels(provider)).map(m => m.context.contextWindow), [400000, 128000])
+  } finally { await adapter.dispose() }
+})
+
 test('the provider registers only while enabled and follows live settings changes', async () => {
   assert.deepEqual(Config({}).providers.get(), {})
   assert.equal(new CodexAdapter({ codexPath: '   ' }).config.codexPath, 'codex')
@@ -345,7 +364,7 @@ test('the provider registers only while enabled and follows live settings change
       registrations.push(entry)
       return () => { entry.active = false }
     }, registerConfigurableProviders() {} },
-    inject() {}, effect: f => f(), on(event, listener) { listeners[event] = listener },
+    inject() {}, effect: f => f(), on(event, listener) { listeners[event] = listener }, get() {},
   }
   let value = {}
   apply(ctx, { ...Config({}), providers: { get: () => value } })
@@ -371,9 +390,22 @@ test('the real DSH runtime registers, streams through and unloads the plugin', a
   assert.ok(!ctx.llm.listProviders().some(p => p.id === provider))
   assert.ok(ctx.llm.listConfigurableProviders().some(p => p.provider === provider))
   await dormant.dispose()
-  const fork = await ctx.plugin(plugin, { providers: { [provider]: {} }, models: ['gpt-test'] })
-  assert.equal((await ctx.llm.listModels(provider))[0].id, 'gpt-test')
-  await fork.dispose()
+  const home = mkdtempSync(join(tmpdir(), 'dsh-codex-home-'))
+  const saved = { home: process.env.DSH_HOME, fetch: globalThis.fetch }
+  process.env.DSH_HOME = home
+  globalThis.fetch = async () => Response.json({ openai: { models: { 'gpt-test': { limit: { context: 400000 } } } } })
+  try {
+    const fork = await ctx.plugin(plugin, { providers: { [provider]: {} }, models: ['gpt-test'] })
+    assert.equal((await ctx.llm.listModels(provider))[0].id, 'gpt-test')
+    assert.equal((await ctx.llm.resolveModelInfo(provider, 'gpt-test')).context.contextWindow, 400000)
+    assert.deepEqual(JSON.parse(readFileSync(join(home, 'codex-provider', 'models-dev.json'), 'utf8')).windows, { 'gpt-test': 400000 })
+    await fork.dispose()
+  } finally {
+    if (saved.home === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = saved.home
+    globalThis.fetch = saved.fetch
+    rmSync(home, { recursive: true, force: true })
+  }
   assert.ok(!ctx.llm.listProviders().some(p => p.id === provider))
   const { adapter } = setup([[call('a', 'read')]])
   const unregister = ctx.llm.registerAdapter([provider], adapter)

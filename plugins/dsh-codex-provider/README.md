@@ -32,7 +32,9 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
     idleTimeoutMs: 1800000
 ```
 
-省略 `providers.codex-provider` 时供应商保持未启用。`codexHome` 未设置时沿用进程环境及 Codex 默认目录；需要登录时在同一目录执行 `CODEX_HOME=/absolute/path codex login`。`contextWindow` 未设置时使用 Codex 在第一次请求后报告的模型窗口，报告前按 128000 计算。
+省略 `providers.codex-provider` 时供应商保持未启用。`codexHome` 未设置时沿用进程环境及 Codex 默认目录；需要登录时在同一目录执行 `CODEX_HOME=/absolute/path codex login`。
+
+`contextWindow` 未设置时，模型窗口按以下顺序取值：Codex 在请求后报告的窗口；[models.dev](https://models.dev/api.json) 中 `openai` 供应商对应模型的 `limit.context`；都没有时按 128000 计算。models.dev 的数据缓存在 `<DSH_HOME>/codex-provider/models-dev.json`，超过一天后在下一次查询模型信息时后台更新；没有缓存时等待第一次拉取，最多 15 秒。拉取失败只记录警告，一小时后再试。models.dev 记录的是 OpenAI API 的上限（如 gpt-6-sol 为 1050000），通常大于 ChatGPT 登录的 Codex 实际允许的窗口（如 272000 的 95%），因此 Codex 报告的值优先；第一次请求超出实际窗口时，Codex 返回上下文超限错误，由 DSH 压缩后重试。
 
 ## DSH 如何调度
 

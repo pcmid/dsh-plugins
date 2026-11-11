@@ -9,6 +9,7 @@ import {
 import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
 import { MessageKeys, splitInstructions, threadSpec, toolNames } from './history.js'
+import { ModelsDev } from './models-dev.js'
 
 export const name = 'codex-provider'
 export const inject = ['llm']
@@ -22,7 +23,7 @@ export const Config = z.object({
   providers: z.dict(Profile).default({}).volatile().description('Enabled from Settings → Models; absent keeps the provider off.'),
   codexHome: z.string().description('Optional CODEX_HOME; uses the CLI login from this directory.'),
   models: z.array(z.string()).default([]).description('Model IDs to show; empty discovers models through app-server.'),
-  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the window Codex reports for the model, 128000 until it reports one.'),
+  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the window Codex reports for the model; before that, the models.dev value, else 128000.'),
   timeoutMs: z.natural().min(1000).max(2147483647).default(600000).description('Maximum time for one model step.'),
   idleTimeoutMs: z.natural().min(1000).max(2147483647).default(1800000).description('Release a session\'s Codex thread after this long without a request; the next request rebuilds it from DSH history.'),
 })
@@ -104,9 +105,11 @@ export class CodexAdapter extends LlmAdapter {
   /**
    * @param config - resolved plugin config plus the selected `codexPath`.
    * @param connect - `(executable, args, options) => connection`, replaceable in tests.
+   * @param modelsDev - optional `ModelsDev` cache for context windows before Codex reports one.
    */
-  constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options)) {
+  constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options), modelsDev = undefined) {
     super()
+    this.modelsDev = modelsDev
     this.config = { models: [], timeoutMs: 600000, idleTimeoutMs: 1800000, ...config }
     // The executable is spawned without a shell, so expand a leading `~` here.
     const codexPath = config.codexPath?.trim() || 'codex'
@@ -126,7 +129,7 @@ export class CodexAdapter extends LlmAdapter {
   modelInfo(provider, model) {
     const metadata = this.catalog?.find(entry => entry.model === model)
     const efforts = metadata?.supportedReasoningEfforts ?? []
-    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(model) ?? FALLBACK_CONTEXT_WINDOW
+    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(model) ?? this.modelsDev?.window(model) ?? FALLBACK_CONTEXT_WINDOW
     return { provider, id: model, name: metadata?.displayName ?? model, inputModalities: ['text'],
       context: { contextWindow },
       ...(efforts.length ? { reasoning: {
@@ -136,6 +139,7 @@ export class CodexAdapter extends LlmAdapter {
   }
 
   async resolveModel(provider, model, signal) {
+    await this.modelsDev?.load()
     try {
       await this.loadCatalog(signal)
     } catch (error) {
@@ -145,6 +149,7 @@ export class CodexAdapter extends LlmAdapter {
   }
 
   async listModels(provider) {
+    await this.modelsDev?.load()
     if (this.config.models.length) return this.config.models.map(model => this.modelInfo(provider, model))
     try {
       return (await this.loadCatalog()).map(model => this.modelInfo(provider, model.model))
@@ -344,6 +349,8 @@ export function apply(ctx, config) {
     settingsPath: ['providers', name], nativeAuth: { env: [], oauth: true } }])
   ctx.inject(['settings'], child => { child.effect(() => child.settings.configure({ auto: false }, ctx.fiber)) })
   const { providers, ...options } = config
+  const home = ctx.get('profileContext')?.home ?? process.env.DSH_HOME ?? join(homedir(), '.dsh')
+  const modelsDev = new ModelsDev(join(home, 'codex-provider', 'models-dev.json'), ctx.logger)
   // The route exists only while the Models page has enabled the provider; a changed
   // app-server path replaces the adapter and its app-server process.
   let current
@@ -357,7 +364,7 @@ export function apply(ctx, config) {
     }
     current = undefined
     if (codexPath === undefined) return
-    const adapter = new CodexAdapter({ ...options, codexPath })
+    const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev)
     current = { codexPath, adapter, unregister: ctx.llm.registerAdapter([name], adapter) }
   }
   sync()
