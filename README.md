@@ -25,7 +25,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-auto-restart`](plugins/dsh-auto-restart) | 本仓库 | 工具与能力 | agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话 |
 | [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
 | [`@pcmid/dsh-todo-guard`](plugins/dsh-todo-guard) | 本仓库 | 工具与能力 | agent 连续多步没更新 `todo_write` 任务列表时提醒它更新；可选在回合结束时把剩余任务标为完成 |
-| [`@laoyuehanni/dsh-token-usage`](https://github.com/LaoYueHanNi/dsh-token-usage) | npm `0.4.15` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页 |
+| [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 
 `@pcmid/dsh-web-search-native` 会优先使用 `@pcmid/dsh-model-defaults` 提供的小模型，两者建议一起安装。
 
@@ -60,11 +60,13 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 **收录或升级第三方插件**：在 `catalog.json` 里加一项或改版本号，例如 `{ "npm": "<包名>", "version": "<版本>", "category": "...", "labels": ["external"] }`，然后 `npm run build:index`。第三方插件固定到这里写的版本；标题、描述和图标从该版本在 npm 上的包里读取，下载的包会按 registry 记录的完整性哈希校验。
 
+**收录 fork 的第三方插件**：写成 `{ "git": "https://github.com/<owner>/<repo>", "commit": "<40 位提交号>", "category": "...", "labels": ["external"] }`，包不在仓库根目录时再加 `"path"`。DSH 原样安装这个提交，不会构建，所以提交里必须带构建产物；生成脚本会取回该提交，检查 `package.json` 导出的 `.` 和 `./client` 文件存在，并从中读取标题、描述和图标。上游发布了修复后改回 `npm` 项。
+
 `npm run check:index` 只检查 `index.json` 是否与当前生成结果一致，不写文件，推送前可以用它确认索引已经更新。带测试的插件在其目录里运行 `npm install --no-save --no-package-lock && npm test`。
 
 ## 生成规则
 
-- 自研插件以 Git 来源发布（`source.type: git`，固定提交 + `path`），`publishTimestamp` 取该提交的提交时间；第三方插件以 npm 来源发布，`publishTimestamp` 取 npm 的发布时间。
+- 自研插件以 Git 来源发布（`source.type: git`，固定提交 + `path`），`publishTimestamp` 取该提交的提交时间；fork 的第三方插件同样以 Git 来源发布，指向 fork 仓库的提交；其他第三方插件以 npm 来源发布，`publishTimestamp` 取 npm 的发布时间。
 - 标题和描述取自插件导出的 `locale/*.json` 的 `meta.title` / `meta.description`，缺英文时用包名或 `package.json` 的 `description` 补上；图标不超过 32 KiB 时内联为 `data:` URL。
 - `engines.dsh` 原样复制插件 `package.json` 的声明。第三方插件 `@laoyuehanni/dsh-token-usage` 没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。
 - 自研插件使用 `@pcmid/` 包名，但没有发布到 npm，只能从本仓库的 Git 地址安装。

@@ -6,6 +6,9 @@
  *   directory and installs from Git with that directory as `path`, so commit (and push) the plugin first.
  * - An `npm` entry is a third-party plugin pinned to one published version. Its display metadata is read
  *   from that version's tarball, whose integrity is checked against the registry.
+ * - A `git` entry is a plugin in another Git repository, typically our fork of a third-party plugin, pinned
+ *   to one `commit` (optionally a package directory `path`). It installs from Git, so the commit must carry
+ *   the plugin's built files.
  *
  * Usage: node scripts/build-index.mjs [--check]
  *   --check  write nothing; exit 1 when index.json differs from the generated index.
@@ -42,7 +45,11 @@ function warn(message) {
 }
 
 function git(...args) {
-  return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8' }).trim()
+  return gitIn(ROOT, ...args)
+}
+
+function gitIn(cwd, ...args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
 }
 
 function readJson(file) {
@@ -291,6 +298,53 @@ async function npmPlugin(item) {
 }
 
 // ---------------------------------------------------------------------------
+// Plugins in other Git repositories, installed from Git.
+// ---------------------------------------------------------------------------
+
+const COMMIT = /^[0-9a-f]{40}$/u
+
+function gitPlugin(item) {
+  const what = `${item.git}#${item.commit}`
+  if (!URL.canParse(item.git) || new URL(item.git).protocol !== 'https:') fail(`${what}: "git" must be an https repository URL`)
+  if (!COMMIT.test(item.commit)) fail(`${what}: "commit" must be a full lowercase 40-hex-digit SHA`)
+  if (item.path !== undefined && !isPackagePath(item.path)) fail(`${what}: path ${item.path} must be a relative directory`)
+  const scratch = mkdtempSync(join(tmpdir(), 'dsh-index-'))
+  try {
+    gitIn(scratch, 'init', '-q')
+    try {
+      gitIn(scratch, 'fetch', '-q', '--depth', '1', item.git, item.commit)
+    } catch (error) {
+      fail(`${what}: cannot fetch the commit (${String(error.stderr ?? error.message).trim()}); push it first`)
+    }
+    gitIn(scratch, 'checkout', '-q', 'FETCH_HEAD')
+    const committedAt = gitIn(scratch, 'log', '-1', '--format=%ct', 'FETCH_HEAD')
+    const dir = item.path === undefined ? scratch : join(scratch, item.path)
+    const manifest = readJson(join(dir, 'package.json'))
+    requireBundle(manifest, what)
+    // DSH installs this commit as is, without a build step.
+    for (const key of ['.', './client']) {
+      const target = exportTarget(manifest, key)
+      if (target !== undefined && !existsSync(resolve(dir, target))) fail(`${what}: export ${key} → ${target} is not in the commit; commit the built files`)
+    }
+    const range = text(manifest.engines?.dsh)
+    if (range === undefined) warn(`${what} declares no engines.dsh; listed without a DSH version range`)
+    const ownerRepo = githubOwnerRepo(item.git)
+    const icon = iconValue(dir, manifest, path => {
+      if (ownerRepo === undefined) fail(`${manifest.name}: icon over ${MAX_INLINE_ICON_BYTES} bytes needs a GitHub repository to reference it`)
+      return `https://cdn.jsdelivr.net/gh/${ownerRepo}@${item.commit}/${item.path === undefined ? '' : `${item.path}/`}${path}`
+    })
+    return pluginEntry(item, manifest, { ...displayText(dir, manifest), icon }, {
+      version: manifest.version,
+      publishTimestamp: Number(committedAt),
+      source: { type: 'git', url: item.git, commit: item.commit, ...item.path === undefined ? {} : { path: item.path } },
+      engines: range === undefined ? {} : { dsh: range },
+    }, { latest: manifest.version })
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 async function validate(index, indexUrl) {
   let reader
@@ -317,7 +371,8 @@ async function main() {
   for (const item of catalog.plugins) {
     if (typeof item.path === 'string') plugins.push(repositoryPlugin(item, catalog))
     else if (typeof item.npm === 'string' && typeof item.version === 'string') plugins.push(await npmPlugin(item))
-    else fail(`catalog entry ${JSON.stringify(item)} needs either "path" or "npm" with "version"`)
+    else if (typeof item.git === 'string' && typeof item.commit === 'string') plugins.push(gitPlugin(item))
+    else fail(`catalog entry ${JSON.stringify(item)} needs "path", "npm" with "version", or "git" with "commit"`)
   }
   const index = {
     format: 1,
