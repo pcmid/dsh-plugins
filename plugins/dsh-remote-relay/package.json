@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-remote-relay",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Switch between DSH hosts that have this plugin, or reach this DSH from a phone, through a self-hosted OpenChamber relay, end-to-end encrypted.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-remote-relay#readme",
