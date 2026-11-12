@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import {
+  ANTHROPIC_THINKING_BINDING_BETA,
   Config,
+  DROP_THINKING_FALLBACK,
   DROP_THINKING_FIX,
   DROP_THINKING_HEADER,
+  PURPOSE,
+  analysisControls,
   analyze,
   apply,
   buildAnalysisInput,
@@ -14,6 +18,7 @@ import {
   createListener,
   createThinkingDrop,
   dropInvalidThinking,
+  failedDropper,
   flag,
   installDropThinkingFetch,
   invalidThinkingDropper,
@@ -44,7 +49,7 @@ function payload(overrides = {}) {
   }
 }
 
-function harness(cfg, analysis, thinkingDrop = fakeDrop()) {
+function harness(cfg, analysis, thinkingDrop = testDrop()) {
   const logger = fakeLogger()
   const records = []
   const shown = []
@@ -66,10 +71,13 @@ function harness(cfg, analysis, thinkingDrop = fakeDrop()) {
   return { listener, logger, records, shown, sleeps, calls, thinkingDrop }
 }
 
-function fakeDrop() {
-  const sessions = new Set()
-  return { sessions, has: id => sessions.has(String(id)), enable: id => sessions.add(String(id)), dispose: () => sessions.clear() }
+/** The real drop state, with its fetch wrapper installed on a stand-in instead of the global object. */
+function testDrop() {
+  return createThinkingDrop({ fetch: async () => new Response('') })
 }
+
+/** A conversation request (no purpose) of the test session, as the header waterfall sees it. */
+const conversationRequest = (sessionId = 'session-test') => ({ provider: 'ccmax', model: 'claude-opus-5-5', sessionId })
 
 const bindingFailure = {
   code: 'INVALID_REQUEST',
@@ -208,11 +216,11 @@ describe('analyze', () => {
     { type: 'finish', reason: { kind: 'stop' } },
   ]
 
-  it('runs on the conversation model with its reasoning effort and default output cap', async () => {
+  it('runs on the conversation model without thinking and with the default output cap', async () => {
     const fake = fakeLlm(answer)
     const result = await analyze(fake, config(), { ...payload(), attempts: [] })
-    assert.deepEqual(result.route, { ...route, reasoningEffort: 'xhigh' })
-    assert.equal(fake.seen.controls.reasoningEffort, 'xhigh')
+    assert.deepEqual(result.route, route, 'the conversation\'s xhigh effort is not used')
+    assert.equal('reasoningEffort' in fake.seen.controls, false)
     assert.equal(fake.seen.callConfig.maxTokens, undefined)
     assert.equal(fake.seen.options.purpose, 'retry-advisor')
     assert.equal(fake.seen.options.messages[0].role, 'user')
@@ -220,9 +228,18 @@ describe('analyze', () => {
     assert.equal(result.decision.delayMs, 2000)
   })
 
+  it('picks the off effort when the model offers one, and a configured effort over it', () => {
+    const efforts = { reasoning: { efforts: [{ id: 'off' }, { id: 'low' }, { id: 'high' }] } }
+    assert.deepEqual(analysisControls({ maxTokens: 9, reasoningEffort: 'high' }, efforts, undefined), { maxTokens: 9, reasoningEffort: 'off' })
+    assert.deepEqual(analysisControls({}, efforts, 'low'), { reasoningEffort: 'low' })
+    assert.deepEqual(analysisControls({}, efforts, 'max'), { reasoningEffort: 'off' }, 'an effort the model lacks is ignored')
+    assert.deepEqual(analysisControls({ reasoningEffort: 'high' }, { reasoning: { efforts: [{ id: 'high' }] } }, undefined), {})
+    assert.deepEqual(analysisControls({}, {}, undefined), {})
+  })
+
   it('uses the configured route and skips an effort the model lacks', async () => {
     const fake = fakeLlm(answer, [{ id: 'high' }])
-    const result = await analyze(fake, config({ provider: 'ccmax', model: 'claude-haiku-5-5' }), { ...payload(), attempts: [] })
+    const result = await analyze(fake, config({ provider: 'ccmax', model: 'claude-haiku-5-5', reasoningEffort: 'xhigh' }), { ...payload(), attempts: [] })
     assert.deepEqual(result.route, { provider: 'ccmax', model: 'claude-haiku-5-5' })
     assert.equal(fake.seen.controls.reasoningEffort, undefined)
   })
@@ -287,7 +304,7 @@ describe('drop invalid thinking', () => {
     const h = harness(config(), () => ({ decision: { retry: false, delayMs: 0, cause: '', reason: '' }, route }))
     assert.equal(await h.listener(payload({ failure: bindingFailure }), terminal), undefined)
     assert.equal(h.calls.length, 1)
-    assert.equal(h.thinkingDrop.sessions.size, 0)
+    assert.equal(h.thinkingDrop.has('session-test'), false)
   })
 
   it('switches the session to dropping and retries at once without analysis', async () => {
@@ -312,23 +329,49 @@ describe('drop invalid thinking', () => {
     assert.deepEqual(await h.listener(payload({ failure: bindingFailure, step: 35 }), terminal), { kind: 'retry' })
   })
 
-  it('sends a repeat of the failure to the ordinary analysis, which sees the drop', async () => {
-    const h = harness(on(), () => ({ decision: { retry: false, delayMs: 0, cause: 'c', reason: 'r' }, route }))
+  it('falls back once to an ordinary request when a request carrying the drop still fails, then analyzes', async () => {
+    const h = harness(on(), () => ({ decision: { retry: true, delayMs: 0, cause: 'c', reason: 'r' }, route }))
     const agent = fakeAgent()
+    const drop = h.thinkingDrop
+    // 1. The rejection switches the conversation on.
     assert.deepEqual(await h.listener(payload({ agent, failure: bindingFailure }), terminal), { kind: 'retry' })
-    assert.equal(await h.listener(payload({ agent, failure: bindingFailure }), terminal), undefined)
+    // 2. Its retry carries the drop and is rejected because of it.
+    assert.equal(drop.mark(conversationRequest(), true), true)
+    const rejected = { code: 'INVALID_REQUEST', message: '400 {"error":{"type":"<nil>","message":"thinking.adaptive.block_binding: Extra inputs are not permitted (request id: 1)"},"type":"error"}' }
+    assert.deepEqual(await h.listener(payload({ agent, failure: rejected }), terminal), { kind: 'retry' })
+    assert.equal(h.calls.length, 0, 'the fallback needs no analysis')
+    assert.equal(h.records[1].fix, DROP_THINKING_FALLBACK)
+    assert.equal(h.shown.at(-1).fix, DROP_THINKING_FALLBACK)
+    // 3. Other requests keep the drop; only the next conversation request goes without it.
+    assert.equal(drop.mark({ ...conversationRequest(), purpose: 'session-title' }, true), true)
+    assert.equal(drop.mark(conversationRequest(), true), false)
+    assert.equal(drop.carried('session-test'), false)
+    // 4. When that ordinary request fails too, the ordinary analysis decides, seeing both earlier retries.
+    assert.deepEqual(await h.listener(payload({ agent, failure: bindingFailure }), terminal), { kind: 'retry' })
     assert.equal(h.calls.length, 1)
-    assert.equal(h.calls[0].attempts[0].fix, DROP_THINKING_FIX)
     const input = JSON.parse(buildAnalysisInput({ ...h.calls[0], selection: undefined, config: on() }))
     assert.match(input.earlierFailuresInThisStep[0].decision, /invalid thinking dropped \(anthropic-messages\)/)
-    assert.equal(input.retriesGrantedInThisStep, 1)
+    assert.match(input.earlierFailuresInThisStep[1].decision, /ordinary request without the invalid-thinking drop/)
+    // 5. Later conversation requests carry the drop again.
+    assert.equal(drop.mark(conversationRequest(), true), true)
+  })
+
+  it('analyzes a failure of a request carrying the drop when the failure is about something else', async () => {
+    const h = harness(on(), () => ({ decision: { retry: false, delayMs: 0, cause: '', reason: '' }, route }))
+    const agent = fakeAgent()
+    await h.listener(payload({ agent, failure: bindingFailure }), terminal)
+    h.thinkingDrop.mark(conversationRequest(), true)
+    assert.equal(await h.listener(payload({ agent, failure: { code: 'PI_AI_ERROR', message: 'This request was blocked as it seems to violate the Terms of Service' } }), terminal), undefined)
+    assert.equal(h.calls.length, 1)
+    assert.equal(failedDropper({ message: 'This request was blocked' }), undefined)
+    assert.equal(failedDropper(bindingFailure)?.api, 'anthropic-messages')
   })
 
   it('is skipped once the step budget is spent', async () => {
     const h = harness(on({ maxRetriesPerStep: 0 }), () => assert.fail('analysis must not run'))
     assert.equal(await h.listener(payload({ failure: bindingFailure }), terminal), undefined)
     assert.equal(h.records[0].outcome, 'budget-exhausted')
-    assert.equal(h.thinkingDrop.sessions.size, 0)
+    assert.equal(h.thinkingDrop.has('session-test'), false)
   })
 
   it('writes Chinese text for a Chinese reason language and English otherwise', async () => {
@@ -340,8 +383,24 @@ describe('drop invalid thinking', () => {
     assert.match(en.records[0].reason, /drop-invalid-thinking/)
   })
 
+  it('never marks this plugin\'s own analysis, and marks other auxiliary requests', () => {
+    const drop = testDrop()
+    drop.enable('session-a')
+    const listener = createHeaderListener(drop, () => true)
+    const marked = (purpose) => {
+      const headers = new Headers()
+      listener({ provider: 'ccmax', model: 'm', sessionId: 'session-a', ...purpose === undefined ? {} : { purpose } }, headers, () => headers)
+      return headers.has(DROP_THINKING_HEADER)
+    }
+    assert.equal(marked(PURPOSE), false)
+    assert.equal(marked('compaction'), true)
+    assert.equal(marked('session-title'), true)
+    assert.equal(marked('auto-review'), true)
+    assert.equal(marked(undefined), true)
+  })
+
   it('marks requests of switched sessions only while the setting is on', () => {
-    const drop = fakeDrop()
+    const drop = testDrop()
     drop.enable('session-a')
     let enabled = true
     const listener = createHeaderListener(drop, () => enabled)
@@ -363,11 +422,13 @@ describe('drop invalid thinking', () => {
 })
 
 describe('dropInvalidThinking', () => {
-  it('adds drop_block to enabled or adaptive Anthropic thinking', () => {
-    const adaptive = JSON.parse(dropInvalidThinking(JSON.stringify({ model: 'm', thinking: { type: 'adaptive', display: 'summarized' }, stream: true })))
+  it('adds drop_block to enabled or adaptive Anthropic thinking, with its beta', () => {
+    const result = dropInvalidThinking(JSON.stringify({ model: 'm', thinking: { type: 'adaptive', display: 'summarized' }, stream: true }))
+    assert.deepEqual(result.betas, [ANTHROPIC_THINKING_BINDING_BETA])
+    const adaptive = JSON.parse(result.body)
     assert.deepEqual(adaptive.thinking, { type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: 'drop_block' } })
     assert.equal(adaptive.stream, true)
-    const enabled = JSON.parse(dropInvalidThinking(JSON.stringify({ thinking: { type: 'enabled', budget_tokens: 1024, block_binding: { other: 1 } } })))
+    const enabled = JSON.parse(dropInvalidThinking(JSON.stringify({ thinking: { type: 'enabled', budget_tokens: 1024, block_binding: { other: 1 } } })).body)
     assert.deepEqual(enabled.thinking.block_binding, { other: 1, prefix_mismatch_behavior: 'drop_block' })
   })
 
@@ -393,17 +454,29 @@ describe('drop-thinking fetch', () => {
   const body = JSON.stringify({ model: 'claude', thinking: { type: 'adaptive' }, messages: [] })
   const dropped = text => JSON.parse(text).thinking.block_binding.prefix_mismatch_behavior === 'drop_block'
 
-  it('rewrites marked requests and strips the marker', async () => {
+  it('rewrites marked requests, adds the beta to the existing ones, and strips the marker', async () => {
     const { calls, base } = recorder()
     const fetch = createDropThinkingFetch(base)
-    const headers = new Headers({ 'content-type': 'application/json', [DROP_THINKING_HEADER]: 'drop' })
+    const headers = new Headers({ 'content-type': 'application/json', 'anthropic-beta': 'fine-grained-tool-streaming-2025-05-14', [DROP_THINKING_HEADER]: 'drop' })
     await fetch('https://api.example/v1/messages', { method: 'POST', headers, body })
     const [url, init] = calls[0]
     assert.equal(url, 'https://api.example/v1/messages')
     assert.equal(init.headers.has(DROP_THINKING_HEADER), false)
     assert.equal(init.headers.get('content-type'), 'application/json')
+    assert.equal(init.headers.get('anthropic-beta'), `fine-grained-tool-streaming-2025-05-14,${ANTHROPIC_THINKING_BINDING_BETA}`)
     assert.ok(dropped(init.body))
     assert.equal(headers.has(DROP_THINKING_HEADER), true, 'the caller headers are not mutated')
+  })
+
+  it('strips the marker but adds no beta when the body has nothing to drop', async () => {
+    const { calls, base } = recorder()
+    const fetch = createDropThinkingFetch(base)
+    const plain = JSON.stringify({ model: 'claude', messages: [] })
+    await fetch('u', { method: 'POST', headers: { [DROP_THINKING_HEADER]: 'drop' }, body: plain })
+    const [, init] = calls[0]
+    assert.equal(init.headers.has(DROP_THINKING_HEADER), false)
+    assert.equal(init.headers.has('anthropic-beta'), false)
+    assert.equal(init.body, plain)
   })
 
   it('accepts record and array headers', async () => {
@@ -413,6 +486,7 @@ describe('drop-thinking fetch', () => {
     await fetch('u', { method: 'POST', headers: [[DROP_THINKING_HEADER, 'drop']], body })
     for (const [, init] of calls) {
       assert.equal(init.headers.has(DROP_THINKING_HEADER), false)
+      assert.equal(init.headers.get('anthropic-beta'), ANTHROPIC_THINKING_BINDING_BETA)
       assert.ok(dropped(init.body))
     }
   })
@@ -433,6 +507,7 @@ describe('drop-thinking fetch', () => {
     await fetch(new Request('https://api.example/v1/messages', { method: 'POST', headers: { [DROP_THINKING_HEADER]: 'drop' }, body }))
     const [request] = calls[0]
     assert.equal(request.headers.has(DROP_THINKING_HEADER), false)
+    assert.equal(request.headers.get('anthropic-beta'), ANTHROPIC_THINKING_BINDING_BETA)
     assert.ok(dropped(await request.text()))
   })
 

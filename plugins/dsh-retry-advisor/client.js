@@ -30,6 +30,8 @@ window.__ModuleLoader__.load({
     const PREFIX = 'dsh-ra'
     /** `fix` of a retry that switched the conversation to dropping invalid thinking. */
     const DROP_THINKING_FIX = 'drop-invalid-thinking'
+    /** `fix` of a retry that resent one request without the drop after a request with it failed. */
+    const DROP_THINKING_FALLBACK = 'drop-thinking-fallback'
     /** Locale namespace of the settings form. */
     const SETTINGS_NS = 'settings.retryAdvisor'
     /** Settings namespace: the row id in cordis.patch.yml. */
@@ -52,6 +54,7 @@ window.__ModuleLoader__.load({
       'title.retry': '重试顾问：{seconds} 秒后重试（第 {retry}/{maximum} 次）',
       'title.retryNow': '重试顾问：立即重试（第 {retry}/{maximum} 次）',
       'title.dropThinking': '重试顾问：丢弃无效思考后立即重试（第 {retry}/{maximum} 次）',
+      'title.dropFallback': '重试顾问：带参数仍失败，回退为普通请求重试（第 {retry}/{maximum} 次）',
       'title.giveUp': '重试顾问：判断重发无效，不重试',
       'title.analysisFailed': '重试顾问：分析失败，不重试',
       'title.budgetExhausted': '重试顾问：本步已重试 {granted} 次，不再重试',
@@ -68,6 +71,7 @@ window.__ModuleLoader__.load({
       'title.retry': 'Retry advisor: retrying in {seconds}s (attempt {retry}/{maximum})',
       'title.retryNow': 'Retry advisor: retrying now (attempt {retry}/{maximum})',
       'title.dropThinking': 'Retry advisor: retrying now with invalid thinking dropped (attempt {retry}/{maximum})',
+      'title.dropFallback': 'Retry advisor: still failing with the drop, retrying as an ordinary request (attempt {retry}/{maximum})',
       'title.giveUp': 'Retry advisor: a resend would fail the same way, not retrying',
       'title.analysisFailed': 'Retry advisor: the analysis failed, not retrying',
       'title.budgetExhausted': 'Retry advisor: {granted} retries already used in this step, not retrying',
@@ -110,7 +114,7 @@ window.__ModuleLoader__.load({
     const settingsZh = {
       description: '模型请求失败且内置机制不再重试时，分析原因并决定是否重发。',
       dropInvalidThinking: '丢弃无效思考',
-      dropInvalidThinkingHint: '模型服务认为对话历史里的思考无效而拒绝请求时（例如分叉会话带来的、绑定在另一段对话上的思考块），立即按该 API 的方式丢弃这些思考后重发，这个会话之后的请求也照此处理。被丢弃的思考不再进入模型上下文。各 API 的丢弃方式不同，目前支持 Anthropic Messages。默认关闭。',
+      dropInvalidThinkingHint: '模型服务认为对话历史里的思考无效而拒绝请求时（例如分叉会话带来的、绑定在另一段对话上的思考块），立即按该 API 的方式丢弃这些思考后重发，这个会话之后的请求也照此处理；带着参数仍然失败时，下一次回退为普通请求重发。被丢弃的思考不再进入模型上下文。各 API 的丢弃方式不同，目前支持 Anthropic Messages。默认关闭。',
       overridden: '已覆盖',
       reset: '恢复默认',
       readOnly: '本部署的设置为只读。',
@@ -122,7 +126,7 @@ window.__ModuleLoader__.load({
     const settingsEn = {
       description: 'When a model request fails and no built-in handler retries it, analyzes the cause and decides whether to resend.',
       dropInvalidThinking: 'Drop invalid thinking',
-      dropInvalidThinkingHint: 'When the provider rejects thinking in the conversation history as invalid (for example thinking blocks bound to a different conversation after a fork), resend at once with that thinking dropped the way the API allows, and keep doing so for the rest of the conversation. Dropped thinking no longer reaches the model\'s context. Each API drops thinking differently; Anthropic Messages is supported. Off by default.',
+      dropInvalidThinkingHint: 'When the provider rejects thinking in the conversation history as invalid (for example thinking blocks bound to a different conversation after a fork), resend at once with that thinking dropped the way the API allows, and keep doing so for the rest of the conversation; when a request still fails with the drop, the next attempt goes once as an ordinary request. Dropped thinking no longer reaches the model\'s context. Each API drops thinking differently; Anthropic Messages is supported. Off by default.',
       overridden: 'Overridden',
       reset: 'Reset to default',
       readOnly: 'This deployment stores settings read-only.',
@@ -264,6 +268,7 @@ window.__ModuleLoader__.load({
         case 'retry': {
           const params = { retry: data.granted + 1, maximum: data.maxRetries ?? '?' }
           if (data.fix === DROP_THINKING_FIX) return t('title.dropThinking', params)
+          if (data.fix === DROP_THINKING_FALLBACK) return t('title.dropFallback', params)
           return data.delayMs > 0
             ? t('title.retry', { ...params, seconds: Math.max(1, Math.round(data.delayMs / 1000)) })
             : t('title.retryNow', params)

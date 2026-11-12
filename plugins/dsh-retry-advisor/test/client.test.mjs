@@ -157,6 +157,7 @@ describe('browser half', { skip: primitivesDir === undefined && 'no built deepse
     const m = mount()
     const base = { outcome: 'retry', granted: 0, maxRetries: 3, delayMs: 0 }
     assert.match(m.renderRow({ ...base, fix: 'drop-invalid-thinking' }), /丢弃无效思考后立即重试（第 1\/3 次）/)
+    assert.match(m.renderRow({ ...base, granted: 1, fix: 'drop-thinking-fallback' }), /带参数仍失败，回退为普通请求重试（第 2\/3 次）/)
     assert.match(m.renderRow(base), /立即重试（第 1\/3 次）/)
     assert.doesNotMatch(m.renderRow(base), /丢弃无效思考/)
   })
