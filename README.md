@@ -28,6 +28,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-mcp-skills`](plugins/dsh-mcp-skills) | 本仓库 | 工具与能力 | 在设置里添加、测试和管理 MCP 服务器与技能：粘贴命令或 JSON 即可添加 MCP，密钥存凭据库；技能可新建、编辑，并从技能仓库（GitHub 或本地文件夹）安装和更新 |
 | [`@pcmid/dsh-workspace-agent-preset`](plugins/dsh-workspace-agent-preset) | 本仓库 | 工具与能力 | 在工作区菜单里为工作区选择 Agent 预设，该工作区打开的新会话默认使用它 |
 | [`@pcmid/dsh-edit-prompt`](plugins/dsh-edit-prompt) | 本仓库 | 工具与能力 | 在自己发出的消息的复制按钮旁加编辑按钮：改完发送后丢弃这一轮及之后的消息，从修改后的提示词重新开始 |
+| [`@vectorize-io/hindsight-coding-agents`](https://github.com/vectorize-io/hindsight/tree/main/hindsight-integrations/coding-agents) | npm `0.8.7` | 工具与能力 | Hindsight 长期记忆：每次输入前把项目记忆注入上下文，每轮结束后把会话存进按仓库划分的记忆库，并提供 `hindsight_*` 工具。服务地址等配置在 `~/.hindsight/coding-agent.json` |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 
 `@pcmid/dsh-web-search-native` 会优先使用 `@pcmid/dsh-model-defaults` 提供的小模型，两者建议一起安装。
@@ -71,5 +72,5 @@ scripts/build-index.mjs 索引生成脚本（无运行时依赖，Node 22+）
 
 - 自研插件以 Git 来源发布（`source.type: git`，固定提交 + `path`），`publishTimestamp` 取该提交的提交时间；fork 的第三方插件同样以 Git 来源发布，指向 fork 仓库的提交；其他第三方插件以 npm 来源发布，`publishTimestamp` 取 npm 的发布时间。
 - 标题和描述取自插件导出的 `locale/*.json` 的 `meta.title` / `meta.description`，缺英文时用包名或 `package.json` 的 `description` 补上；图标不超过 32 KiB 时内联为 `data:` URL。
-- `engines.dsh` 原样复制插件 `package.json` 的声明。第三方插件 `@laoyuehanni/dsh-token-usage` 没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。
+- `engines.dsh` 原样复制插件 `package.json` 的声明。第三方插件 `@laoyuehanni/dsh-token-usage` 没有在顶层声明 `engines.dsh`，因此索引里没有版本范围，「发现」页把它显示为兼容；实际安装时 DSH 仍会按包里声明的 `@deepseek-ai/dsh-*` peerDependencies 检查兼容性。`@vectorize-io/hindsight-coding-agents` 既没有 `engines.dsh` 也没有 DSH peerDependencies，DSH 安装时不做版本检查；它也不带 `locale/*.json` 和图标，所以「发现」页里标题是包名、描述是其英文 `description`、没有图标。
 - 自研插件使用 `@pcmid/` 包名，但没有发布到 npm，只能从本仓库的 Git 地址安装。

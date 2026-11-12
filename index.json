@@ -475,6 +475,34 @@
       ]
     },
     {
+      "name": "@vectorize-io/hindsight-coding-agents",
+      "description": "Reflect-only Hindsight long-term memory for coding agents (harness-pluggable: opencode, …), with automatic background ingestion (no setup CLI).",
+      "repository": {
+        "url": "https://github.com/vectorize-io/hindsight",
+        "directory": "hindsight-integrations/coding-agents"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "external"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.8.7"
+      },
+      "versions": [
+        {
+          "version": "0.8.7",
+          "publishTimestamp": 1794313079,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {}
+        }
+      ]
+    },
+    {
       "name": "@laoyuehanni/dsh-token-usage",
       "title": {
         "en": "@laoyuehanni/dsh-token-usage",
