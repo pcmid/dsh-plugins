@@ -10,6 +10,11 @@
  * terminal and the turn ends as before.
  *
  * A retry re-sends the identical request; nothing about the request changes.
+ * The one exception is the optional "drop invalid thinking" setting: when the
+ * provider rejects thinking in the history as invalid (for example blocks
+ * bound to a different conversation after a fork), the request is resent at
+ * once in the way that API drops such thinking, and the conversation keeps
+ * dropping it for its later requests.
  * Decisions are written to the Host log, appended to the conversation's Session
  * log as `plugin:retry-advisor/decision` records that the Chat view shows, and,
  * unless disabled, appended to a JSONL decision log.
@@ -67,8 +72,206 @@ export const Config = z.object({
     .description('Language of the cause and reason the analysis writes into the logs.'),
   decisionLog: z.string().default(join(homedir(), '.dsh', 'retry-advisor', 'decisions.jsonl'))
     .description('JSONL file that receives one line per decision. Empty disables the file.'),
+  dropInvalidThinking: z.boolean().default(false).volatile()
+    .description('Drop invalid thinking. When the provider rejects thinking in the conversation history as invalid, resend at once in the way that API drops such thinking, and keep dropping it for the rest of the conversation. The dropped thinking leaves the model\'s context. Supported APIs: Anthropic Messages (thinking blocks bound to a different conversation, as after a fork; dropped through thinking.block_binding.prefix_mismatch_behavior = drop_block).'),
 })
 
+/** `fix` value of a retry that switched the conversation to dropping invalid thinking. */
+export const DROP_THINKING_FIX = 'drop-invalid-thinking'
+
+/**
+ * Header that marks a request of a conversation that drops invalid thinking.
+ * The fetch wrapper removes it, so it never leaves the process.
+ */
+export const DROP_THINKING_HEADER = 'x-dsh-retry-advisor-drop-thinking'
+
+/**
+ * Anthropic Messages: add `block_binding.prefix_mismatch_behavior: "drop_block"`
+ * to the request's `thinking` object, so the provider drops thinking blocks
+ * bound to a different conversation instead of rejecting the request.
+ * Disabled thinking is left alone because the API rejects `block_binding` there.
+ * @param body - parsed JSON request body; changed in place.
+ * @returns whether the body changed.
+ */
+function dropAnthropicThinking(body) {
+  const thinking = body.thinking
+  if (thinking === null || typeof thinking !== 'object' || Array.isArray(thinking) || thinking.type === 'disabled') return false
+  const binding = thinking.block_binding !== null && typeof thinking.block_binding === 'object' && !Array.isArray(thinking.block_binding)
+    ? thinking.block_binding
+    : {}
+  if (binding.prefix_mismatch_behavior === 'drop_block') return false
+  body.thinking = { ...thinking, block_binding: { ...binding, prefix_mismatch_behavior: 'drop_block' } }
+  return true
+}
+
+/**
+ * Each provider API rejects invalid thinking and drops it in its own way.
+ * `matches` recognizes the API's rejection of a request; `drop` changes a
+ * parsed request body of that API so the provider drops the invalid thinking,
+ * and leaves bodies of other APIs unchanged.
+ */
+export const THINKING_DROPPERS = Object.freeze([
+  Object.freeze({
+    api: 'anthropic-messages',
+    matches: (message) => /prefix_mismatch_behavior/.test(message)
+      || /thinking[\s\S]{0,40}bound to a different conversation/i.test(message),
+    drop: dropAnthropicThinking,
+  }),
+])
+
+/**
+ * The API whose invalid-thinking rejection a failure is.
+ * @param failure - the failed request's failure.
+ * @returns the matching dropper, or undefined for any other failure.
+ */
+export function invalidThinkingDropper(failure) {
+  const message = String(failure?.message ?? '')
+  return THINKING_DROPPERS.find(dropper => dropper.matches(message))
+}
+
+/**
+ * Rewrite a JSON request body so the provider drops invalid thinking.
+ * @param text - JSON request body text.
+ * @returns the rewritten body, or undefined when nothing changes.
+ */
+export function dropInvalidThinking(text) {
+  let body
+  try {
+    body = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return undefined
+  let changed = false
+  for (const dropper of THINKING_DROPPERS) changed = dropper.drop(body) || changed
+  return changed ? JSON.stringify(body) : undefined
+}
+
+/** Whether fetch init headers carry the drop-thinking marker, without copying them. */
+function hasDropMarker(headers) {
+  if (headers === undefined || headers === null) return false
+  if (typeof Headers !== 'undefined' && headers instanceof Headers) return headers.has(DROP_THINKING_HEADER)
+  if (Array.isArray(headers)) return headers.some(entry => String(entry?.[0]).toLowerCase() === DROP_THINKING_HEADER)
+  if (typeof headers === 'object') return Object.keys(headers).some(name => name.toLowerCase() === DROP_THINKING_HEADER)
+  return false
+}
+
+/**
+ * Wrap a fetch function: a request carrying {@link DROP_THINKING_HEADER}
+ * loses that header, and its JSON body is rewritten by
+ * {@link dropInvalidThinking}. Every other request passes through with its
+ * original arguments.
+ * @param base - the fetch to delegate to.
+ * @returns the wrapping fetch.
+ */
+export function createDropThinkingFetch(base) {
+  return async function dropThinkingFetch(...args) {
+    const [input, init] = args
+    if (hasDropMarker(init?.headers)) {
+      const headers = new Headers(init.headers)
+      headers.delete(DROP_THINKING_HEADER)
+      const body = typeof init.body === 'string' ? dropInvalidThinking(init.body) : undefined
+      if (body !== undefined) headers.delete('content-length')
+      return base(input, { ...init, headers, ...body === undefined ? {} : { body } })
+    }
+    if (typeof Request !== 'undefined' && input instanceof Request && init?.headers === undefined
+      && input.headers.has(DROP_THINKING_HEADER)) {
+      const headers = new Headers(input.headers)
+      headers.delete(DROP_THINKING_HEADER)
+      if (input.method === 'GET' || input.method === 'HEAD' || input.body === null) {
+        return base(new Request(input, { headers }), init)
+      }
+      const text = await input.text()
+      const body = dropInvalidThinking(text)
+      if (body !== undefined) headers.delete('content-length')
+      return base(new Request(input, { headers, body: body ?? text }), init)
+    }
+    return base(...args)
+  }
+}
+
+/**
+ * Replace `target.fetch` with {@link createDropThinkingFetch}.
+ * @param target - object owning `fetch`; the global object by default.
+ * @returns a function that removes the wrapper again. When another wrapper was
+ *   installed on top meanwhile, ours stays in the chain as a pass-through.
+ */
+export function installDropThinkingFetch(target = globalThis) {
+  const base = target.fetch
+  if (typeof base !== 'function') return () => {}
+  const wrapped = createDropThinkingFetch(base)
+  let active = true
+  const patched = function fetch(...args) {
+    return active ? wrapped(...args) : base(...args)
+  }
+  target.fetch = patched
+  return () => {
+    active = false
+    if (target.fetch === patched) target.fetch = base
+  }
+}
+
+/**
+ * Conversations that drop invalid thinking. The fetch wrapper is installed
+ * only once the first conversation is added.
+ * @param target - object owning `fetch`; the global object by default.
+ */
+export function createThinkingDrop(target = globalThis) {
+  const sessions = new Set()
+  let uninstall
+  return {
+    has: sessionId => sessions.has(String(sessionId)),
+    enable(sessionId) {
+      sessions.add(String(sessionId))
+      uninstall ??= installDropThinkingFetch(target)
+    },
+    dispose() {
+      sessions.clear()
+      uninstall?.()
+      uninstall = undefined
+    },
+  }
+}
+
+/**
+ * Read a boolean Config field that may be volatile.
+ * @param value - a boolean, or a volatile reference exposing `get()`.
+ */
+export function flag(value) {
+  return typeof value?.get === 'function' ? value.get() === true : value === true
+}
+
+/**
+ * Build the `llm-pi-ai/request-headers` listener that marks every request of
+ * a conversation that drops invalid thinking, while the setting is on.
+ * @param thinkingDrop - the conversations to mark.
+ * @param enabled - reads the current setting.
+ * @returns the waterfall listener.
+ */
+export function createHeaderListener(thinkingDrop, enabled = () => true) {
+  return function onRequestHeaders(request, headers, next) {
+    if (request?.sessionId !== undefined && enabled() && thinkingDrop.has(request.sessionId)) {
+      headers.set(DROP_THINKING_HEADER, 'drop')
+    }
+    return next()
+  }
+}
+
+/**
+ * Cause and reason shown when invalid thinking is dropped.
+ * @param language - configured reason language; Chinese gets Chinese text, anything else English.
+ */
+function dropThinkingText(language) {
+  return /chinese|中文|^zh/i.test(language)
+    ? {
+      cause: '服务端认为请求里的历史思考无效（例如分叉会话带来的、绑定在另一段对话上的思考块），拒绝了请求。',
+      reason: '按「丢弃无效思考」设置立即重发，让服务端丢弃这些思考；本会话之后的请求都这样处理，被丢弃的思考不再进入上下文。',
+    }
+    : {
+      cause: 'The provider rejected thinking in the conversation history as invalid (for example thinking blocks bound to a different conversation after a fork).',
+      reason: 'Resending now under the drop-invalid-thinking setting so the provider drops that thinking; later requests of this conversation do the same, and the dropped thinking leaves the context.',
+    }
+}
 /**
  * System prompt of the analysis request.
  * @param config - resolved plugin config.
@@ -144,7 +347,9 @@ export function buildAnalysisInput({ provider, selection, turn, step, failure, a
     earlierFailuresInThisStep: attempts.map(entry => ({
       code: entry.code,
       message: clip(entry.message, 400),
-      decision: entry.retry ? `retried after ${entry.delayMs}ms` : 'not retried',
+      decision: entry.fix === DROP_THINKING_FIX
+        ? `retried with invalid thinking dropped (${entry.api})`
+        : entry.retry ? `retried after ${entry.delayMs}ms` : 'not retried',
     })),
   }
   return JSON.stringify(describe, null, 2)
@@ -274,7 +479,7 @@ export async function analyze(ctx, config, { agent, provider, turn, step, failur
  * Build the `agent/request-error` listener.
  * @param ctx - plugin context exposing `llm` and `logger`.
  * @param config - resolved plugin config.
- * @param deps - replaceable analysis, logging, Session-record, and wait functions.
+ * @param deps - replaceable analysis, logging, Session-record, wait, and thinking-binding dependencies.
  * @returns the waterfall listener.
  */
 export function createListener(ctx, config, deps = {}) {
@@ -287,6 +492,7 @@ export function createListener(ctx, config, deps = {}) {
     : async () => {})
   const appendRecord = deps.appendRecord ?? ((session, data) => appendPluginRecord(session, RECORD, data))
   const wait = deps.sleep ?? sleep
+  const thinkingDrop = deps.thinkingDrop
   /** Failures seen in the current step, keyed by Session. */
   const steps = new WeakMap()
 
@@ -335,6 +541,23 @@ export function createListener(ctx, config, deps = {}) {
       return downstream
     }
 
+    // Invalid thinking in the history fails every identical resend; with the
+    // drop-invalid-thinking setting on, the conversation switches to dropping
+    // it without asking a model. When the conversation already drops it, the
+    // failure goes to the ordinary analysis.
+    const dropper = thinkingDrop !== undefined && flag(config.dropInvalidThinking)
+      ? invalidThinkingDropper(failure)
+      : undefined
+    if (dropper !== undefined && !thinkingDrop.has(agent.session.id)) {
+      thinkingDrop.enable(agent.session.id)
+      const fix = { retry: true, delayMs: 0, ...dropThinkingText(config.reasonLanguage), fix: DROP_THINKING_FIX, api: dropper.api }
+      state.attempts.push({ code: failure.code, message: String(failure.message ?? ''), ...fix })
+      ctx.logger.info(`retry-advisor: ${failure.code} → retry with invalid thinking dropped (${dropper.api}) for session ${agent.session.id}`)
+      record({ ...base, outcome: 'retry', ...fix })
+      show(agent.session, { ...shown, outcome: 'retry', delayMs: 0, cause: fix.cause, reason: fix.reason, fix: DROP_THINKING_FIX, api: dropper.api })
+      return { kind: 'retry' }
+    }
+
     const planned = analysisRoute(config, agent.model.current())
     const plannedModel = planned === undefined ? {} : { analysisModel: `${planned.provider}/${planned.model}` }
     show(agent.session, { ...shown, outcome: 'analyzing', ...plannedModel })
@@ -364,10 +587,18 @@ export function createListener(ctx, config, deps = {}) {
   }
 }
 
-/** Register the advisor as a last-resort `agent/request-error` listener. */
+/**
+ * Register the advisor as a last-resort `agent/request-error` listener, and
+ * the request marking for conversations that drop invalid thinking. The
+ * drop-invalid-thinking setting is volatile: both read it on every use, so
+ * switching it takes effect without a reload.
+ */
 export function apply(ctx, config) {
   if (Boolean(config.provider) !== Boolean(config.model)) {
     throw new Error('retry-advisor: provider and model must be set together')
   }
-  ctx.on('agent/request-error', createListener(ctx, config))
+  const thinkingDrop = createThinkingDrop()
+  ctx.on('agent/request-error', createListener(ctx, config, { thinkingDrop }))
+  ctx.on('llm-pi-ai/request-headers', createHeaderListener(thinkingDrop, () => flag(config.dropInvalidThinking)))
+  ctx.on('dispose', () => thinkingDrop.dispose())
 }

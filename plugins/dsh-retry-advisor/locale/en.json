@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "AI retry advisor",
-    "description": "When a model request fails and no built-in handler retries it, analyzes the cause on the conversation's model and reasoning effort, decides whether and when to resend, and shows the decision in the conversation. If the analysis itself fails, the request is not retried."
+    "description": "When a model request fails and no built-in handler retries it, analyzes the cause on the conversation's model and reasoning effort, decides whether and when to resend, and shows the decision in the conversation. If the analysis itself fails, the request is not retried. Optionally drops invalid thinking from the history when the provider rejects it."
   }
 }
