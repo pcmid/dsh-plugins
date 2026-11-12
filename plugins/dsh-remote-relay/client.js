@@ -14,7 +14,6 @@ window.__ModuleLoader__.load({
     const PREFIX = 'dsh-rr';
     const POLL_MS = 2000;
     const NOTICE_MS = 1600;
-    const LONG_PRESS_MS = 500;
     /** postMessage channel between a device view and the DSH window that embeds it. */
     const BRIDGE = 'dsh-remote-relay';
     const BRIDGE_VERSION = 1;
@@ -76,6 +75,7 @@ window.__ModuleLoader__.load({
       onlineDetail: '已连接 relay，{count} 台设备在线',
       removing: '正在移除…',
       removeDevice: '移除设备',
+      deviceActions: '{name} 的更多操作',
       removeTitle: '移除 {name}？',
       removeIntro: '移除后不能再切换到 {name}，它也会同时把本机从它的设备列表里删掉。之后要重新配对才能再用。',
       removedTitle: '已移除 {name}',
@@ -172,6 +172,7 @@ window.__ModuleLoader__.load({
       onlineDetail: 'Connected to the relay, {count} device(s) online',
       removing: 'Removing…',
       removeDevice: 'Remove device',
+      deviceActions: 'More actions for {name}',
       removeTitle: 'Remove {name}?',
       removeIntro: 'You can no longer switch to {name}, and it also removes this DSH from its device list. Pair again to use it later.',
       removedTitle: '{name} removed',
@@ -553,7 +554,16 @@ window.__ModuleLoader__.load({
 @media (prefers-reduced-motion: reduce) { .${PREFIX}-spin { animation-duration: 2.4s; } }
 
 /* Menu rows */
-.${PREFIX}-devices [role="menuitem"] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+/* An added device's "..." button sits over the row's trailing edge, like a Session row's: always on touch screens, on hover otherwise. */
+.${PREFIX}-drow { position: relative; }
+.${PREFIX}-drow[data-more] .${PREFIX}-mrow { padding-right: 28px; }
+.${PREFIX}-dmore { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: none; border-radius: var(--dsw-radius-xs); background: transparent; color: var(--dsw-alias-label-tertiary); cursor: pointer; }
+.${PREFIX}-dmore:focus-visible { outline-offset: -2px; }
+@media (hover: hover) {
+  .${PREFIX}-dmore { opacity: 0; }
+  .${PREFIX}-drow:hover .${PREFIX}-dmore, .${PREFIX}-drow[data-open] .${PREFIX}-dmore, .${PREFIX}-dmore:focus-visible { opacity: 1; }
+  .${PREFIX}-dmore:hover { color: var(--dsw-alias-label-primary); }
+}
 .${PREFIX}-mrow { display: flex; align-items: center; gap: 12px; min-width: 216px; }
 .${PREFIX}-mname { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .${PREFIX}-mname > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1828,35 +1838,13 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     }
 
     function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, t }) {
-      // Right-clicking or long-pressing an added device opens its own context menu at the pointer.
+      // An added device's actions open from its "..." button, or from a right click on its row.
       const [context, setContext] = useState(null);
       // The device list can close from outside (its trigger, another window); drop the context menu with it.
       useEffect(() => { if (!open) setContext(null); }, [open]);
-      // Touch has no right click, and iOS fires no contextmenu event, so a held touch opens the menu.
-      // `fired` swallows the click that ends the press, so the row does not also switch devices.
-      const press = useRef({ timer: 0, fired: false, x: 0, y: 0 });
-      const cancelPress = () => { clearTimeout(press.current.timer); press.current.timer = 0; };
-      useEffect(() => cancelPress, []);
-      const startPress = (event, id) => {
-        cancelPress();
-        press.current.fired = false;
-        if (event.pointerType === 'mouse') return;
-        const { clientX: x, clientY: y } = event;
-        Object.assign(press.current, { x, y });
-        press.current.timer = setTimeout(() => {
-          press.current.timer = 0;
-          press.current.fired = true;
-          setContext({ id, x, y, keyboard: false });
-        }, LONG_PRESS_MS);
-      };
-      const movePress = (event) => {
-        if (press.current.timer !== 0 && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10) cancelPress();
-      };
       const openContext = (event, id) => {
         event.preventDefault();
         event.stopPropagation();
-        // Android fires contextmenu for a held touch before our timer does.
-        if (press.current.timer !== 0) { cancelPress(); press.current.fired = true; }
         // The keyboard context-menu key reports no pointer position; use the row instead.
         let { clientX: x, clientY: y } = event;
         if (x === 0 && y === 0) {
@@ -1865,6 +1853,11 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           y = rect.bottom;
         }
         setContext({ id, x, y, keyboard: event.button !== 2 });
+      };
+      const toggleContext = (event, id) => {
+        if (context?.id === id) { setContext(null); return; }
+        const rect = event.currentTarget.getBoundingClientRect();
+        setContext({ id, x: rect.left, y: rect.bottom, keyboard: event.detail === 0 });
       };
       return h(React.Fragment, null, h(UI.Menu, {
         open,
@@ -1879,7 +1872,6 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         // The device context menu is portaled outside this list; pressing in it must not close the list first.
         isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip, .${PREFIX}-ctx`) !== null,
         onClose: () => { setContext(null); onClose(); },
-        listClassName: `${PREFIX}-devices`,
         items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
         footer: [{ id: 'add', label: t('addDevice'), icon: h(UI.IconPlusOutlineRegular, { size: 16 }) }],
         onSelect: (id) => {
@@ -1892,24 +1884,24 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         current: rows.local.current,
         onSelect: () => { onClose(); onLocal(); },
       }, h(MenuRowContent, { name: t('thisDevice'), meta: rows.local.name, current: rows.local.current })),
-      ...rows.remotes.map((row) => h(UI.MenuItemButton, {
-        key: row.id,
-        icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
-        current: row.current,
-        onSelect: () => {
-          if (press.current.fired) { press.current.fired = false; return; }
-          onClose();
-          onRow(row);
-        },
-        // MenuItemButton forwards native button handlers to its <button>.
-        ...(rows.removable ? {
-          onContextMenu: (event) => { openContext(event, row.id); },
-          onPointerDown: (event) => { startPress(event, row.id); },
-          onPointerMove: movePress,
-          onPointerUp: cancelPress,
-          onPointerCancel: cancelPress,
-        } : {}),
-      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy })))),
+      ...rows.remotes.map((row) => h('div', { key: row.id, className: `${PREFIX}-drow`, 'data-more': rows.removable ? '' : undefined, 'data-open': context?.id === row.id ? '' : undefined },
+        h(UI.MenuItemButton, {
+          icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
+          current: row.current,
+          onSelect: () => { onClose(); onRow(row); },
+          // MenuItemButton forwards native button handlers to its <button>.
+          onContextMenu: rows.removable ? (event) => { openContext(event, row.id); } : undefined,
+        }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy })),
+        rows.removable ? h('button', {
+          type: 'button',
+          className: `${PREFIX}-dmore`,
+          'aria-label': fill(t('deviceActions'), { name: row.name }),
+          'aria-haspopup': 'menu',
+          'aria-expanded': context?.id === row.id,
+          // Keeps the open context menu from treating this press as an outside press before the toggle.
+          onPointerDown: (event) => { event.stopPropagation(); },
+          onClick: (event) => { toggleContext(event, row.id); },
+        }, h(UI.IconEllipsisOutlineRegular, { size: 16 })) : null))),
       h(UI.Menu, {
         open: open && context !== null,
         anchor: null,
