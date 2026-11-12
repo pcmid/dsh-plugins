@@ -73,14 +73,14 @@ window.__ModuleLoader__.load({
       state_replaced: '已被另一个 DSH 接管',
       state_error: '出错',
       onlineDetail: '已连接 relay，{count} 台设备在线',
-      remotesHeading: '切换到其他设备',
-      remotesIntro: '用侧边栏底部的设备按钮切换。移除时会让对方同时移除本机，之后要重新配对才能再用。',
       removing: '正在移除…',
+      removeDevice: '移除设备',
+      removeTitle: '移除 {name}？',
+      removeIntro: '移除后不能再切换到 {name}，它也会同时把本机从它的设备列表里删掉。之后要重新配对才能再用。',
+      removedTitle: '已移除 {name}',
       removeUnconfirmed: '已从本机移除 {name}。没能连上它，它的设备列表里可能还留着本机；这条记录已经不能用来访问，可以在它的「设置 → 远程访问」里移除。',
-      removeFailed: '移除 {name} 失败：{error}',
-      noRemotes: '还没有添加其他设备。',
-      addedAt: '添加于 {date}',
-      switchTo: '切换',
+      removeFailed: '移除失败：{error}',
+      gotIt: '知道了',
       // Device switcher
       switcher: '切换设备',
       thisDevice: '本机',
@@ -169,14 +169,14 @@ window.__ModuleLoader__.load({
       state_replaced: 'Taken over by another DSH',
       state_error: 'Error',
       onlineDetail: 'Connected to the relay, {count} device(s) online',
-      remotesHeading: 'Switch to other devices',
-      remotesIntro: 'Switch with the device button at the bottom of the sidebar. Removing a device also removes this DSH from it; pair again to use it later.',
       removing: 'Removing…',
+      removeDevice: 'Remove device',
+      removeTitle: 'Remove {name}?',
+      removeIntro: 'You can no longer switch to {name}, and it also removes this DSH from its device list. Pair again to use it later.',
+      removedTitle: '{name} removed',
       removeUnconfirmed: '{name} was removed here. It could not be reached, so it may still list this DSH; that entry can no longer be used for access, and you can remove it under its Settings → Remote access.',
-      removeFailed: 'Could not remove {name}: {error}',
-      noRemotes: 'No other devices are added yet.',
-      addedAt: 'Added {date}',
-      switchTo: 'Switch',
+      removeFailed: 'Could not remove it: {error}',
+      gotIt: 'Got it',
       switcher: 'Switch device',
       thisDevice: 'This device',
       remoteTag: 'Remote',
@@ -781,7 +781,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     // Settings controller (this DSH as a host)
     // -----------------------------------------------------------------------
 
-    function createController(ctx, switcher) {
+    function createController(ctx) {
       const form = ctx.configForms.get(NAMESPACE);
       const call = rpc(ctx);
       let status = null;
@@ -877,16 +877,14 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         },
         refresh: () => { if (watchers > 0) void refresh(); },
         face: {
-          hooks: { remoteRelay: store, switcher: switcher.store },
+          hooks: { remoteRelay: store },
           watch() {
             watchers++;
-            const release = switcher.watch();
             if (watchers === 1) {
               void refresh();
               schedule();
             }
             return () => {
-              release();
               watchers--;
               if (watchers === 0) clearTimeout(timer);
             };
@@ -904,9 +902,6 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
               return false;
             }
           },
-          switchTo: (id) => { switcher.switchTo(id); },
-          openAdd: () => { switcher.openAdd(); },
-          removeRemote: (id) => switcher.remove(id),
         },
       };
     }
@@ -935,8 +930,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         views: {},
         menu: null,
         add: null,
-        removing: null,
-        removeNote: null,
+        removal: null,
         embed: null,
         embedGaveUp: false,
       };
@@ -944,7 +938,6 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const frames = new Map();
       const cleanups = [];
       let disposed = false;
-      let watchers = 0;
       let pollTimer;
       let refreshing;
       let generation = 0;
@@ -981,7 +974,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         return refreshing;
       };
 
-      const needsPolling = () => watchers > 0 || state.menu !== null || state.pending !== null || state.add?.busy === true
+      const needsPolling = () => state.menu !== null || state.pending !== null || state.add?.busy === true
         || Object.values(state.views).some((view) => view.failure && !view.ack)
         || Object.values(state.views).some((view) => view.phase !== 'ready');
       const schedulePoll = () => {
@@ -1167,33 +1160,40 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         }
       };
 
-      const remove = async (id) => {
-        if (state.removing !== null) return false;
-        const name = nameOf(id);
+      const remove = async () => {
+        const removal = state.removal;
+        if (removal === null || removal.busy) return;
         // The Host first asks that device to remove this DSH, which can take a few seconds.
-        set({ removing: id, removeNote: null });
+        set({ removal: { ...removal, busy: true, error: null } });
         try {
-          const value = await call('remote-remove', { id });
+          const value = await call('remote-remove', { id: removal.id });
           generation += 1;
           const views = { ...state.views };
-          delete views[id];
-          frames.delete(id);
+          delete views[removal.id];
+          frames.delete(removal.id);
           set({
             local: value.local,
             remotes: value.remotes,
             views,
-            current: state.current === id ? null : state.current,
-            pending: state.pending === id ? null : state.pending,
-            removing: null,
-            removeNote: value.forgotten === false ? { tone: 'warn', text: fill(t('removeUnconfirmed'), { name }) } : null,
+            current: state.current === removal.id ? null : state.current,
+            pending: state.pending === removal.id ? null : state.pending,
+            // The dialog stays open only to say the other device may still list this DSH.
+            removal: value.forgotten === false ? { ...removal, busy: false, unconfirmed: true } : null,
           });
           if (state.current === null) remember(null);
-          return true;
         } catch (error) {
-          set({ removing: null, removeNote: { tone: 'error', text: fill(t('removeFailed'), { name, error: describeFailure(error, t) }) } });
-          return false;
+          set({ removal: { ...removal, busy: false, error: describeFailure(error, t) } });
         }
       };
+      const openRemove = (id) => {
+        if (state.mode === 'frame') {
+          post(window.parent, { type: 'remove', id });
+          return;
+        }
+        if (remoteOf(id) === undefined || state.removal?.busy === true) return;
+        set({ menu: null, removal: { id, name: nameOf(id), busy: false, error: null, unconfirmed: false } });
+      };
+      const closeRemove = () => { if (state.removal?.busy !== true) set({ removal: null }); };
 
       // ---- Bridge between a device view and the window that shows it ---------
 
@@ -1303,6 +1303,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           void refresh().then(() => { sendContext(id); });
         } else if (data.type === 'add') {
           openAdd();
+        } else if (data.type === 'remove' && typeof data.id === 'string') {
+          openRemove(data.id);
         } else if (data.type === 'local') {
           show(null);
         } else if (data.type === 'row' && typeof data.id === 'string') {
@@ -1325,6 +1327,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         const rows = {
           // The phone launcher sends no local row: a browser is not a DSH to switch back to.
           local: data.rows?.local ? { id: text(data.rows.local.id), name: text(data.rows.local.name), current: false } : null,
+          // Only a DSH window with this plugin version answers a removal request; the launcher does not.
+          removable: data.rows?.removable === true,
           remotes: (Array.isArray(data.rows?.remotes) ? data.rows.remotes : []).slice(0, 50).map((row) => ({
             id: text(row?.id),
             name: text(row?.name),
@@ -1383,16 +1387,6 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       }
 
       return {
-        store,
-        watch() {
-          watchers++;
-          void refresh();
-          schedulePoll();
-          return () => { watchers--; };
-        },
-        switchTo: (id) => { void switchTo(id); },
-        openAdd,
-        remove,
         refresh: () => { void refresh(); },
         dispose() {
           disposed = true;
@@ -1417,6 +1411,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           openAdd,
           closeAdd,
           add: (code, name) => { void add(code, name); },
+          openRemove,
+          closeRemove,
+          remove: () => { void remove(); },
           registerFrame: (id, element) => {
             if (element === null) frames.delete(id);
             else frames.set(id, element);
@@ -1622,26 +1619,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         h(ConfirmButton, { label: t('remove'), confirmLabel: t('confirmRemove'), disabled: busy !== null, onConfirm: () => { onRevoke(device.id); } }));
     }
 
-    function RemoteRow({ remote, removing, onRemove, t }) {
-      // While this row is being removed, its tunnel only carries the removal request.
-      const shown = removing === remote.id ? 'idle' : remote.state;
-      const stateText = shown === 'idle' ? '' : shown === 'retrying' ? describeRemote(remote, t) : t(`device_${shown}`);
-      const badgeTone = deviceTone(shown) === 'error' ? 'error' : shown === 'connected' ? undefined : 'neutral';
-      return h('div', { className: `${PREFIX}-device` },
-        h(DeviceGlyph, { tone: deviceTone(shown), color: deviceColor(remote.id) }),
-        h('div', { className: `${PREFIX}-device-main` },
-          h('div', { className: `${PREFIX}-device-name` }, remote.name,
-            stateText ? h('span', { className: `${PREFIX}-badge`, 'data-tone': badgeTone }, stateText) : null),
-          h('div', { className: `${PREFIX}-desc` }, `${remote.relay} · ${fill(t('addedAt'), { date: formatDate(remote.pairedAt) })}`)),
-        removing === remote.id
-          ? h('span', { className: `${PREFIX}-status`, role: 'status', style: { display: 'inline-flex', alignItems: 'center', gap: 6, flex: 'none' } }, h(Spinner, { size: 14 }), t('removing'))
-          : h(ConfirmButton, { label: t('remove'), confirmLabel: t('confirmRemove'), disabled: removing !== null, onConfirm: () => { void onRemove(remote.id); } }));
-    }
-
     function RemoteAccessSection(props) {
       const { t } = props;
       const state = props.useRemoteRelay((snapshot) => snapshot);
-      const switcher = props.useSwitcher((snapshot) => snapshot);
       const watch = props.watch;
       useEffect(() => watch(), [watch]);
       const config = state.config ?? {};
@@ -1661,21 +1641,6 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       return h('div', { className: `${PREFIX}-root` },
         h('style', null, CSS),
         h('p', { className: `${PREFIX}-lead` }, t('lead')),
-        switcher.mode === 'top'
-          ? h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-remotes` },
-            h('div', { className: `${PREFIX}-row`, style: { paddingBottom: 4 } },
-              h('div', { className: `${PREFIX}-label` },
-                h('h3', { id: `${PREFIX}-remotes`, className: `${PREFIX}-heading`, style: { margin: 0 } }, t('remotesHeading')),
-                h('div', { className: `${PREFIX}-desc` }, t('remotesIntro'))),
-              h('div', { className: `${PREFIX}-control`, style: { flex: 'none' } },
-                h('button', { type: 'button', className: `${PREFIX}-button`, onClick: props.openAdd }, t('addTitle')))),
-            switcher.remotes.length === 0
-              ? h('div', { className: `${PREFIX}-desc`, style: { padding: '4px 0 8px' } }, t('noRemotes'))
-              : h('div', null, switcher.remotes.map((remote) => h(RemoteRow, { key: remote.id, remote, removing: switcher.removing, onRemove: props.removeRemote, t }))),
-            switcher.removeNote
-              ? h('p', { className: switcher.removeNote.tone === 'error' ? `${PREFIX}-error` : `${PREFIX}-note`, role: switcher.removeNote.tone === 'error' ? 'alert' : 'status' }, switcher.removeNote.text)
-              : null)
-          : null,
         h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-host` },
           h('h3', { id: `${PREFIX}-host`, className: `${PREFIX}-heading` }, t('hostHeading')),
           h('div', { className: `${PREFIX}-desc` }, t('hostIntro')),
@@ -1819,6 +1784,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             onLocal: () => { props.switchTo(null); },
             onRow: (row) => { props.runRow(row.id, row.action); },
             onAdd: () => { props.openAdd(); },
+            onRemove: props.openRemove,
             t,
           })
           : null);
@@ -1856,10 +1822,19 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           action,
         };
       });
-      return { local: { id: state.local?.serverId ?? '', name: state.local?.name ?? '', current: state.current === null }, remotes };
+      return { local: { id: state.local?.serverId ?? '', name: state.local?.name ?? '', current: state.current === null }, removable: true, remotes };
     }
 
-    function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, t }) {
+    function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, t }) {
+      const footer = [{ id: 'add', label: t('addDevice'), icon: h(UI.IconPlusOutlineRegular, { size: 16 }) }];
+      if (rows.removable && rows.remotes.length > 0) {
+        footer.push({
+          id: 'remove',
+          label: t('removeDevice'),
+          icon: h(UI.IconTrashOutlineRegular, { size: 16 }),
+          submenu: rows.remotes.map((row) => ({ id: `remove:${row.id}`, label: row.name, icon: h(DeviceGlyph, { color: deviceColor(row.id) }) })),
+        });
+      }
       return h(UI.Menu, {
         open,
         anchor: null,
@@ -1873,6 +1848,12 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip`) !== null,
         onClose,
         items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
+        footer,
+        onSelect: (id) => {
+          onClose();
+          if (id === 'add') onAdd();
+          else if (id.startsWith('remove:')) onRemove(id.slice('remove:'.length));
+        },
       },
       rows.local === null ? null : h(UI.MenuItemButton, {
         icon: h(DeviceGlyph, { color: deviceColor(rows.local.id) }),
@@ -1884,16 +1865,11 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
         current: row.current,
         onSelect: () => { onClose(); onRow(row); },
-      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy }))),
-      h(UI.MenuItemButton, {
-        separatorBefore: true,
-        icon: h(UI.IconPlusOutlineRegular, { size: 16 }),
-        onSelect: () => { onClose(); onAdd(); },
-      }, t('addDevice')));
+      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy }))));
     }
 
     /** The top window's menu, anchored to the trigger rectangle it was opened from. */
-    function StageMenu({ state, closeMenu, runRow, switchTo, openAdd, t }) {
+    function StageMenu({ state, closeMenu, runRow, switchTo, openAdd, openRemove, t }) {
       const anchorRef = useRef(null);
       const rect = state.menu?.rect ?? { left: 0, top: 0, width: 0, height: 0 };
       return h(React.Fragment, null,
@@ -1908,6 +1884,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           onLocal: () => { switchTo(null); },
           onRow: (row) => { runRow(row.id, row.action); },
           onAdd: () => { openAdd(); },
+          onRemove: openRemove,
           t,
         }));
     }
@@ -1964,6 +1941,25 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         h('button', { type: 'submit', hidden: true })));
     }
 
+    function RemoveDeviceDialog({ removal, remove, closeRemove, t }) {
+      const name = removal.name;
+      return h(UI.Modal, {
+        open: true,
+        tone: 'warning',
+        className: `${PREFIX}-dialog`,
+        title: fill(t(removal.unconfirmed ? 'removedTitle' : 'removeTitle'), { name }),
+        closeLabel: t('close'),
+        description: removal.unconfirmed ? fill(t('removeUnconfirmed'), { name }) : fill(t('removeIntro'), { name }),
+        onClose: closeRemove,
+        footer: removal.unconfirmed
+          ? h(UI.Button, { variant: 'primary', size: 'sm', 'data-modal-autofocus': true, onClick: closeRemove }, t('gotIt'))
+          : h(React.Fragment, null,
+            h(UI.Button, { variant: 'outline', size: 'sm', 'data-modal-autofocus': true, onClick: closeRemove, disabled: removal.busy }, t('cancel')),
+            h(UI.Button, { variant: 'primary', size: 'sm', onClick: remove, disabled: removal.busy }, removal.busy ? t('removing') : t('remove'))),
+      },
+      removal.error ? h('p', { className: `${PREFIX}-error`, role: 'alert', style: { margin: 0 } }, fill(t('removeFailed'), { error: removal.error })) : undefined);
+    }
+
     /**
      * Makes the native window read the document's app-regions again. Electron recollects them only
      * when a computed app-region value changes (electron#32341), so this box, which has no area,
@@ -1992,7 +1988,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const current = state.current === null ? undefined : state.views[state.current];
       const showChip = current !== undefined && !current.hello;
       // A menu or dialog of this window covers the view; nothing under it may drag the window.
-      const covered = state.menu !== null || state.add !== null;
+      const covered = state.menu !== null || state.add !== null || state.removal !== null;
       const drag = current !== undefined && !covered && Array.isArray(current.drag) ? current.drag : [];
       // A device without this plugin version never reports its chrome rows; keep a narrow strip so
       // the window can still be moved.
@@ -2027,8 +2023,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             props.openMenu({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }, { keyboard: event.detail === 0 });
           } }, h(DeviceGlyph, { color: deviceColor(state.current) }), state.remotes.find((remote) => remote.id === state.current)?.name ?? '', h(UI.IconChevronsUpDownOutlineRegular, { size: 14 }))
           : null,
-        h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, t }),
-        state.add !== null ? h(AddDeviceDialog, { add: state.add, local: state.local, addDevice: props.add, closeAdd: props.closeAdd, t }) : null),
+        h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, openRemove: props.openRemove, t }),
+        state.add !== null ? h(AddDeviceDialog, { add: state.add, local: state.local, addDevice: props.add, closeAdd: props.closeAdd, t }) : null,
+        state.removal !== null ? h(RemoveDeviceDialog, { removal: state.removal, remove: props.remove, closeRemove: props.closeRemove, t }) : null),
       document.body);
     }
 
@@ -2048,7 +2045,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           return () => { memory.dispose(); };
         }, 'remote-relay: last opened session');
         ctx.effect(() => () => { switcher.dispose(); }, 'remote-relay: device switcher');
-        const controller = createController(ctx, switcher);
+        const controller = createController(ctx);
         ctx.effect(() => () => { controller.dispose(); }, 'remote-relay: controller');
         ctx.effect(() => {
           const off = ctx.on('connection/reset', () => { controller.refresh(); switcher.refresh(); });
