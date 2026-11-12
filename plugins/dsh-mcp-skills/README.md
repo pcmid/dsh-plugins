@@ -1,8 +1,8 @@
 # @pcmid/dsh-mcp-skills
 
-在 DSH 设置里增加「MCP 服务器」和「技能」两页，不用手写配置文件就能添加、测试、修改和删除 MCP 服务器与技能，并从技能仓库安装和更新技能。交互参考了 OpenChamber 的同类设置页，设计说明见 [docs/design.md](docs/design.md)。
+在 DSH 设置里增加「MCP」和「技能」两页，不用手写配置文件就能添加、测试、修改和删除 MCP 服务器与技能，并从技能仓库安装和更新技能。交互参考了 OpenChamber 的同类设置页，设计说明见 [docs/design.md](docs/design.md)。
 
-## MCP 服务器
+## MCP
 
 - **粘贴即可添加。** 粘贴框能识别三种来源：启动命令（`npx -y …`、`uvx …`、`docker run …`，开头的 `KEY=VALUE` 会变成环境变量）、`https://` 服务器地址，以及 Claude、Cursor、VS Code 配置里的 `mcpServers` JSON。名称会自动推导。JSON 里有多个服务器时进入批量导入，同名的可以选择跳过或覆盖。也可以手动填写。
 - **密钥不写进配置文件。** 环境变量和请求头可以标成「密钥」，看起来像密钥的键（`TOKEN`、`API_KEY`、`Authorization` 等）会自动标上。值存进 DSH 凭据库，配置里只留 `${credential:MCP_<服务器>_<键>}`。删除服务器时，它自己的密钥也会一起删掉。

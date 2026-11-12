@@ -3107,8 +3107,8 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------------
 
     addDict({
-      mcp_nav: 'MCP 服务器',
-      mcp_title: 'MCP 服务器',
+      mcp_nav: 'MCP',
+      mcp_title: 'MCP',
       mcp_intro: '让 Agent 调用外部工具。添加后立即连接，所有会话都能用。',
       mcp_add: '添加 MCP 服务器',
       mcp_addFirst: '添加第一个 MCP 服务器',
@@ -3318,8 +3318,8 @@ window.__ModuleLoader__.load({
       mcp_checkUnreachable: '暂时连不上：{error}。仍可添加。',
       mcp_addAuthorize: '添加并授权',
     }, {
-      mcp_nav: 'MCP servers',
-      mcp_title: 'MCP servers',
+      mcp_nav: 'MCP',
+      mcp_title: 'MCP',
       mcp_intro: 'Let the agent call external tools. Servers connect as soon as you add them and work in every session.',
       mcp_add: 'Add MCP server',
       mcp_addFirst: 'Add your first MCP server',
