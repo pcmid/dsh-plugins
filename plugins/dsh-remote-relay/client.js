@@ -1826,16 +1826,23 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     }
 
     function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, t }) {
-      const footer = [{ id: 'add', label: t('addDevice'), icon: h(UI.IconPlusOutlineRegular, { size: 16 }) }];
-      if (rows.removable && rows.remotes.length > 0) {
-        footer.push({
-          id: 'remove',
-          label: t('removeDevice'),
-          icon: h(UI.IconTrashOutlineRegular, { size: 16 }),
-          submenu: rows.remotes.map((row) => ({ id: `remove:${row.id}`, label: row.name, icon: h(DeviceGlyph, { color: deviceColor(row.id) }) })),
-        });
-      }
-      return h(UI.Menu, {
+      // Right-clicking an added device opens its own context menu at the pointer.
+      const [context, setContext] = useState(null);
+      // The device list can close from outside (its trigger, another window); drop the context menu with it.
+      useEffect(() => { if (!open) setContext(null); }, [open]);
+      const openContext = (event, id) => {
+        event.preventDefault();
+        event.stopPropagation();
+        // The keyboard context-menu key reports no pointer position; use the row instead.
+        let { clientX: x, clientY: y } = event;
+        if (x === 0 && y === 0) {
+          const rect = event.currentTarget.getBoundingClientRect();
+          x = rect.left + 24;
+          y = rect.bottom;
+        }
+        setContext({ id, x, y, keyboard: event.button !== 2 });
+      };
+      return h(React.Fragment, null, h(UI.Menu, {
         open,
         anchor: null,
         anchorRef,
@@ -1845,14 +1852,14 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         autoFocus: keyboard === true,
         minWidthFromAnchor: true,
         returnFocus: returnFocus ?? undefined,
-        isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip`) !== null,
-        onClose,
+        // The device context menu is portaled outside this list; pressing in it must not close the list first.
+        isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip, .${PREFIX}-ctx`) !== null,
+        onClose: () => { setContext(null); onClose(); },
         items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
-        footer,
+        footer: [{ id: 'add', label: t('addDevice'), icon: h(UI.IconPlusOutlineRegular, { size: 16 }) }],
         onSelect: (id) => {
           onClose();
           if (id === 'add') onAdd();
-          else if (id.startsWith('remove:')) onRemove(id.slice('remove:'.length));
         },
       },
       rows.local === null ? null : h(UI.MenuItemButton, {
@@ -1865,7 +1872,26 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
         current: row.current,
         onSelect: () => { onClose(); onRow(row); },
-      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy }))));
+        // MenuItemButton forwards native button handlers to its <button>.
+        onContextMenu: rows.removable ? (event) => { openContext(event, row.id); } : undefined,
+      }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy })))),
+      h(UI.Menu, {
+        open: open && context !== null,
+        anchor: null,
+        portal: true,
+        contextual: true,
+        autoFocus: context?.keyboard === true,
+        anchorPoint: context === null ? undefined : { x: context.x, y: context.y },
+        listClassName: `${PREFIX}-ctx`,
+        items: [{ id: 'remove', label: t('removeDevice'), danger: true, icon: h(UI.IconTrashOutlineRegular, { size: 16 }) }],
+        onClose: () => { setContext(null); },
+        onSelect: () => {
+          const id = context.id;
+          setContext(null);
+          onClose();
+          onRemove(id);
+        },
+      }));
     }
 
     /** The top window's menu, anchored to the trigger rectangle it was opened from. */
