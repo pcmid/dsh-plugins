@@ -1,0 +1,56 @@
+{
+  "name": "@pcmid/dsh-edit-prompt",
+  "version": "0.1.0",
+  "description": "Adds an edit button beside the copy button of each user message. Sending the edited prompt drops that turn and everything after it, and restarts the conversation from there.",
+  "author": "pcmid",
+  "license": "MIT",
+  "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-edit-prompt#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-edit-prompt"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/client.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-chat",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

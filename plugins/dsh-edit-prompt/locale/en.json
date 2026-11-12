@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Edit and resend prompts",
+    "description": "Adds an edit button beside the copy button of each message you sent. Edit the text and send it: that turn and everything after it are dropped, and the conversation restarts from the edited prompt. Images in the message are sent again; the original conversation is archived by default."
+  }
+}

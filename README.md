@@ -26,6 +26,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
 | [`@pcmid/dsh-todo-guard`](plugins/dsh-todo-guard) | 本仓库 | 工具与能力 | agent 连续多步没更新 `todo_write` 任务列表时提醒它更新；可选在回合结束时把剩余任务标为完成 |
 | [`@pcmid/dsh-workspace-agent-preset`](plugins/dsh-workspace-agent-preset) | 本仓库 | 工具与能力 | 在工作区菜单里为工作区选择 Agent 预设，该工作区打开的新会话默认使用它 |
+| [`@pcmid/dsh-edit-prompt`](plugins/dsh-edit-prompt) | 本仓库 | 工具与能力 | 在自己发出的消息的复制按钮旁加编辑按钮：改完发送后丢弃这一轮及之后的消息，从修改后的提示词重新开始 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 
 `@pcmid/dsh-web-search-native` 会优先使用 `@pcmid/dsh-model-defaults` 提供的小模型，两者建议一起安装。
