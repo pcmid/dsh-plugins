@@ -91,7 +91,7 @@ try {
   const secondId = (await second.call('status')).value.serverId
   assert.equal(context.id, secondId)
   assert.equal(context.state, 'connected')
-  assert.equal(context.rows.local.name, 'e2e phone 2')
+  assert.equal(context.rows.local, null)
   assert.deepEqual(context.rows.remotes.map((row) => [row.id, row.current, row.action]).sort(), [[hostId, false, 'switch'], [secondId, true, 'switch']].sort())
   await page.waitForSelector('#chip', { state: 'hidden' })
   await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])

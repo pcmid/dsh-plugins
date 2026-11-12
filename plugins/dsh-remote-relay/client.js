@@ -1321,7 +1321,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           : null;
         const text = (value) => String(value ?? '').slice(0, 200);
         const rows = {
-          local: { id: text(data.rows?.local?.id), name: text(data.rows?.local?.name), current: false },
+          // The phone launcher sends no local row: a browser is not a DSH to switch back to.
+          local: data.rows?.local ? { id: text(data.rows.local.id), name: text(data.rows.local.name), current: false } : null,
           remotes: (Array.isArray(data.rows?.remotes) ? data.rows.remotes : []).slice(0, 50).map((row) => ({
             id: text(row?.id),
             name: text(row?.name),
@@ -1786,7 +1787,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         onClose,
         items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
       },
-      h(UI.MenuItemButton, {
+      rows.local === null ? null : h(UI.MenuItemButton, {
         icon: h(DeviceGlyph, { color: deviceColor(rows.local.id) }),
         current: rows.local.current,
         onSelect: () => { onClose(); onLocal(); },
