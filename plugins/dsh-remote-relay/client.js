@@ -14,6 +14,7 @@ window.__ModuleLoader__.load({
     const PREFIX = 'dsh-rr';
     const POLL_MS = 2000;
     const NOTICE_MS = 1600;
+    const LONG_PRESS_MS = 500;
     /** postMessage channel between a device view and the DSH window that embeds it. */
     const BRIDGE = 'dsh-remote-relay';
     const BRIDGE_VERSION = 1;
@@ -552,6 +553,7 @@ window.__ModuleLoader__.load({
 @media (prefers-reduced-motion: reduce) { .${PREFIX}-spin { animation-duration: 2.4s; } }
 
 /* Menu rows */
+.${PREFIX}-devices [role="menuitem"] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .${PREFIX}-mrow { display: flex; align-items: center; gap: 12px; min-width: 216px; }
 .${PREFIX}-mname { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 .${PREFIX}-mname > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1826,13 +1828,35 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     }
 
     function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, t }) {
-      // Right-clicking an added device opens its own context menu at the pointer.
+      // Right-clicking or long-pressing an added device opens its own context menu at the pointer.
       const [context, setContext] = useState(null);
       // The device list can close from outside (its trigger, another window); drop the context menu with it.
       useEffect(() => { if (!open) setContext(null); }, [open]);
+      // Touch has no right click, and iOS fires no contextmenu event, so a held touch opens the menu.
+      // `fired` swallows the click that ends the press, so the row does not also switch devices.
+      const press = useRef({ timer: 0, fired: false, x: 0, y: 0 });
+      const cancelPress = () => { clearTimeout(press.current.timer); press.current.timer = 0; };
+      useEffect(() => cancelPress, []);
+      const startPress = (event, id) => {
+        cancelPress();
+        press.current.fired = false;
+        if (event.pointerType === 'mouse') return;
+        const { clientX: x, clientY: y } = event;
+        Object.assign(press.current, { x, y });
+        press.current.timer = setTimeout(() => {
+          press.current.timer = 0;
+          press.current.fired = true;
+          setContext({ id, x, y, keyboard: false });
+        }, LONG_PRESS_MS);
+      };
+      const movePress = (event) => {
+        if (press.current.timer !== 0 && Math.hypot(event.clientX - press.current.x, event.clientY - press.current.y) > 10) cancelPress();
+      };
       const openContext = (event, id) => {
         event.preventDefault();
         event.stopPropagation();
+        // Android fires contextmenu for a held touch before our timer does.
+        if (press.current.timer !== 0) { cancelPress(); press.current.fired = true; }
         // The keyboard context-menu key reports no pointer position; use the row instead.
         let { clientX: x, clientY: y } = event;
         if (x === 0 && y === 0) {
@@ -1855,6 +1879,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         // The device context menu is portaled outside this list; pressing in it must not close the list first.
         isExternalTrigger: (node) => node instanceof Element && node.closest(`.${PREFIX}-sw, .${PREFIX}-chip, .${PREFIX}-ctx`) !== null,
         onClose: () => { setContext(null); onClose(); },
+        listClassName: `${PREFIX}-devices`,
         items: [{ type: 'label', id: 'heading', text: t('devicesMenu') }],
         footer: [{ id: 'add', label: t('addDevice'), icon: h(UI.IconPlusOutlineRegular, { size: 16 }) }],
         onSelect: (id) => {
@@ -1871,9 +1896,19 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         key: row.id,
         icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
         current: row.current,
-        onSelect: () => { onClose(); onRow(row); },
+        onSelect: () => {
+          if (press.current.fired) { press.current.fired = false; return; }
+          onClose();
+          onRow(row);
+        },
         // MenuItemButton forwards native button handlers to its <button>.
-        onContextMenu: rows.removable ? (event) => { openContext(event, row.id); } : undefined,
+        ...(rows.removable ? {
+          onContextMenu: (event) => { openContext(event, row.id); },
+          onPointerDown: (event) => { startPress(event, row.id); },
+          onPointerMove: movePress,
+          onPointerUp: cancelPress,
+          onPointerCancel: cancelPress,
+        } : {}),
       }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy })))),
       h(UI.Menu, {
         open: open && context !== null,
