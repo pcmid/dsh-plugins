@@ -20,6 +20,8 @@ window.__ModuleLoader__.load({
     /** Window attributes a device view mirrors so it lays out for the same window chrome. */
     const MIRRORED_ATTRIBUTES = ['data-platform', 'data-fullscreen'];
     const CURRENT_KEY = 'dsh-remote-relay:current';
+    /** DSH's own persisted main selection (ui-workspace); read to learn which Session this window shows. */
+    const SELECTION_KEY = 'dsh.sessions.current';
 
     const zh = {
       nav: '远程访问',
@@ -1363,9 +1365,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             if (state.embed === null) set({ embedGaveUp: true });
             return;
           }
-          post(window.parent, { type: 'hello' });
+          post(window.parent, { type: 'hello', restore: true });
         }, 400);
-        post(window.parent, { type: 'hello' });
+        post(window.parent, { type: 'hello', restore: true });
         cleanups.push(() => { clearInterval(hello); });
         const moved = new MutationObserver(scheduleDrag);
         moved.observe(document.documentElement, { subtree: true, childList: true, attributes: true });
@@ -1420,6 +1422,91 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             else frames.set(id, element);
           },
           frameLoaded,
+        },
+      };
+    }
+
+    // -----------------------------------------------------------------------
+    // Last opened Session
+    // -----------------------------------------------------------------------
+
+    /**
+     * Every window of this DSH reports the Session it shows to the Host, and a window that starts
+     * reopens the Session last opened in any window (the computer, a phone, another DSH). DSH first
+     * restores the selection it saved in this browser; when the Host's Session differs, it is opened
+     * instead, and a Session that was deleted or archived starts a new one. Reporting begins once
+     * that settles, so a stale selection never overwrites the Host's.
+     * @param {object} ctx - Client context.
+     * @param {() => void} onSettled - called once the starting Session is shown.
+     */
+    function createSessionMemory(ctx, onSettled) {
+      const call = rpc(ctx);
+      let disposed = false;
+      let reported;
+      let timer;
+      const sleep = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+      const savedId = () => {
+        try {
+          const saved = JSON.parse(localStorage.getItem(SELECTION_KEY) ?? 'null');
+          return typeof saved?.sessionId === 'string' ? saved.sessionId : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      // The saved selection counts once DSH's main view holds that Session.
+      const shown = () => {
+        const id = savedId();
+        const sessions = ctx.get('sessions');
+        if (id === undefined || sessions === undefined) return undefined;
+        try {
+          return (sessions.retainInfo(id).getSnapshot().retainedBy?.mainView ?? 0) > 0 ? id : undefined;
+        } catch {
+          return undefined;
+        }
+      };
+      const listsReady = () => ctx.get('sessions')?.list?.getSnapshot().phase === 'ready'
+        && ctx.get('workspaces')?.list?.getSnapshot().phase === 'ready';
+      const usable = (id) => ctx.get('sessions').list.getSnapshot().byId[id] !== undefined
+        && !ctx.get('workspaces').list.getSnapshot().archivedSessionIds.includes(id);
+
+      const restore = async () => {
+        let last = null;
+        try {
+          last = (await call('last-session'))?.id ?? null;
+        } catch { /* a Host without this operation records nothing */ }
+        const listsBy = Date.now() + 20_000;
+        while (!disposed && !listsReady() && Date.now() < listsBy) await sleep(100);
+        if (disposed || !listsReady()) return;
+        // DSH restores this browser's own selection as soon as the lists are ready.
+        const restoredBy = Date.now() + 3000;
+        while (!disposed && shown() === undefined && Date.now() < restoredBy) await sleep(100);
+        const ui = ctx.get('uiWorkspace');
+        if (disposed || last === null || ui === undefined) return;
+        if (!usable(last)) ui.startSession();
+        else if (shown() !== last) ui.openSession(last);
+        else return;
+        const openedBy = Date.now() + 5000;
+        while (!disposed && shown() === undefined && Date.now() < openedBy) await sleep(100);
+        if (!disposed && usable(last)) {
+          while (!disposed && shown() !== last && Date.now() < openedBy) await sleep(100);
+        }
+      };
+      const track = () => {
+        const id = shown();
+        if (id === undefined || id === reported) return;
+        reported = id;
+        void call('session-opened', { id }).catch(() => { reported = undefined; });
+      };
+      void restore().catch(() => {}).finally(() => {
+        if (disposed) return;
+        onSettled();
+        track();
+        timer = setInterval(track, 1000);
+      });
+      return {
+        dispose() {
+          disposed = true;
+          clearInterval(timer);
         },
       };
     }
@@ -1951,6 +2038,15 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         const t = ctx.locale.bind(NS);
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'remote-relay: dictionaries');
         const switcher = createSwitcher(ctx, t);
+        ctx.effect(() => {
+          const memory = createSessionMemory(ctx, () => {
+            // The phone launcher keeps this page hidden until it shows its starting Session.
+            if (window.parent !== window) {
+              try { window.parent.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'restored' }, '*'); } catch { /* the embedding window is gone */ }
+            }
+          });
+          return () => { memory.dispose(); };
+        }, 'remote-relay: last opened session');
         ctx.effect(() => () => { switcher.dispose(); }, 'remote-relay: device switcher');
         const controller = createController(ctx, switcher);
         ctx.effect(() => () => { controller.dispose(); }, 'remote-relay: controller');

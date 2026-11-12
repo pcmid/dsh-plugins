@@ -91,3 +91,26 @@ test('host plugin pairs another DSH and proxies its HTTP and WebSocket traffic',
     gui.close()
   }
 })
+
+test('the Host keeps the session last opened in any window', async () => {
+  const gui = await startFakeGui()
+  const host = fakeContext(gui.origin, { enabled: false, relayUrl: '', launcherUrl: '', hostName: 'memo', pairingMinutes: 5 })
+  try {
+    apply(host.ctx, host.config)
+    assert.deepEqual((await host.call('last-session')).value, { id: null })
+    assert.equal((await host.call('session-opened', { id: 'session-a' })).value.id, 'session-a')
+    assert.equal((await host.call('session-opened', { id: 'session-b' })).value.id, 'session-b')
+    assert.deepEqual((await host.call('last-session')).value, { id: 'session-b' })
+    assert.equal((await host.call('session-opened', { id: '../x' })).error.code, 'remote-relay/invalid')
+    // Writes are coalesced, and a disposed plugin flushes the pending one.
+    host.dispose()
+    await until(() => host.records.get('remote-relay/last-session')?.payload?.id === 'session-b', 'saved record')
+    const reloaded = fakeContext(gui.origin, { enabled: false, relayUrl: '', launcherUrl: '', hostName: 'memo', pairingMinutes: 5 })
+    for (const [key, value] of host.records) reloaded.records.set(key, value)
+    apply(reloaded.ctx, reloaded.config)
+    assert.deepEqual((await reloaded.call('last-session')).value, { id: 'session-b' })
+    reloaded.dispose()
+  } finally {
+    gui.close()
+  }
+})

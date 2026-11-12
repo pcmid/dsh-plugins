@@ -45,10 +45,17 @@ export const Config = z.object({
 
 /** Exact `/api` routes this plugin answers; only owner Peers reach exact routes. */
 const API_PREFIX = '/api/remote-relay'
-const OPERATIONS = ['status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close']
+const OPERATIONS = [
+  'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close',
+  'last-session', 'session-opened',
+]
 const OWNER = { principal: { kind: 'owner' } }
 const IDENTITY_KEY = 'remote-relay/identity'
 const DEVICES_KEY = 'remote-relay/devices'
+/** The Session last opened in any window of this DSH, so each window reopens it. */
+const LAST_SESSION_KEY = 'remote-relay/last-session'
+const SESSION_ID = /^[\w.:-]{1,200}$/
+const LAST_SESSION_FLUSH_MS = 1000
 const RECORD_VERSION = 1
 const CONTROL_PING_MS = 30_000
 const REPLACED_RETRY_MS = 60_000
@@ -132,6 +139,8 @@ class RemoteRelayHost {
     this.disposed = false
     this.loadFailure = undefined
     this.lastSeenTimer = undefined
+    this.lastSession = undefined
+    this.lastSessionTimer = undefined
     this.ready = this.load()
     this.remotes = new RemoteDevices(ctx, {
       log: (level, message) => { this.log(level, message) },
@@ -687,11 +696,54 @@ class RemoteRelayHost {
         case 'remote-close':
           this.remotes.close(String(payload?.id ?? ''))
           return ok(await this.remotesSnapshot())
+        case 'last-session':
+          return ok({ id: (await this.readLastSession())?.id ?? null })
+        case 'session-opened':
+          return ok(await this.setLastSession(String(payload?.id ?? '')))
         default:
           return failure('not-found', `Unknown operation ${endpoint}`)
       }
     } catch (error) {
       return failure(error instanceof TunnelError ? error.code : 'internal', errorText(error))
+    }
+  }
+
+  /** The Session last opened in any window, or null. */
+  async readLastSession() {
+    if (this.lastSession === undefined) {
+      let record
+      try {
+        record = await this.ctx.credentials.readRecord(LAST_SESSION_KEY)
+      } catch (error) {
+        this.log('warn', `remote-relay: cannot read the last opened session: ${errorText(error)}`)
+      }
+      const payload = record?.kind === 'grant' ? record.payload : undefined
+      this.lastSession ??= payload?.version === RECORD_VERSION && SESSION_ID.test(payload.id) ? { id: payload.id, at: payload.at } : null
+    }
+    return this.lastSession
+  }
+
+  /** Record a window's newly opened Session; writes are coalesced. */
+  async setLastSession(id) {
+    if (!SESSION_ID.test(id)) throw new TunnelError('invalid', 'Not a session id')
+    await this.readLastSession()
+    this.lastSession = { id, at: Date.now() }
+    if (this.lastSessionTimer === undefined && !this.disposed) {
+      this.lastSessionTimer = setTimeout(() => {
+        this.lastSessionTimer = undefined
+        void this.saveLastSession()
+      }, LAST_SESSION_FLUSH_MS)
+    }
+    return this.lastSession
+  }
+
+  async saveLastSession() {
+    const value = this.lastSession
+    if (!value) return
+    try {
+      await this.ctx.credentials.modifyRecord(LAST_SESSION_KEY, async () => ({ kind: 'grant', payload: { version: RECORD_VERSION, ...value } }))
+    } catch (error) {
+      this.log('warn', `remote-relay: cannot save the last opened session: ${errorText(error)}`)
     }
   }
 
@@ -714,6 +766,11 @@ class RemoteRelayHost {
     if (this.lastSeenTimer !== undefined) {
       this.lastSeenTimer = undefined
       void this.saveDevices().catch(() => {})
+    }
+    if (this.lastSessionTimer !== undefined) {
+      clearTimeout(this.lastSessionTimer)
+      this.lastSessionTimer = undefined
+      void this.saveLastSession()
     }
   }
 }
