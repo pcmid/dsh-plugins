@@ -70,7 +70,7 @@ try {
   const frame = await until(() => page.frames().find((candidate) => candidate.url().includes('/app/')), 'iframe')
   await frame.waitForFunction(() => window.__probe !== undefined, null, { timeout: 20_000 })
   const probe = await frame.evaluate(() => window.__probe)
-  assert.deepEqual(probe, { transport: 'object', echo: 'from-frame', asset: true, ws: 'mux:frame' })
+  assert.deepEqual(probe, { transport: 'object', echo: 'from-frame', asset: true, ws: 'mux:frame', upload: '200:upload-bytes' })
   const status = (await host.call('status')).value
   assert.deepEqual(status.devices.map((device) => [device.name, device.connections]), [['e2e phone', 1]])
 

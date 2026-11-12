@@ -69,7 +69,7 @@
 - **端到端加密**：设备发送临时 ECDH 公钥和设备公钥；DSH 回复自己的临时公钥、身份公钥和对握手记录的签名，设备检查身份公钥的哈希等于 `serverId`，因此 relay 无法冒充 DSH。双方用 HKDF 派生每个方向各一把 AES-256-GCM 密钥，配对时再混入一次性配对密钥；设备在第一帧里用设备私钥签名握手记录。帧按方向计数，丢失、重放或乱序的帧会导致连接关闭。
 - **转发**：被访问的 DSH 用自己的浏览器 cookie 登录本机 Web GUI，再把设备的请求和 WebSocket 原样转发过去；cookie 不会发给设备，设备送来的 cookie、Origin 和 `Sec-Fetch-*` 头会被丢弃。
 - **设备切换**：发起访问的 DSH 在 Host 进程里为每台已添加的设备保持一条隧道，并在回环端口上以 `http://<随机标签>.localhost:<端口>/` 提供它的界面。标签有 130 位随机数，是唯一的准入凭据：只有 Host 头是已知标签加本端口的请求才会进入隧道，带了其他 Origin 的请求、跨站的非导航请求都会被拒绝。每台设备的界面因此是独立的源，和本机 DSH、和其他设备都不共享 cookie 和存储。本机界面把它放进一个铺满窗口的 iframe（不允许导航顶层窗口）；两边的插件用 `postMessage` 交换设备列表、当前状态和窗口属性（macOS 桌面版的标题栏布局），菜单由当前显示的那台按自己的主题渲染。粘贴配对链接的对话框始终由本机渲染，远程页面看不到链接。没有请求和 WebSocket 的隧道 2 分钟后关闭。
-- **手机启动页**：Service Worker 把 iframe 里 DSH 页面的请求交给启动页窗口，经隧道转发；页面最前面注入一段脚本，把 DSH 的 `__DSH_TRANSPORT__.createWebSocket` 指向隧道，所以 `/api/remote.mux` 也走隧道。gzip 响应在浏览器里解压。启动页用和设备切换相同的 `postMessage` 协议回应 DSH 页面里的插件，把本浏览器配对过的 DSH 作为设备列表发给它，所以手机上的设备按钮和菜单由 DSH 自己渲染。
+- **手机启动页**：Service Worker 把 iframe 里 DSH 页面的请求交给启动页窗口，经隧道转发；页面最前面注入一段脚本，把 DSH 的 `__DSH_TRANSPORT__.createWebSocket` 指向隧道，所以 `/api/remote.mux` 也走隧道。文件上传同样不经过 Service Worker：脚本还提供 DSH 的上传载体 `__DSH_FILE_UPLOAD__`，在页面里读出文件内容后直接经隧道发送（DSH 默认从 Blob Worker 上传，经 Service Worker 转发后在 iOS 上会失败）。gzip 响应在浏览器里解压。启动页用和设备切换相同的 `postMessage` 协议回应 DSH 页面里的插件，把本浏览器配对过的 DSH 作为设备列表发给它，所以手机上的设备按钮和菜单由 DSH 自己渲染。
 
 ## 开发
 

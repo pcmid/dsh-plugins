@@ -21,6 +21,10 @@ const FAKE_INDEX = `<!doctype html><html><head><base href="./"><script src="asse
       ws.addEventListener('message', (event) => resolve(event.data), { once: true })
       ws.addEventListener('error', () => reject(new Error('ws error')), { once: true })
     })
+    if (window.__DSH_FILE_UPLOAD__) {
+      const upload = await window.__DSH_FILE_UPLOAD__.fetch('api/echo', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: new Blob(['upload-bytes']) })
+      results.upload = upload.status + ':' + (await upload.json()).body
+    }
   } catch (error) { results.error = String(error) }
   window.__probe = results
   document.title = 'probe:' + JSON.stringify(results)
