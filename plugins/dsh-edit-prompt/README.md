@@ -9,7 +9,7 @@ Adds an **edit** button beside the copy button of every message you sent in the 
 - **Send**:
   1. forks the conversation at the event just before the edited message's turn starts, so the fork contains nothing from that turn on;
   2. removes any input the fork inherited as still queued (for example the edited message itself, when it had been queued behind a running turn);
-  3. sends the edited text, plus the images of the original message, to the fork;
+  3. sends the edited text, plus the images of the original message, to the fork. It goes through the same local echo as the composer, so the message shows in the fork right away, even while the Host is still preparing the turn (for example while a memory plugin looks things up on the fork's first prompt);
   4. opens the fork and, by default, moves the original conversation to the archive (stopping it first when it is running).
 
   The fork keeps the original title, agent preset, and workspace, so the conversation appears to restart in place. The original log is never modified: restore it from the archive if you want it back.
@@ -34,7 +34,7 @@ The field is volatile: change it on the plugin's page in Settings → Plugins, o
 
 ## How it is built
 
-Session logs are append-only, so "dropping" later messages means continuing in a fork. The Host row only serves the setting; everything else runs in the Web client on existing Session Remote methods (`fork`, `projections`, `updateQueue`, `attachment`, `prompt`) and the Workspace service (`openSession`, `archiveSession`).
+Session logs are append-only, so "dropping" later messages means continuing in a fork. The Host row only serves the setting; everything else runs in the Web client on existing Session Remote methods (`fork`, `projections`, `updateQueue`, `attachment`), the client Session's submission echo (`beginSubmission`, `prompt`), and the Workspace service (`openSession`, `archiveSession`).
 
 The client registers a renderer for the keyed `conversation.chat.node` cell `user` at priority `-10`, which shadows ui-chat's own user-message renderer (priority `0`). It renders the same bubble through the shared `conversation.chat.user.content` Factory and recreates the time and copy actions, then adds edit. If the renderer throws, the slot retires it and the built-in renderer returns.
 

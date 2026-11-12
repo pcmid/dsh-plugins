@@ -17,7 +17,9 @@
  *   2. remove the input the fork inherited as still pending (the edited
  *      message itself when it was queued, or any other queued message), and
  *      keep the original's current model when the fork recorded another;
- *   3. prompt the fork with the edited text plus the original images;
+ *   3. prompt the fork with the edited text plus the original images, through
+ *      the Session's local echo like the composer, so the message shows at
+ *      once even while the Host is still preparing the Turn;
  *   4. open the fork and, unless the `archiveSource` setting is off, archive
  *      the original conversation (stopping it when it is running).
  * The original conversation is never modified, so nothing is lost.
@@ -497,6 +499,29 @@ window.__ModuleLoader__.load({
         }
 
         /**
+         * Send the edited prompt the way the composer does: register a local echo first, so the
+         * message shows in the fork right away instead of only when the Host records it (which can
+         * wait for slow pre-step hooks, such as a memory lookup on a Session's first prompt).
+         * Opens the fork once the Host accepts the prompt; the main view then holds the Session.
+         */
+        async function submitTo(childId, content, text, echoImages) {
+          const reference = ctx.sessions.retain(childId, { source: 'editPrompt' })
+          try {
+            const { session } = await reference.ready
+            const submission = session.beginSubmission({ mode: 'queue', text, attachments: echoImages })
+            try {
+              expectOk(await session.prompt(content, 'queue', undefined, submission.requestId))
+            } catch (error) {
+              submission.abandon()
+              throw error
+            }
+            ctx.uiWorkspace.openSession(childId)
+          } finally {
+            reference.release()
+          }
+        }
+
+        /**
          * Restart a conversation from an edited user message.
          * @returns `{ ok: true }` once the fork received the prompt and opened, or the failure for the editor to show.
          */
@@ -507,17 +532,29 @@ window.__ModuleLoader__.load({
 
             // Images are read back before forking, so a failed read leaves nothing behind.
             const content = []
+            const echoImages = []
             for (const block of request.content) {
               if (block?.type !== 'image' || block.attachment === undefined) continue
               const image = expectOk(await ctx.remote.session.attachment({ sessionId, attachment: block.attachment }))
+              const { mediaType, name, width, height } = image.attachment
               content.push({
                 type: 'image',
-                mediaType: image.attachment.mediaType,
+                mediaType,
                 data: image.data,
-                ...(typeof image.attachment.name === 'string' ? { name: image.attachment.name } : {}),
+                ...(typeof name === 'string' ? { name } : {}),
+              })
+              echoImages.push({
+                type: 'image',
+                value: {
+                  previewUrl: `data:${mediaType};base64,${image.data}`,
+                  ...(typeof name === 'string' ? { name } : {}),
+                  ...(typeof width === 'number' ? { width } : {}),
+                  ...(typeof height === 'number' ? { height } : {}),
+                },
               })
             }
-            if (request.text.trim() !== '') content.push({ type: 'text', text: request.text })
+            const text = request.text.trim() === '' ? '' : request.text
+            if (text !== '') content.push({ type: 'text', text })
 
             const wantedModel = await nextModel(sessionId)
             const archive = archiveSource()
@@ -525,13 +562,7 @@ window.__ModuleLoader__.load({
             try {
               const childValues = await clearInheritedInbox(childId)
               await carryModel(childId, wantedModel, childValues)
-              expectOk(await ctx.remote.session.prompt({
-                requestId: crypto.randomUUID(),
-                sessionId: childId,
-                mode: 'queue',
-                content,
-                clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-              }))
+              await submitTo(childId, content, text, echoImages)
             } catch (error) {
               // The fork never received the prompt: archive it instead of leaving a stray copy.
               void ctx.uiWorkspace.archiveSession(childId).catch((archiveError) => {
@@ -539,7 +570,6 @@ window.__ModuleLoader__.load({
               })
               throw error
             }
-            ctx.uiWorkspace.openSession(childId)
             if (archive) {
               void ctx.uiWorkspace.archiveSession(sessionId, { stopActivity: true }).catch((error) => {
                 console.warn('[edit-prompt] could not archive the original conversation', sessionId, error)

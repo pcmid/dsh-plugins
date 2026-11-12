@@ -37,16 +37,31 @@ function fakeForm(archiveSource) {
 }
 
 /** Apply the module to stand-in services and capture its registration. */
-function mount({ archiveSource = true, remote = {}, fork } = {}) {
+function mount({ archiveSource = true, remote = {}, fork, prompt } = {}) {
   const calls = []
   const record = (name, value) => { calls.push([name, value]); return value }
   const registrations = []
+  /** Client Session stand-in: the echo and the prompt the composer path uses. */
+  const clientSession = sessionId => ({
+    beginSubmission: (input) => {
+      record('submission', input)
+      return { requestId: 'req-1', abandon: () => record('abandon', 'req-1') }
+    },
+    prompt: async (content, mode, signal, requestId) => {
+      const request = record('prompt', { sessionId, mode, content, requestId })
+      return prompt === undefined ? ok({ accepted: true }) : prompt(request)
+    },
+  })
   const ctx = {
     effect: (callback) => { callback(); return () => {} },
     locale: { register: () => () => {} },
     configForms: { get: () => fakeForm(archiveSource) },
     sessions: {
       fork: fork ?? (async (options) => { record('fork', options); return 'session-child' }),
+      retain: (id, options) => {
+        record('retain', { id, ...options })
+        return { ready: Promise.resolve({ session: clientSession(id) }), release: () => record('release', id) }
+      },
     },
     uiWorkspace: {
       openSession: id => record('open', id),
@@ -70,7 +85,6 @@ function mount({ archiveSource = true, remote = {}, fork } = {}) {
         },
         selectModel: async (request) => { record('selectModel', request); return ok({ selected: request }) },
         updateQueue: async (request) => { record('updateQueue', request); return ok({ accepted: true }) },
-        prompt: async (request) => { record('prompt', request); return ok({ accepted: true }) },
         ...remote,
       },
     },
@@ -109,7 +123,7 @@ describe('registration', () => {
 })
 
 describe('resend', () => {
-  it('forks before the Turn, clears inherited input, prompts the edit with images, and archives the original', async () => {
+  it('forks before the Turn, clears inherited input, prompts the edit with images through an echo, and archives the original', async () => {
     const { calls, face } = mount()
     const result = await face.resendEdited({
       seq: 11,
@@ -119,21 +133,30 @@ describe('resend', () => {
     })
     assert.deepEqual(result, { ok: true })
     const names = calls.map(([name]) => name)
-    assert.deepEqual(names, ['attachment', 'projections', 'fork', 'projections', 'updateQueue', 'selectModel', 'prompt', 'open', 'archive'])
+    assert.deepEqual(names, ['attachment', 'projections', 'fork', 'projections', 'updateQueue', 'selectModel', 'retain', 'submission', 'prompt', 'open', 'release', 'archive'])
     assert.deepEqual(calls[1][1], { sessionId: 'session-source' })
     assert.deepEqual(calls[2][1], { sessionId: 'session-source', atSeq: 6, increaseTitle: false })
     assert.deepEqual(calls[3][1], { sessionId: 'session-child' })
     assert.deepEqual(calls[4][1], { sessionId: 'session-child', itemId: 'm-old', action: { kind: 'remove' } })
     assert.deepEqual(calls[5][1], { sessionId: 'session-child', provider: 'p', model: 'm2', reasoningEffort: 'high' })
-    const prompt = calls[6][1]
-    assert.equal(prompt.sessionId, 'session-child')
-    assert.equal(prompt.mode, 'queue')
-    assert.deepEqual(prompt.content, [
-      { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=', name: 'shot.png' },
-      { type: 'text', text: 'new text' },
-    ])
-    assert.equal(calls[7][1], 'session-child')
-    assert.deepEqual(calls[8][1], { id: 'session-source', stopActivity: true })
+    assert.deepEqual(calls[6][1], { id: 'session-child', source: 'editPrompt' })
+    // The echo shows the edit, image included, before the Host records the message.
+    assert.deepEqual(calls[7][1], {
+      mode: 'queue',
+      text: 'new text',
+      attachments: [{ type: 'image', value: { previewUrl: 'data:image/png;base64,aGVsbG8=', name: 'shot.png', width: 1, height: 1 } }],
+    })
+    assert.deepEqual(calls[8][1], {
+      sessionId: 'session-child',
+      mode: 'queue',
+      content: [
+        { type: 'image', mediaType: 'image/png', data: 'aGVsbG8=', name: 'shot.png' },
+        { type: 'text', text: 'new text' },
+      ],
+      requestId: 'req-1',
+    })
+    assert.equal(calls[9][1], 'session-child')
+    assert.deepEqual(calls[11][1], { id: 'session-source', stopActivity: true })
   })
 
   it('leaves the inherited model alone when it already matches, and survives an unreadable selection', async () => {
@@ -190,12 +213,15 @@ describe('resend', () => {
   })
 
   it('archives an unused fork and reports the refusal when the prompt fails', async () => {
-    const { calls, face } = mount({ remote: { prompt: async () => refused('session/attachment-invalid', 'image too large') } })
+    const { calls, face } = mount({ prompt: async () => refused('session/attachment-invalid', 'image too large') })
     const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
     assert.deepEqual(result, { ok: false, code: 'failed', detail: 'image too large' })
     await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(calls.filter(([name]) => name === 'archive').map(([, value]) => value), [{ id: 'session-child' }])
     assert.equal(calls.some(([name]) => name === 'open'), false)
+    // The echo is withdrawn and the temporary reference let go.
+    assert.ok(calls.some(([name]) => name === 'abandon'))
+    assert.ok(calls.some(([name]) => name === 'release'))
   })
 
   it('reports a fork refusal and creates nothing else', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-edit-prompt",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Adds an edit button beside the copy button of each user message. Sending the edited prompt drops that turn and everything after it, and restarts the conversation from there.",
   "author": "pcmid",
   "license": "MIT",
