@@ -144,8 +144,8 @@ function setup({ base = { servers: {} }, user = { servers: {} }, runtime = [], r
     configForms: { get: ns => { assert.equal(ns, 'mcp-manager'); return form } },
     connection: { rpc: { call: async (channel, path, payload) => {
       assert.equal(channel, '/api')
-      assert.ok(path.startsWith('mcp-settings/'), `MCP page calls the MCP API: ${path}`)
-      const op = path.slice('mcp-settings/'.length)
+      assert.ok(path.startsWith('pcmid/mcp-settings/'), `MCP page calls the MCP API: ${path}`)
+      const op = path.slice('pcmid/mcp-settings/'.length)
       events.push(['rpc', op, payload])
       const handler = routes[op] ?? defaults[op]
       try {

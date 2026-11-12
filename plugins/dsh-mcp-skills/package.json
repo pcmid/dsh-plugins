@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-mcp-skills",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Add, test, and manage MCP servers and skills from Settings, without editing configuration files.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-mcp-skills#readme",

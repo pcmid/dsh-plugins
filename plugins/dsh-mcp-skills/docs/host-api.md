@@ -2,12 +2,12 @@
 
 Host 半边在 `index.js` 里用 `ctx.connection.fetch.register()` 注册两组精确路由（只有 owner Peer 能到达），MCP 页和技能页各用一组，互不依赖：
 
-- **MCP**：`POST /api/mcp-settings/<op>`，op 为 `tools`、`state`、`retry`、`auth-check`、`auth-start`、`auth-complete`、`auth-cancel`、`auth-forget`。
-- **技能**：`POST /api/skill-settings/<op>`，op 为 `list`、`read`、`save`、`delete`、`repos-list`、`repos-add`、`repos-get`、`repos-refresh`、`repos-remove`、`repos-install`、`repos-update`。
+- **MCP**：`POST /api/pcmid/mcp-settings/<op>`，op 为 `tools`、`state`、`retry`、`auth-check`、`auth-start`、`auth-complete`、`auth-cancel`、`auth-forget`。
+- **技能**：`POST /api/pcmid/skill-settings/<op>`，op 为 `list`、`read`、`save`、`delete`、`repos-list`、`repos-add`、`repos-get`、`repos-refresh`、`repos-remove`、`repos-install`、`repos-update`。
 
 （不能用 `/api/mcp`、`/api/skills`：DSH 自己的 Remote 已经占用了 `/api/skills/list` 这类路径。）
 
-请求体是 Connection RPC 信封 `{ type: 'client-request', rpcId, payload }`，响应 `{ type: 'server-response', rpcId, result }`，`result` 是 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。Client 用 `ctx.connection.rpc.call('/api', '<组>/<op>', payload)` 调用（与 `@pcmid/dsh-remote-relay` 相同），即 `createRpc(ctx, API_MCP | API_SKILLS)`。
+请求体是 Connection RPC 信封 `{ type: 'client-request', rpcId, payload }`，响应 `{ type: 'server-response', rpcId, result }`，`result` 是 `{ ok: true, value }` 或 `{ ok: false, error: { code, message, details } }`。Client 用 `ctx.connection.rpc.call('/api', 'pcmid/<组>/<op>', payload)` 调用（与 `@pcmid/dsh-remote-relay` 相同），即 `createRpc(ctx, API_MCP | API_SKILLS)`。
 
 错误码：`bad-request`（参数不对）、`not-found`、`exists`（目标已存在）、`forbidden`（路径不在允许的根目录里或只读）、`invalid`（技能内容不合法，message 说明原因）、`git-failed`、`unavailable`（缺少所需服务）、`internal`。
 

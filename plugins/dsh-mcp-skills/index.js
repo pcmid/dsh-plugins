@@ -4,10 +4,10 @@
  * Serves two independent APIs as exact Connection Fetch routes (reachable only by owner Peers) that speak
  * the Connection RPC envelope:
  *
- * - `POST /api/mcp-settings/<operation>` — the MCP servers page (`tools`, `state`, `retry`, `auth-*`).
- * - `POST /api/skill-settings/<operation>` — the Skills page (`list`, `read`, `save`, `delete`, `repos-*`).
+ * - `POST /api/pcmid/mcp-settings/<operation>` — the MCP servers page (`tools`, `state`, `retry`, `auth-*`).
+ * - `POST /api/pcmid/skill-settings/<operation>` — the Skills page (`list`, `read`, `save`, `delete`, `repos-*`).
  *
- * The Client half calls them with `ctx.connection.rpc.call('/api', '<group>/<operation>', payload)`.
+ * The Client half calls them with `ctx.connection.rpc.call('/api', 'pcmid/<group>/<operation>', payload)`.
  * Operations and payloads are specified in docs/host-api.md and docs/auth-retry.md. `skills`,
  * `agentPresets`, `tools`, `mcpManager`, and `credentials` are optional services read lazily.
  *
@@ -27,8 +27,8 @@ export const inject = ['connection']
 export { Config } from './host/mcp-routes.js'
 
 /** Route groups: the MCP page's API and the Skills page's API. */
-const MCP_API = '/api/mcp-settings'
-const SKILL_API = '/api/skill-settings'
+const MCP_API = '/api/pcmid/mcp-settings'
+const SKILL_API = '/api/pcmid/skill-settings'
 
 /**
  * Register the Host API routes.
@@ -70,7 +70,7 @@ export function apply(ctx, config) {
 /**
  * Register one API group: an exact POST route per operation, answering in the RPC envelope.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context owning the routes.
- * @param {string} prefix - route prefix such as `/api/skill-settings`.
+ * @param {string} prefix - route prefix such as `/api/pcmid/skill-settings`.
  * @param {Record<string, (payload: object, request: Request) => unknown>} operations - handlers by operation name.
  */
 function registerGroup(ctx, prefix, operations) {

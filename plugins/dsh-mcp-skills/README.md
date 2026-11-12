@@ -60,7 +60,7 @@
 ## 实现
 
 - Client 半边是 `client.js`，由 `client/*.js` 拼接生成：改完运行 `npm run build`，用 `npm run check` 检查 `client.js` 是不是最新的。
-- Host 半边是 `index.js` 和 `host/`，提供两组接口，MCP 和技能各一组：`POST /api/mcp-settings/<操作>`、`POST /api/skill-settings/<操作>`，只有 owner 能访问。接口见 [docs/host-api.md](docs/host-api.md)。
+- Host 半边是 `index.js` 和 `host/`，提供两组接口，MCP 和技能各一组：`POST /api/pcmid/mcp-settings/<操作>`、`POST /api/pcmid/skill-settings/<操作>`，只有 owner 能访问。接口见 [docs/host-api.md](docs/host-api.md)。
 - 所有写入和删除都限制在上表四个技能目录的直接子目录里，并在 Host 端检查。Git 克隆和更新不经过 shell，非交互运行，90 秒超时。
 - 插件配置（只能在 `cordis.patch.yml` 里改，`id: mcp-skills`）：
 

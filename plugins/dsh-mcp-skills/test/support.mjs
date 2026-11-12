@@ -93,9 +93,9 @@ export function createHost(services = {}, config = undefined) {
     },
     /** POST a raw body and return the Response. */
     async post(operation, body) {
-      const route = routes.get(`/api/${operation}`)
+      const route = routes.get(`/api/pcmid/${operation}`)
       assert.ok(route, `route ${operation} is registered`)
-      return await route.fetch(new Request(`http://127.0.0.1/api/${operation}`, {
+      return await route.fetch(new Request(`http://127.0.0.1/api/pcmid/${operation}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,

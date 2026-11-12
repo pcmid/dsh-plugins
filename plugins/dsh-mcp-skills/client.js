@@ -18,8 +18,8 @@ window.__ModuleLoader__.load({
     const PREFIX = 'dsh-ms';
     const CHANNEL = '/api';
     /** Host API groups (index.js): one for the MCP page, one for the Skills page. */
-    const API_MCP = 'mcp-settings';
-    const API_SKILLS = 'skill-settings';
+    const API_MCP = 'pcmid/mcp-settings';
+    const API_SKILLS = 'pcmid/skill-settings';
 
     // ---------------------------------------------------------------------------
     // Locale and CSS registries. Each part calls addDict / addCss at load time;

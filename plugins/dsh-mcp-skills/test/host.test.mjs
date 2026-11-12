@@ -425,7 +425,7 @@ describe('routes', () => {
     const registered = new Set(host.routes.keys())
     const skillOps = ['list', 'read', 'save', 'delete', 'repos-list', 'repos-add', 'repos-get', 'repos-refresh', 'repos-remove', 'repos-install', 'repos-update']
     const mcpOps = ['tools', 'state', 'retry', 'auth-check', 'auth-start', 'auth-complete', 'auth-cancel', 'auth-forget']
-    const expected = [...skillOps.map(op => `/api/skill-settings/${op}`), ...mcpOps.map(op => `/api/mcp-settings/${op}`)]
+    const expected = [...skillOps.map(op => `/api/pcmid/skill-settings/${op}`), ...mcpOps.map(op => `/api/pcmid/mcp-settings/${op}`)]
     // Exactly two API groups: nothing else, and no leftover 0.1 routes under /api/mcp-skills.
     assert.deepEqual([...registered].sort(), expected.sort())
     for (const route of host.routes.values()) {

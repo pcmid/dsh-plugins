@@ -561,8 +561,8 @@ function fakeHost(handlers) {
     connection: {
       rpc: {
         async call(channel, path, payload) {
-          assert.ok(path.startsWith('skill-settings/'), `Skills page calls the Skills API: ${path}`)
-          const op = path.slice('skill-settings/'.length)
+          assert.ok(path.startsWith('pcmid/skill-settings/'), `Skills page calls the Skills API: ${path}`)
+          const op = path.slice('pcmid/skill-settings/'.length)
           calls.push({ channel, op, payload: plain(payload) })
           const handler = handlers[op]
           if (!handler) return { ok: false, error: { code: 'internal', message: `no handler for ${path}` } }
