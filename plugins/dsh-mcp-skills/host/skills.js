@@ -4,7 +4,8 @@
  * The listing scans the direct children of the four skill roots itself and merges the winners of DSH's
  * skill registry (`ctx.skills`, viewed through the default agent preset's scope) to mark the active skill
  * of each name and to add skills from other sources as read-only built-ins. Every operation that takes an
- * id re-lists the same workspace and accepts only ids from that fresh listing.
+ * id re-lists the same workspace and accepts only ids from that fresh listing. Skills installed from a
+ * skill repository carry `origin`, read from the repository manager's install records (host/repos.js).
  */
 
 import fs from 'node:fs/promises'
@@ -12,8 +13,8 @@ import path from 'node:path'
 import { HostError, errorMessage } from './errors.js'
 import { MAX_SKILL_NAME_LENGTH, inspectSkill, isSkillName, serializeSkill, updateSkillText } from './frontmatter.js'
 import {
-  assertDirectChild, displayPath, exists, isWritable, listFiles, removeEntry, resolveCwd, rootById, skillRoots,
-  writeAtomic,
+  assertDirectChild, displayPath, entryKey, exists, isWritable, listFiles, realpathOr, removeEntry, resolveCwd, rootById,
+  skillRoots, writeAtomic,
 } from './paths.js'
 
 const SCOPE_ORDER = { project: 0, user: 1, builtin: 2 }
@@ -49,15 +50,6 @@ async function withDefaultScope(ctx, read) {
         // Releasing a read-only lease cannot affect the result already read.
       }
     }
-  }
-}
-
-async function realpathOr(target) {
-  try {
-    return await fs.realpath(target)
-  } catch {
-    // A vanished path is compared by its spelling.
-    return target
   }
 }
 
@@ -205,27 +197,68 @@ function requireId(payload) {
   return payload.id
 }
 
+/** `skills-delete` takes at most this many ids. */
+const MAX_DELETE = 200
+
+/** `skills-delete` ids: `ids` (0.2), or the legacy single `id`; duplicates are dropped. */
+function requireIds(payload) {
+  if (payload.ids === undefined && typeof payload.id === 'string' && payload.id !== '') return [payload.id]
+  const { ids } = payload
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some(id => typeof id !== 'string' || id === '')) {
+    throw new HostError('bad-request', 'Field "ids" must list skill ids from skills-list')
+  }
+  if (ids.length > MAX_DELETE) throw new HostError('bad-request', `At most ${MAX_DELETE} skills can be deleted at once`)
+  return [...new Set(ids)]
+}
+
+/** A display name for an id that is not in the listing: the folder (or flat file) name. */
+function nameFromId(id) {
+  if (id.startsWith('builtin:')) return id.slice('builtin:'.length)
+  const base = path.basename(id)
+  if (base === 'SKILL.md') return path.basename(path.dirname(id))
+  return base.endsWith('.md') ? base.slice(0, -3) : base
+}
+
 /** Skill listing and editing over the four skill roots and DSH's registry. */
 export class SkillCatalog {
   /**
-   * @param {object} ctx - plugin context; `skills` and `agentPresets` are read lazily with `ctx.get`.
-   * @param {import('./paths.js').SerialQueue} queue - serializes writes with the importer.
+   * Install records; set by the plugin after construction. Without it skills carry no `origin`.
+   * @type {import('./repos.js').RepoManager | undefined}
    */
-  constructor(ctx, queue) {
+  repos = undefined
+
+  /**
+   * @param {object} ctx - plugin context; `skills` and `agentPresets` are read lazily with `ctx.get`.
+   * @param {import('./paths.js').SerialQueue} queue - serializes writes with the repository manager.
+   * @param {{ warn?: Function }} [logger] - receives recoverable problems.
+   */
+  constructor(ctx, queue, logger) {
     this.ctx = ctx
     this.queue = queue
+    this.logger = logger
   }
 
   /** `skills-list`: payload `{ cwd? }`. */
   async list(payload) {
     const cwd = await resolveCwd(payload.cwd)
     const { layout, roots, records, complete } = await this.#collect(cwd)
+    const skills = records.map(record => record.item)
+    await this.#attachOrigins(skills, false)
     return {
       ...(layout.projectRoot === undefined ? {} : { projectRoot: layout.projectRoot }),
       roots,
-      skills: records.map(record => record.item),
+      skills,
       complete,
     }
+  }
+
+  /**
+   * The listed skills of a workspace, without `origin`; for the repository manager inside the write queue.
+   * @param {string | undefined} cwd - validated workspace directory.
+   * @returns {Promise<object[]>} `SkillItem`s.
+   */
+  async collectItems(cwd) {
+    return (await this.#collect(cwd)).records.map(record => record.item)
   }
 
   /** `skills-read`: payload `{ id, cwd? }`. */
@@ -233,6 +266,7 @@ export class SkillCatalog {
     const id = requireId(payload)
     const cwd = await resolveCwd(payload.cwd)
     const { item } = await this.#find(cwd, id)
+    await this.#attachOrigins([item], false)
     if (item.root === null) {
       const skills = this.ctx.get('skills')
       if (skills === undefined) throw new HostError('unavailable', 'The DSH skill registry is not available, so built-in skills cannot be read')
@@ -267,25 +301,66 @@ export class SkillCatalog {
       const { records } = await this.#collect(cwd)
       const record = records.find(candidate => candidate.item.id === id)
       if (record === undefined) throw new Error(`Saved ${displayPath(id)}, but it is missing from the refreshed skill list`)
+      await this.#attachOrigins([record.item], true)
       return { item: record.item }
     })
   }
 
-  /** `skills-delete`: remove a listed editable skill entry. */
+  /**
+   * `skills-delete`: payload `{ ids, cwd? }` (or the legacy `{ id }`). Each id must be listed and editable;
+   * the others are reported in `failed` without affecting the rest. Install records of deleted skills are
+   * forgotten.
+   */
   async remove(payload) {
-    const id = requireId(payload)
+    const ids = requireIds(payload)
     return await this.queue.run(async () => {
       const cwd = await resolveCwd(payload.cwd)
-      const { item, layout } = await this.#find(cwd, id)
-      this.#assertEditable(item)
-      await assertDirectChild(item.dir, layout.roots)
-      try {
-        await removeEntry(item.dir)
-      } catch (error) {
-        throw fsFailure(error, item.dir)
+      const { records, layout } = await this.#collect(cwd)
+      const removed = []
+      const failed = []
+      const entries = new Set()
+      for (const id of ids) {
+        const record = records.find(candidate => candidate.item.id === id)
+        if (record === undefined) {
+          failed.push({ id, name: nameFromId(id), error: `Skill ${displayPath(id)} is not in the skill list for this workspace; refresh the list and try again` })
+          continue
+        }
+        const { item } = record
+        try {
+          this.#assertEditable(item)
+          await assertDirectChild(item.dir, layout.roots)
+          const entry = await entryKey(item.dir)
+          try {
+            await removeEntry(item.dir)
+          } catch (error) {
+            throw fsFailure(error, item.dir)
+          }
+          entries.add(entry)
+          removed.push({ id, name: item.name, path: item.dir })
+        } catch (error) {
+          failed.push({ id, name: item.name, error: errorMessage(error) })
+        }
       }
-      return { removed: item.dir }
+      if (this.repos !== undefined && entries.size > 0) {
+        try {
+          await this.repos.forgetEntries(entries)
+        } catch (error) {
+          // The skills are gone; their records are dropped as stale on the next read.
+          this.logger?.warn?.(`mcp-skills: could not forget the install records of deleted skills: ${errorMessage(error)}`)
+        }
+      }
+      return { removed, failed }
     })
+  }
+
+  /** Attach `origin` from the install records; a failure only drops the origins. */
+  async #attachOrigins(items, locked) {
+    if (this.repos === undefined) return
+    try {
+      await this.repos.attachOrigins(items, { locked })
+    } catch (error) {
+      this.logger?.warn?.(`mcp-skills: could not read the skill repository install records: ${errorMessage(error)}`)
+    }
   }
 
   async #create(cwd, rootId, fields) {

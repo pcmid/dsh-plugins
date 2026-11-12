@@ -48,11 +48,16 @@ export function skillText(name, description = `${name} description`, extra = '')
 
 /**
  * Apply the plugin to a fake context.
- * @param {Record<string, unknown>} services - values returned by `ctx.get(name)`.
+ * @param {Record<string, unknown>} services - values returned by `ctx.get(name)`; `ctx.inject` runs its
+ *   callback at once when every named service is present.
+ * @param {object} [config] - plugin Config.
  */
-export function createHost(services = {}) {
+export function createHost(services = {}, config = undefined) {
   const routes = new Map()
   const disposers = []
+  /** Messages passed to `ctx.logger.warn`. */
+  const warnings = []
+  const listeners = new Map()
   const ctx = {
     connection: {
       fetch: {
@@ -62,20 +67,35 @@ export function createHost(services = {}) {
         },
       },
     },
+    logger: { warn(message) { warnings.push(String(message)) }, info() {}, error() {} },
     get: name => services[name],
     effect(effect) {
       disposers.push(effect())
     },
+    on(event, listener) {
+      if (!listeners.has(event)) listeners.set(event, new Set())
+      listeners.get(event).add(listener)
+      return () => listeners.get(event).delete(listener)
+    },
+    inject(deps, callback) {
+      if (!deps.every(dep => services[dep] !== undefined)) return
+      callback(Object.assign(Object.create(ctx), Object.fromEntries(deps.map(dep => [dep, services[dep]]))))
+    },
   }
-  apply(ctx)
+  apply(ctx, config)
   let sequence = 0
   return {
     routes,
+    warnings,
+    /** Emit a Cordis event to the plugin's listeners. */
+    emit(event, ...args) {
+      for (const listener of listeners.get(event) ?? []) listener(...args)
+    },
     /** POST a raw body and return the Response. */
     async post(operation, body) {
-      const route = routes.get(`/api/mcp-skills/${operation}`)
+      const route = routes.get(`/api/${operation}`)
       assert.ok(route, `route ${operation} is registered`)
-      return await route.fetch(new Request(`http://127.0.0.1/api/mcp-skills/${operation}`, {
+      return await route.fetch(new Request(`http://127.0.0.1/api/${operation}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,

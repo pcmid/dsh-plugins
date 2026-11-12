@@ -174,6 +174,30 @@ export async function exists(target) {
 }
 
 /**
+ * @param {string} target - path to resolve.
+ * @returns {Promise<string>} its real path, or the path itself when it cannot be resolved.
+ */
+export async function realpathOr(target) {
+  try {
+    return await fs.realpath(target)
+  } catch {
+    // A vanished path is compared by its spelling.
+    return target
+  }
+}
+
+/**
+ * Identify a root entry independently of how its root is spelled: the real path of the parent joined with
+ * the entry's own name. Unlike a full realpath, a symlinked skill folder keeps its own identity instead of
+ * taking its target's, and the identity survives deleting the entry.
+ * @param {string} target - absolute entry path (`<root>/<entry>`).
+ * @returns {Promise<string>} the entry identity.
+ */
+export async function entryKey(target) {
+  return path.join(await realpathOr(path.dirname(target)), path.basename(target))
+}
+
+/**
  * @param {string} target - directory path.
  * @returns {Promise<boolean>} whether the current process may create entries in it.
  */

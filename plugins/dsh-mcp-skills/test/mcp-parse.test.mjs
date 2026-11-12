@@ -1,5 +1,6 @@
 // Pure helpers of client/10-mcp.js: shell words, paste detection, names,
-// secrets, validation, and the settings mutations a save produces.
+// secrets, validation, the settings mutations a save produces, and the status
+// mapping with the Host supervisor and OAuth state.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { loadPart } from './load-part.mjs'
@@ -13,6 +14,7 @@ const m = loadPart(['10-mcp.js'], [
   'mcpDraftFromParsed', 'mcpDraftFromEntry', 'mcpEmptyDraft', 'mcpDraftSignature', 'mcpValidateDraft',
   'mcpPlanSecrets', 'mcpDraftToEntry', 'mcpCompactEntry', 'mcpEntryOps', 'mcpSettleDraft', 'mcpScrubDraft',
   'mcpAdvancedSummary', 'mcpStatusInfo', 'mcpBatchProblem',
+  'mcpIsAuthError', 'mcpOAuthRef', 'mcpOAuthTemplate', 'mcpIsOAuthHeader', 'mcpEntryUsesOAuth', 'mcpAuthHeaderOps', 'mcpMergeFlow', 'mcpUntil',
 ])
 
 // Values cross the VM boundary; compare them as plain JSON.
@@ -275,16 +277,17 @@ test('save: new server writes a complete, transport-only entry with secrets as t
   assert.deepEqual(ops, [{ op: 'set', path: ['servers', 'github'], value: {
     transport: 'stdio', command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'],
     env: { GITHUB_TOKEN: '${credential:MCP_GITHUB_GITHUB_TOKEN_2}' }, startupTimeoutMs: 60000,
+    reconnect: { enabled: false },
   } }])
   assert.ok(!JSON.stringify(ops).includes('ghp_1'))
   // HTTP entries carry no stdio fields; a disabled import stays disabled.
   const http = m.mcpDraftFromParsed(plain(m.mcpParsePaste('https://mcp.notion.com/mcp')).servers[0])
   http.commandLine = 'leftover'
   const httpEntry = plain(m.mcpCompactEntry(m.mcpDraftToEntry(http), { enabled: false }))
-  assert.deepEqual(httpEntry, { transport: 'streamable-http', url: 'https://mcp.notion.com/mcp', enabled: false })
+  assert.deepEqual(httpEntry, { transport: 'streamable-http', url: 'https://mcp.notion.com/mcp', enabled: false, reconnect: { enabled: false } })
 })
 
-test('save: user-added edit keeps reconnect / closeTimeoutMs and own writable refs', () => {
+test('save: user-added edit keeps closeTimeoutMs and its reconnect settings, with DSH reconnect off', () => {
   const entry = { transport: 'stdio', command: 'npx', args: ['a'], env: { TOKEN: '${credential:MCP_S_TOKEN}' }, cwd: '', url: '', headers: {}, enabled: true, startupTimeoutMs: 30000 }
   const draft = m.mcpDraftFromEntry('s', entry, 'user')
   assert.equal(draft.commandLine, 'npx a')
@@ -296,7 +299,7 @@ test('save: user-added edit keeps reconnect / closeTimeoutMs and own writable re
   assert.deepEqual(plain(plan.sets), [{ ref: 'MCP_S_TOKEN', value: 'new-secret' }])
   const ops = plain(m.mcpEntryOps('s', 'user', entry, { ...entry, reconnect: { maxAttempts: 3 }, closeTimeoutMs: 900 }, undefined, m.mcpDraftToEntry(draft, plan.templates), { reconnect: { maxAttempts: 3 }, closeTimeoutMs: 900 }))
   assert.deepEqual(ops, [{ op: 'set', path: ['servers', 's'], value: {
-    transport: 'stdio', command: 'npx', args: ['b'], env: { TOKEN: '${credential:MCP_S_TOKEN}' }, closeTimeoutMs: 900, reconnect: { maxAttempts: 3 },
+    transport: 'stdio', command: 'npx', args: ['b'], env: { TOKEN: '${credential:MCP_S_TOKEN}' }, closeTimeoutMs: 900, reconnect: { maxAttempts: 3, enabled: false },
   } }])
   // A foreign or read-only reference is not overwritten: a fresh MCP_ ref takes the value.
   const foreign = m.mcpDraftFromEntry('s', { ...entry, env: { TOKEN: '${credential:SHARED}' } }, 'user')
@@ -318,6 +321,7 @@ test('save: inherited edits write only changed paths', () => {
     { op: 'set', path: ['servers', 'srv', 'env', 'A'], value: '9' },
     { op: 'set', path: ['servers', 'srv', 'env', 'C'], value: '3' },
     { op: 'set', path: ['servers', 'srv', 'startupTimeoutMs'], value: 45000 },
+    { op: 'set', path: ['servers', 'srv', 'reconnect', 'enabled'], value: false },
   ])
   // Removing a user-only key unsets it; clearing a user-only timeout unsets it, a base one resets to the default.
   const user = { env: { C: '3' }, toolCallTimeoutMs: 5000 }
@@ -328,12 +332,21 @@ test('save: inherited edits write only changed paths', () => {
   assert.deepEqual(plain(m.mcpEntryOps('srv', 'overridden', overridden, user, base, m.mcpDraftToEntry(edit))), [
     { op: 'unset', path: ['servers', 'srv', 'env', 'C'] },
     { op: 'unset', path: ['servers', 'srv', 'toolCallTimeoutMs'] },
+    { op: 'set', path: ['servers', 'srv', 'reconnect', 'enabled'], value: false },
+  ])
+  // An override that already turned reconnect off is not written again.
+  const off = { ...overridden, reconnect: { enabled: false, maxAttempts: 10 } }
+  const edit3 = m.mcpDraftFromEntry('srv', off, 'overridden', base)
+  edit3.cwd = '/w'
+  assert.deepEqual(plain(m.mcpEntryOps('srv', 'overridden', off, user, base, m.mcpDraftToEntry(edit3))), [
+    { op: 'set', path: ['servers', 'srv', 'cwd'], value: '/w' },
   ])
   const baseTimeout = { ...base, toolCallTimeoutMs: 5000 }
   const edit2 = m.mcpDraftFromEntry('srv', { ...current, toolCallTimeoutMs: 5000 }, 'inherited', baseTimeout)
   edit2.toolCallSec = ''
   assert.deepEqual(plain(m.mcpEntryOps('srv', 'inherited', { ...current, toolCallTimeoutMs: 5000 }, undefined, baseTimeout, m.mcpDraftToEntry(edit2))), [
     { op: 'set', path: ['servers', 'srv', 'toolCallTimeoutMs'], value: 60000 },
+    { op: 'set', path: ['servers', 'srv', 'reconnect', 'enabled'], value: false },
   ])
   // Nothing changed → no ops.
   const same = m.mcpDraftFromEntry('srv', current, 'inherited', base)
@@ -379,4 +392,92 @@ test('status presentation', () => {
   assert.equal(m.mcpStatusInfo({ state: 'reconnecting', attempt: 2, maxAttempts: 5, nextRetryAtMs: 0, lastError: 'e' }, true, 'ready').values.attempt, 2)
   assert.equal(m.mcpStatusInfo(null, true, 'loading').label, 'mcp_stLoading')
   assert.equal(m.mcpStatusInfo(null, true, 'ready').label, 'mcp_stUnknown')
+})
+
+test('auth errors use the Host supervisor pattern', () => {
+  for (const text of ['HTTP 401', 'Server returned 401 Unauthorized', 'requires authorization', 'unauthorised', 'error=invalid_token', 'Unauthorized'])
+    assert.ok(m.mcpIsAuthError(text), text)
+  for (const text of ['', 'ECONNREFUSED', 'HTTP 4010', 'port 14010', 'forbidden (403)', 'authorization_pending'])
+    assert.ok(!m.mcpIsAuthError(text), text)
+})
+
+test('OAuth references, templates, and the managed Authorization header', () => {
+  assert.equal(m.mcpOAuthRef('my-srv.1'), 'MCP_MY_SRV_1_OAUTH')
+  assert.equal(m.mcpOAuthTemplate('notion'), 'Bearer ${credential:MCP_NOTION_OAUTH}')
+  assert.ok(m.mcpIsOAuthHeader('notion', 'Authorization', 'Bearer ${credential:MCP_NOTION_OAUTH}'))
+  assert.ok(m.mcpIsOAuthHeader('notion', 'authorization', 'Bearer ${credential:MCP_NOTION_OAUTH}'))
+  assert.ok(m.mcpIsOAuthHeader('notion', 'Authorization', 'Bearer ${credential:HOST_GIVEN}', 'Bearer ${credential:HOST_GIVEN}'))
+  assert.ok(!m.mcpIsOAuthHeader('notion', 'Authorization', 'Bearer ${credential:MCP_OTHER_OAUTH}'))
+  assert.ok(!m.mcpIsOAuthHeader('notion', 'X-Auth', 'Bearer ${credential:MCP_NOTION_OAUTH}'))
+  assert.ok(!m.mcpIsOAuthHeader('notion', 'Authorization', '${credential:MCP_NOTION_OAUTH}'))
+  const http = { transport: 'streamable-http', url: 'https://n.dev/mcp', headers: { Authorization: 'Bearer ${credential:MCP_NOTION_OAUTH}' } }
+  assert.ok(m.mcpEntryUsesOAuth('notion', http))
+  assert.ok(!m.mcpEntryUsesOAuth('other', http))
+  assert.ok(!m.mcpEntryUsesOAuth('notion', { ...http, transport: 'stdio' }))
+  // The edit draft shows the managed header as a read-only row.
+  const draft = plain(m.mcpDraftFromEntry('notion', { ...http, headers: { ...http.headers, 'X-Team': 'a' } }, 'user'))
+  assert.deepEqual(draft.headers.map(row => [row.key, Boolean(row.oauth)]), [['Authorization', true], ['X-Team', false]])
+  assert.deepEqual(plain(m.mcpValidateDraft(draft)), {})
+})
+
+test('authorization header writes: one batch with reconnect off, minimal for inherited entries', () => {
+  const template = 'Bearer ${credential:MCP_N_OAUTH}'
+  assert.deepEqual(plain(m.mcpAuthHeaderOps('n', { transport: 'streamable-http', url: 'u', headers: {}, reconnect: { enabled: true } }, template)), [
+    { op: 'set', path: ['servers', 'n', 'headers', 'Authorization'], value: template },
+    { op: 'set', path: ['servers', 'n', 'reconnect', 'enabled'], value: false },
+  ])
+  // An existing header keeps its spelling; reconnect already off is not rewritten.
+  assert.deepEqual(plain(m.mcpAuthHeaderOps('n', { headers: { authorization: 'Bearer old' }, reconnect: { enabled: false } }, template)), [
+    { op: 'set', path: ['servers', 'n', 'headers', 'authorization'], value: template },
+  ])
+  assert.deepEqual(plain(m.mcpAuthHeaderOps('n', { headers: { Authorization: template } }, template)), [])
+  // Without a template from the Host the local naming is used.
+  assert.equal(plain(m.mcpAuthHeaderOps('n', {}))[0].value, template)
+})
+
+test('flow merge and expiry wording', () => {
+  const local = { flowId: 'f1', status: 'done', startedAt: 10 }
+  assert.equal(m.mcpMergeFlow(local, { flowId: 'f1', status: 'pending', startedAt: 10 }).status, 'done')
+  assert.equal(m.mcpMergeFlow({ ...local, status: 'pending' }, { flowId: 'f1', status: 'exchanging', startedAt: 10 }).status, 'exchanging')
+  assert.equal(m.mcpMergeFlow(local, { flowId: 'f2', status: 'pending', startedAt: 20 }).flowId, 'f2')
+  assert.equal(m.mcpMergeFlow(null, null), null)
+  assert.deepEqual(plain(m.mcpUntil(1000 + 5 * 60000, 1000)), { unit: 'min', n: 5 })
+  assert.deepEqual(plain(m.mcpUntil(3 * 3600000, 0)), { unit: 'hour', n: 3 })
+  assert.deepEqual(plain(m.mcpUntil(5 * 86400000, 0)), { unit: 'day', n: 5 })
+  assert.equal(m.mcpUntil(0, 1000), null)
+  assert.equal(m.mcpUntil(undefined, 0), null)
+})
+
+test('status mapping with the Host supervisor and authorization (auth-retry §5)', () => {
+  const failed = (lastError) => ({ state: 'failed', reason: 'reconnect-disabled', lastError })
+  const info = (status, extra, enabled = true) => plain(m.mcpStatusInfo(status, enabled, 'ready', extra))
+  // Scheduled automatic reconnect.
+  let i = info(failed('socket hang up'), { host: { armed: true, retry: { attempt: 2, max: 10, nextAt: 5000, lastError: 'x' } } })
+  assert.deepEqual([i.kind, i.tone, i.label, i.values, i.nextAt, i.error], ['retrying', 'warn', 'mcp_stAutoRetry', { attempt: 2, max: 10 }, 5000, 'socket hang up'])
+  // Gave up.
+  i = info(failed('boom'), { host: { armed: false, gaveUp: { attempts: 10, at: 1 } } })
+  assert.deepEqual([i.kind, i.tone, i.label, i.attempts, i.error], ['gave-up', 'error', 'mcp_stReconnectFailed', 10, 'boom'])
+  // Authorization failure, from the error text or the Host's note.
+  i = info(failed('Streamable HTTP error: 401 Unauthorized'), {})
+  assert.deepEqual([i.kind, i.tone, i.label, i.summary ?? false], ['auth', 'warn', 'mcp_stNeedsAuth', false])
+  assert.equal(info(failed(''), { host: { authFailure: { lastError: 'invalid_token', at: 1 } } }).kind, 'auth')
+  assert.equal(info({ state: 'failed', reason: 'gave-up', lastError: 'HTTP 401' }, {}).kind, 'auth')
+  // A scheduled retry wins over an auth-looking error; auth wins over an old give-up.
+  assert.equal(info(failed('401'), { host: { retry: { attempt: 1, max: 3, nextAt: 1 } } }).kind, 'retrying')
+  assert.equal(info(failed('401'), { host: { gaveUp: { attempts: 3, at: 1 } } }).kind, 'auth')
+  // First failure: manual retry only.
+  i = info(failed('spawn npx ENOENT'), { host: { armed: false } })
+  assert.deepEqual([i.kind, i.tone, i.label, i.error, i.errorKey ?? null], ['failed', 'error', 'mcp_stFailed', 'spawn npx ENOENT', null])
+  // waiting-credentials is "needs authorization" only when the entry sends its OAuth token.
+  assert.equal(info({ state: 'waiting-credentials', lastError: 'missing MCP_N_OAUTH' }, { oauth: true }).kind, 'auth')
+  assert.equal(info({ state: 'waiting-credentials', lastError: 'missing X' }, { oauth: false }).kind, 'credentials')
+  // DSH's own reconnecting stays as it was.
+  assert.equal(info({ state: 'reconnecting', attempt: 1, maxAttempts: 10, nextRetryAtMs: 9, lastError: '401' }, {}).kind, 'dsh-retrying')
+  // Flows: waiting while pending, "connecting" right after it finished, nothing on a connected server.
+  assert.deepEqual([info(failed('401'), { flow: { status: 'pending' } }).label, info(failed('401'), { flow: { status: 'exchanging' } }).kind], ['mcp_stAuthWaiting', 'auth-flow'])
+  assert.equal(info({ state: 'waiting-credentials', lastError: '' }, { oauth: true, flow: { status: 'done' }, flowDone: true }).label, 'mcp_stAuthDone')
+  assert.equal(info({ state: 'connected', toolCount: 2, connectedAt: 1 }, { flow: { status: 'pending' } }).kind, 'connected')
+  assert.equal(info({ state: 'connecting', attempt: 1 }, { flow: { status: 'done' }, flowDone: true }).kind, 'connecting')
+  // Disabled wins over everything.
+  assert.equal(info(failed('401'), { flow: { status: 'pending' } }, false).kind, 'disabled')
 })

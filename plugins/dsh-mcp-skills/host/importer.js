@@ -1,53 +1,43 @@
 /**
- * Skill import routes: `skills-scan` finds SKILL.md folders in a Git repository or a local folder, and
- * `skills-install` copies selected ones into a skill root.
+ * Repository import internals shared by the repository manager (host/repos.js): source parsing, git
+ * processes, the SKILL.md scan, and the staged copy that installs or replaces a skill directory.
  *
- * Git sources are cloned shallowly into `os.tmpdir()/dsh-mcp-skills-*`. A scan, and its clone, is
- * removed after an install from it, 15 minutes after the scan, when more than 8 scans are kept, or when
- * the plugin is disposed.
+ * Git always runs through `execFile` (never a shell) with prompts disabled, a 90 second timeout, an abort
+ * signal, and user input passed as argv after `--`.
  */
 
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { HostError, errorMessage } from './errors.js'
 import { inspectSkill } from './frontmatter.js'
-import {
-  assertDirectChild, displayPath, exists, expandHome, listFiles, removeEntry, resolveCwd, rootById, skillRoots,
-} from './paths.js'
+import { displayPath, exists, expandHome, listFiles, removeEntry } from './paths.js'
 
-const TEMP_PREFIX = 'dsh-mcp-skills-'
-const SCAN_TTL_MS = 15 * 60_000
-const GIT_TIMEOUT_MS = 90_000
-const MAX_STORED_SCANS = 8
+export const GIT_TIMEOUT_MS = 90_000
 const MAX_SCAN_DEPTH = 5
-const MAX_CANDIDATES = 500
+export const MAX_CANDIDATES = 500
 /** Directories visited per scan, so scanning a very large folder by mistake stays bounded. */
 const MAX_SCAN_DIRECTORIES = 5000
-const MAX_INSTALL_ITEMS = 500
 const SCAN_SKIP = new Set(['.git', 'node_modules'])
 /** `fileCount` counts what an install copies (everything but `.git`), up to 1000 files. */
 const FILE_COUNT = { maxDepth: 8, keep: 0, countLimit: 1000, skip: new Set(['.git']) }
 
-const SOURCE_HELP = 'Enter a GitHub link (https://github.com/<owner>/<repo>[/tree/<ref>/<path>]), <owner>/<repo>, a Git URL ending in .git, a git@ address, or a local folder path starting with / or ~/'
+export const SOURCE_HELP = 'Enter a GitHub link (https://github.com/<owner>/<repo>[/tree/<ref>/<path>]), <owner>/<repo>, a Git URL ending in .git, a git@ address, or a local folder path starting with / or ~/'
 const GITHUB_URL = /^(?:https?:\/\/)?(?:www\.)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?(?:\/tree\/([^/]+)(?:\/(.*))?)?\/?$/i
 const GITHUB_SHORT = /^([A-Za-z0-9][A-Za-z0-9_.-]*)\/([A-Za-z0-9_.-]+)$/
 const SCP_LIKE = /^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[^\s]+$/
 const GIT_URL = /^(?:https?|ssh|git|file):\/\/[^\s]+$/i
 const REF = /^[A-Za-z0-9._/-]+$/
 
-function isRecord(value) {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
 /**
- * Parse an import source.
+ * Parse a repository source.
  * @param {string} input - user-entered source.
  * @returns {{ kind: 'local', path: string, label: string } | { kind: 'git', url: string, ref?: string,
- *   subpath?: string[], label: string, repoName: string }} the source.
+ *   subpath?: string[], label: string, repoName: string, github?: { owner: string, repo: string } }} the
+ *   source; GitHub sources always use `https://github.com/<owner>/<repo>.git`, and a `/tree/HEAD` link has
+ *   no `ref` (it names the default branch).
  * @throws {HostError} `bad-request` for unsupported or malformed sources.
  */
 export function parseSource(input) {
@@ -64,8 +54,11 @@ export function parseSource(input) {
     const [, owner, rawRepo, ref, rest] = github
     const repo = rawRepo.replace(/\.git$/i, '')
     if (owner === '.' || owner === '..' || repo === '' || repo === '.' || repo === '..') throw new HostError('bad-request', SOURCE_HELP)
-    const parsed = { kind: 'git', url: `https://github.com/${owner}/${repo}.git`, label: `${owner}/${repo}`, repoName: repo }
-    if (ref !== undefined) parsed.ref = checkRef(decode(ref))
+    const parsed = { kind: 'git', url: `https://github.com/${owner}/${repo}.git`, label: `${owner}/${repo}`, repoName: repo, github: { owner, repo } }
+    if (ref !== undefined) {
+      const checked = checkRef(decode(ref))
+      if (checked !== 'HEAD') parsed.ref = checked
+    }
     const subpath = splitSubpath(rest)
     if (subpath.length > 0) parsed.subpath = subpath
     return parsed
@@ -94,6 +87,22 @@ export function parseSource(input) {
     return { kind: 'git', url: source, label: `${url.host}${url.pathname}`.replace(/\.git\/?$/, '').replace(/\/$/, ''), repoName: repoName(url.pathname) }
   }
   throw new HostError('bad-request', SOURCE_HELP)
+}
+
+/**
+ * Parse the `subpath` field of `repos-add`.
+ * @param {unknown} value - payload value.
+ * @returns {string[] | undefined} path segments, or `undefined` when absent or empty.
+ * @throws {HostError} `bad-request` for a non-string or a path with `.`/`..` segments.
+ */
+export function parseSubpath(value) {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') throw new HostError('bad-request', 'Field "subpath" must be a folder path inside the repository')
+  const segments = value.trim().split(/[/\\]/).filter(segment => segment !== '')
+  if (segments.some(segment => segment === '.' || segment === '..')) {
+    throw new HostError('bad-request', `Field "subpath" must not contain "." or ".." segments: ${value}`)
+  }
+  return segments.length === 0 ? undefined : segments
 }
 
 function decode(text) {
@@ -132,11 +141,15 @@ function gitStderr(stderr) {
   return text.length > 500 ? `${text.slice(0, 497)}...` : text || 'no error output'
 }
 
-/** Clone `source` with depth 1 into `dir`; user input is passed as argv after `--`, never through a shell. */
-function cloneRepository(source, dir, signal) {
-  const args = ['clone', '--depth', '1', '--quiet']
-  if (source.ref !== undefined) args.push('--branch', source.ref)
-  args.push('--', source.url, dir)
+/**
+ * Run git without a shell. Prompts are disabled so a private repository fails instead of waiting for input.
+ * @param {string[]} args - git arguments; user input must follow `--` where git accepts it.
+ * @param {{ signal?: AbortSignal, what: string }} options - `what` names the operation in errors
+ *   (for example "git clone of anthropics/skills").
+ * @returns {Promise<string>} stdout.
+ * @throws {HostError} `unavailable` when git is missing or the run was aborted, `git-failed` otherwise.
+ */
+export function runGit(args, { signal, what }) {
   return new Promise((resolve, reject) => {
     execFile('git', args, {
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
@@ -144,21 +157,42 @@ function cloneRepository(source, dir, signal) {
       maxBuffer: 1 << 20,
       windowsHide: true,
       signal,
-    }, (error, _stdout, stderr) => {
+    }, (error, stdout, stderr) => {
       if (error === null) {
-        resolve()
+        resolve(String(stdout))
         return
       }
-      if (error.code === 'ENOENT') reject(new HostError('unavailable', 'Git is not installed or not on PATH; install Git to import skills from a repository'))
-      else if (error.name === 'AbortError') reject(new HostError('unavailable', 'The import was cancelled because the plugin stopped'))
-      else if (error.killed) reject(new HostError('git-failed', `git clone of ${source.label} timed out after ${GIT_TIMEOUT_MS / 1000} seconds`))
-      else reject(new HostError('git-failed', `git clone of ${source.label} failed: ${gitStderr(stderr)}`))
+      if (error.code === 'ENOENT') reject(new HostError('unavailable', 'Git is not installed or not on PATH; install Git to add skills from a repository'))
+      else if (error.name === 'AbortError') reject(new HostError('unavailable', `${what} was cancelled`))
+      else if (error.killed) reject(new HostError('git-failed', `${what} timed out after ${GIT_TIMEOUT_MS / 1000} seconds`))
+      else reject(new HostError('git-failed', `${what} failed: ${gitStderr(stderr)}`))
     })
   })
 }
 
-/** Find SKILL.md folders under `root` (depth ≤ 5, skipping `.git`/`node_modules`, not following symlinks). */
-async function findCandidates(root, rootName) {
+/**
+ * Clone `source` with depth 1 into `dir` (which must not exist).
+ * @param {{ url: string, ref?: string, label: string }} source - parsed git source.
+ * @param {string} dir - destination.
+ * @param {AbortSignal} [signal] - cancels the clone.
+ */
+export async function cloneRepository(source, dir, signal) {
+  const args = ['clone', '--depth', '1', '--quiet']
+  if (source.ref !== undefined) args.push('--branch', source.ref)
+  args.push('--', source.url, dir)
+  await runGit(args, { signal, what: `git clone of ${source.label}` })
+}
+
+/**
+ * Find SKILL.md folders under `root` (depth ≤ 5, skipping `.git`/`node_modules`, not following symlinks,
+ * at most 500). A folder with SKILL.md is one candidate; its subfolders are not searched.
+ * @param {string} root - real path of the scan root.
+ * @param {string} rootName - name used when the root itself is an invalid skill.
+ * @returns {Promise<{ key: string, name: string, description: string, valid: boolean, error?: string,
+ *   fileCount: number }[]>} candidates in sorted depth-first order; `key` is the `/`-separated folder
+ *   relative to `root`, `'.'` for the root itself.
+ */
+export async function findCandidates(root, rootName) {
   const candidates = []
   let visited = 0
   const walk = async (dir, key, depth) => {
@@ -200,190 +234,86 @@ async function describeCandidate(dir, key, rootName) {
   } catch (error) {
     info = { invalid: `Cannot read SKILL.md: ${errorMessage(error)}` }
   }
-  const fallback = key === '.' ? rootName : key.slice(key.lastIndexOf('/') + 1)
   const { total } = await listFiles(dir, FILE_COUNT)
   return {
     key,
-    name: info.invalid === undefined ? info.name : fallback,
+    name: info.invalid === undefined ? info.name : keyBasename(key, rootName),
     description: info.description ?? '',
     valid: info.invalid === undefined,
     ...(info.invalid === undefined ? {} : { error: info.invalid }),
     fileCount: total,
-    dir,
   }
 }
 
-/** Copy one candidate to `<root>/<name>`; returns `installed` or `skipped`. */
-async function installCandidate(candidate, root, roots, overwrite) {
-  const target = path.join(root.path, candidate.name)
-  const flat = `${target}.md`
-  await assertDirectChild(target, roots)
-  const hasTarget = await exists(target)
-  const hasFlat = await exists(flat)
-  if ((hasTarget || hasFlat) && !overwrite) return 'skipped'
-  // Copy next to the target first so a failed copy never removes the existing skill.
-  const staging = path.join(root.path, `.${candidate.name}.installing-${randomUUID()}`)
+/**
+ * @param {string} key - candidate key.
+ * @param {string} rootName - name of the scan root.
+ * @returns {string} the candidate folder's own name.
+ */
+export function keyBasename(key, rootName) {
+  return key === '.' ? rootName : key.slice(key.lastIndexOf('/') + 1)
+}
+
+/**
+ * @param {string} root - scan root.
+ * @param {string} key - candidate key.
+ * @returns {string} the candidate folder.
+ */
+export function candidateDir(root, key) {
+  return key === '.' ? root : path.join(root, ...key.split('/'))
+}
+
+/**
+ * Copy `sourceDir` to `target` (a direct child of a checked skill root), replacing what is there: the copy
+ * is staged next to the target, the old entry is moved aside, the copy is renamed into place, and only then
+ * is the old entry removed (a symlink loses only the link). A failure before the swap leaves the old entry
+ * untouched. `.git` is skipped and symlinks are copied as links.
+ * @param {string} sourceDir - folder to copy.
+ * @param {string} target - destination entry path.
+ * @param {{ removeFlat?: boolean }} [options] - also remove a flat `<target>.md` skill after the swap.
+ */
+export async function copySkill(sourceDir, target, { removeFlat = false } = {}) {
+  const parent = path.dirname(target)
+  const name = path.basename(target)
+  const staging = path.join(parent, `.${name}.installing-${randomUUID()}`)
   try {
-    await fs.cp(candidate.dir, staging, {
+    await fs.cp(sourceDir, staging, {
       recursive: true,
       verbatimSymlinks: true,
       errorOnExist: true,
       force: false,
       filter: source => path.basename(source) !== '.git',
     })
-    if (hasTarget) await removeEntry(target)
-    if (hasFlat) await removeEntry(flat)
-    await fs.rename(staging, target)
   } catch (error) {
     await fs.rm(staging, { recursive: true, force: true })
     throw error
   }
-  return 'installed'
-}
-
-/** Scans kept between `skills-scan` and `skills-install`, with their temporary clones. */
-export class SkillImporter {
-  #scans = new Map()
-  #disposed = false
-  #abort = new AbortController()
-
-  /** @param {import('./paths.js').SerialQueue} queue - serializes installs with other skill writes. */
-  constructor(queue) {
-    this.queue = queue
-  }
-
-  /** `skills-scan`: payload `{ source }`. */
-  async scan(payload) {
-    if (typeof payload.source !== 'string') throw new HostError('bad-request', SOURCE_HELP)
-    const source = parseSource(payload.source)
-    if (source.kind === 'local') {
-      let info
-      try {
-        info = await fs.stat(source.path)
-      } catch (error) {
-        throw new HostError('not-found', `Folder ${source.label} cannot be opened: ${errorMessage(error)}`)
-      }
-      if (!info.isDirectory()) throw new HostError('bad-request', `${source.label} is not a folder`)
-      const root = await fs.realpath(source.path)
-      return this.#store(source.label, undefined, await findCandidates(root, path.basename(root)))
+  let aside
+  try {
+    if (await exists(target)) {
+      aside = path.join(parent, `.${name}.replaced-${randomUUID()}`)
+      await fs.rename(target, aside)
     }
-
-    if (this.#disposed) throw new HostError('unavailable', 'The plugin is stopping')
-    const temp = await fs.mkdtemp(path.join(os.tmpdir(), TEMP_PREFIX))
+    await fs.rename(staging, target)
+  } catch (error) {
+    if (aside !== undefined && !(await exists(target))) {
+      try {
+        await fs.rename(aside, target)
+        aside = undefined
+      } catch {
+        // The old entry stays at its aside name; the error below reports the failure.
+      }
+    }
+    await fs.rm(staging, { recursive: true, force: true })
+    throw error
+  }
+  if (aside !== undefined) {
     try {
-      const repo = path.join(temp, 'repo')
-      await cloneRepository(source, repo, this.#abort.signal)
-      if (this.#disposed) throw new HostError('unavailable', 'The plugin is stopping')
-      let root = await fs.realpath(repo)
-      if (source.subpath !== undefined) {
-        const folder = source.subpath.join('/')
-        let real
-        try {
-          real = await fs.realpath(path.join(root, ...source.subpath))
-        } catch {
-          // Reported below as a missing folder.
-          real = undefined
-        }
-        if (real === undefined || !(real.startsWith(root + path.sep)) || !(await fs.stat(real)).isDirectory()) {
-          throw new HostError('not-found', `Folder "${folder}" does not exist in ${source.label}`)
-        }
-        root = real
-      }
-      const rootName = source.subpath === undefined ? source.repoName : source.subpath[source.subpath.length - 1]
-      return this.#store(source.label, temp, await findCandidates(root, rootName))
-    } catch (error) {
-      await fs.rm(temp, { recursive: true, force: true })
-      throw error
-    }
-  }
-
-  /** `skills-install`: payload `{ scanId, cwd?, root, items: [{ key, overwrite }] }`. */
-  async install(payload) {
-    if (typeof payload.scanId !== 'string' || payload.scanId === '') throw new HostError('bad-request', 'Field "scanId" must be the id returned by skills-scan')
-    const items = payload.items
-    if (!Array.isArray(items) || items.length === 0) throw new HostError('bad-request', 'Field "items" must list at least one skill to install')
-    if (items.length > MAX_INSTALL_ITEMS) throw new HostError('bad-request', `At most ${MAX_INSTALL_ITEMS} skills can be installed at once`)
-    for (const item of items) {
-      if (!isRecord(item) || typeof item.key !== 'string' || typeof item.overwrite !== 'boolean') {
-        throw new HostError('bad-request', 'Each entry of "items" must be { key: string, overwrite: boolean }')
-      }
-    }
-    return await this.queue.run(async () => {
-      const scan = this.#scans.get(payload.scanId)
-      if (scan === undefined) throw new HostError('not-found', 'This scan has expired or is unknown; scan the source again')
-      const cwd = await resolveCwd(payload.cwd)
-      const layout = await skillRoots(cwd)
-      const root = rootById(layout, payload.root)
-      try {
-        await fs.mkdir(root.path, { recursive: true })
-      } catch (error) {
-        throw new HostError('forbidden', `Cannot create the skill folder ${displayPath(root.path)}: ${errorMessage(error)}`)
-      }
-      const installed = []
-      const skipped = []
-      const failed = []
-      const names = new Set()
-      try {
-        for (const request of items) {
-          const candidate = scan.candidates.find(entry => entry.key === request.key)
-          if (candidate === undefined) {
-            failed.push({ name: request.key, error: `No skill "${request.key}" in this scan` })
-            continue
-          }
-          if (!candidate.valid) {
-            failed.push({ name: candidate.name, error: candidate.error })
-            continue
-          }
-          if (names.has(candidate.name)) {
-            failed.push({ name: candidate.name, error: `Another selected skill is also named "${candidate.name}"` })
-            continue
-          }
-          names.add(candidate.name)
-          try {
-            const outcome = await installCandidate(candidate, root, layout.roots, request.overwrite)
-            ;(outcome === 'skipped' ? skipped : installed).push(candidate.name)
-          } catch (error) {
-            failed.push({ name: candidate.name, error: errorMessage(error) })
-          }
-        }
-      } finally {
-        await this.#drop(payload.scanId)
-      }
-      return { installed, skipped, failed }
-    })
-  }
-
-  /** Remove every scan and temporary clone, and cancel clones in progress. */
-  async dispose() {
-    this.#disposed = true
-    this.#abort.abort()
-    await Promise.all([...this.#scans.keys()].map(id => this.#drop(id)))
-  }
-
-  #store(label, temp, candidates) {
-    if (this.#disposed) throw new HostError('unavailable', 'The plugin is stopping')
-    const scanId = randomUUID()
-    const timer = setTimeout(() => { void this.#drop(scanId) }, SCAN_TTL_MS)
-    timer.unref?.()
-    this.#scans.set(scanId, { label, temp, candidates, timer })
-    while (this.#scans.size > MAX_STORED_SCANS) void this.#drop(this.#scans.keys().next().value)
-    return {
-      scanId,
-      label,
-      candidates: candidates.map(({ dir: _dir, ...candidate }) => candidate),
-    }
-  }
-
-  async #drop(scanId) {
-    const scan = this.#scans.get(scanId)
-    if (scan === undefined) return
-    this.#scans.delete(scanId)
-    clearTimeout(scan.timer)
-    if (scan.temp === undefined) return
-    try {
-      await fs.rm(scan.temp, { recursive: true, force: true })
+      await removeEntry(aside)
     } catch {
-      // A clone that cannot be removed stays under os.tmpdir(), which the OS cleans; callers must not fail.
+      // The new copy is in place; a leftover dot entry is not listed as a skill.
     }
   }
+  const flat = `${target}.md`
+  if (removeFlat && await exists(flat)) await removeEntry(flat)
 }

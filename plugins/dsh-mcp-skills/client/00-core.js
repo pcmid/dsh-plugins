@@ -11,7 +11,9 @@ const { Fragment, forwardRef, useCallback, useEffect, useId, useLayoutEffect, us
 const NS = 'settings.mcpSkills';
 const PREFIX = 'dsh-ms';
 const CHANNEL = '/api';
-const ENDPOINT = 'mcp-skills';
+/** Host API groups (index.js): one for the MCP page, one for the Skills page. */
+const API_MCP = 'mcp-settings';
+const API_SKILLS = 'skill-settings';
 
 // ---------------------------------------------------------------------------
 // Locale and CSS registries. Each part calls addDict / addCss at load time;
@@ -51,6 +53,7 @@ addDict({
   c_daysAgo: '{n} 天前',
   c_loadFailed: '读取失败：{reason}',
   c_unknownError: '未知错误',
+  c_hostOutdated: '插件已更新，但 DSH 后台还在运行旧版本。重启 DSH 后即可使用。',
 }, {
   c_back: 'Back',
   c_cancel: 'Cancel',
@@ -70,6 +73,7 @@ addDict({
   c_daysAgo: '{n} d ago',
   c_loadFailed: 'Could not load: {reason}',
   c_unknownError: 'Unknown error',
+  c_hostOutdated: 'The plugin was updated, but DSH is still running its previous background code. Restart DSH to use it.',
 });
 
 // ---------------------------------------------------------------------------
@@ -104,11 +108,22 @@ class CallError extends Error {
   }
 }
 
-/** Call one Host route of this plugin; resolves the value or throws CallError. */
-function createRpc(ctx) {
+/** Call one operation of a Host API group (`API_MCP` / `API_SKILLS`); resolves the value or throws CallError. */
+function createRpc(ctx, group) {
+  // A 404 on one of our exact routes means the Client half is newer than the Host half still
+  // running in this process (the Host loads plugin code at startup), not a connection problem.
+  const outdated = (message) => /\bHTTP 404\b/.test(String(message ?? ''));
+  const outdatedError = () => new CallError('host-outdated', ctx.locale.bind(NS)('c_hostOutdated'));
   return async (op, payload = {}) => {
-    const result = await ctx.connection.rpc.call(CHANNEL, `${ENDPOINT}/${op}`, payload);
+    let result;
+    try {
+      result = await ctx.connection.rpc.call(CHANNEL, `${group}/${op}`, payload);
+    } catch (error) {
+      if (outdated(error?.message)) throw outdatedError();
+      throw error;
+    }
     if (!result || !result.ok) {
+      if (outdated(result?.error?.message)) throw outdatedError();
       throw new CallError(String(result?.error?.code ?? 'internal'), result?.error?.message ?? 'Request failed');
     }
     return result.value;

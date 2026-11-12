@@ -22,6 +22,11 @@ const MCP_NOT_SECRET_RE = /(?:^|[_-])(?:URL|URI|PATH|FILE|DIR|HOST|PORT|ENDPOINT
 const MCP_SHELL_ESCAPABLE = ' \t\'"\\$`|&;()<>!#*?[]{}~';
 const MCP_SHELL_SAFE = /^[A-Za-z0-9_\-+=/.,:@%^~]+$/;
 const MCP_ADVANCED_FIELDS = new Set(['cwd', 'startup', 'toolCall']);
+/** Failure text that means the server wants credentials (same pattern as the Host supervisor). */
+const MCP_AUTH_ERROR_RE = /\b401\b|requires authorization|unauthori[sz]ed|invalid_token/i;
+const MCP_AUTH_CHECK_DEBOUNCE_MS = 600;
+const MCP_STATE_RETRY_MS = 2000;
+const MCP_FLOW_RANK = { pending: 0, exchanging: 1, done: 2, error: 2, cancelled: 2 };
 
 // ---------------------------------------------------------------------------
 // Small value helpers
@@ -694,13 +699,20 @@ function mcpDraftFromParsed(server, warnings = []) {
   });
 }
 
-/** Edit-form draft for a configured entry; keys the base layer supplies are locked for inherited servers. */
-function mcpDraftFromEntry(name, entry, origin, baseEntry) {
+/**
+ * Edit-form draft for a configured entry; keys the base layer supplies are
+ * locked for inherited servers, and the Authorization header OAuth manages is
+ * a read-only row.
+ */
+function mcpDraftFromEntry(name, entry, origin, baseEntry, oauthTemplate) {
   const base = mcpObject(baseEntry);
   const inherited = origin === 'inherited' || origin === 'overridden';
-  const rows = (map, lockedMap) => {
+  const rows = (map, lockedMap, headers) => {
     const locked = new Set(inherited ? Object.keys(mcpObject(lockedMap)) : []);
-    return Object.entries(mcpObject(map)).map(([key, value]) => mcpRow(key, value, { locked: locked.has(key) }));
+    return Object.entries(mcpObject(map)).map(([key, value]) => {
+      const row = mcpRow(key, value, { locked: locked.has(key) });
+      return headers && mcpIsOAuthHeader(name, key, value, oauthTemplate) ? { ...row, oauth: true } : row;
+    });
   };
   const command = mcpStr(entry.command);
   const args = mcpArr(entry.args);
@@ -708,8 +720,8 @@ function mcpDraftFromEntry(name, entry, origin, baseEntry) {
     mode: 'edit', target: name, origin, name, transport: entry.transport === 'streamable-http' ? 'streamable-http' : 'stdio',
     commandLine: command || args.length ? mcpShellJoin([command, ...args]) : '',
     url: mcpStr(entry.url),
-    env: rows(entry.env, base.env),
-    headers: rows(entry.headers, base.headers),
+    env: rows(entry.env, base.env, false),
+    headers: rows(entry.headers, base.headers, true),
     cwd: mcpStr(entry.cwd),
     startupSec: typeof entry.startupTimeoutMs === 'number' && entry.startupTimeoutMs !== MCP_DEFAULT_STARTUP_MS ? mcpMsToSec(entry.startupTimeoutMs) : '',
     toolCallSec: typeof entry.toolCallTimeoutMs === 'number' ? mcpMsToSec(entry.toolCallTimeoutMs) : '',
@@ -853,14 +865,16 @@ function mcpCompactEntry(next, carry = {}) {
   if (next.startupTimeoutMs !== undefined) out.startupTimeoutMs = next.startupTimeoutMs;
   if (next.toolCallTimeoutMs !== undefined) out.toolCallTimeoutMs = next.toolCallTimeoutMs;
   if (carry.closeTimeoutMs !== undefined) out.closeTimeoutMs = carry.closeTimeoutMs;
-  if (carry.reconnect !== undefined) out.reconnect = carry.reconnect;
+  // DSH must not retry a first failure; the Host supervisor reconnects servers that were connected.
+  out.reconnect = { ...mcpObject(carry.reconnect), enabled: false };
   return out;
 }
 
 /**
  * Settings mutations that turn `current` into `next`. A user-added (or new)
  * server is written whole; an inherited one gets only its changed fields so the
- * override stays minimal (keys the base layer supplies are never unset).
+ * override stays minimal (keys the base layer supplies are never unset). Every
+ * save also turns DSH's own reconnect off (docs/auth-retry.md §1).
  */
 function mcpEntryOps(name, origin, current, userRaw, baseRaw, next, carry = {}) {
   const path = (...rest) => ['servers', name, ...rest];
@@ -903,6 +917,7 @@ function mcpEntryOps(name, origin, current, userRaw, baseRaw, next, carry = {}) 
     else if (userOnly('toolCallTimeoutMs')) unset('toolCallTimeoutMs');
     else set(MCP_DEFAULT_TOOL_CALL_MS, 'toolCallTimeoutMs');
   }
+  if (ops.length && mcpObject(cur.reconnect).enabled !== false) set(false, 'reconnect', 'enabled');
   return ops;
 }
 
@@ -948,40 +963,139 @@ function mcpServerSummary(server) {
   return command || args.length ? mcpShellJoin([command, ...args]) : '';
 }
 
+// ---------------------------------------------------------------------------
+// Authorization (OAuth) and the Host supervisor (docs/auth-retry.md)
+// ---------------------------------------------------------------------------
+
+function mcpIsAuthError(text) { return MCP_AUTH_ERROR_RE.test(mcpStr(text)); }
+
+/** Credential reference the Host stores this server's OAuth access token under. */
+function mcpOAuthRef(name) { return `MCP_${mcpRefPart(name)}_OAUTH`; }
+function mcpOAuthTemplate(name) { return `Bearer ${mcpTemplate(mcpOAuthRef(name))}`; }
+
+/** The header key that carries Authorization (any case), or null. */
+function mcpAuthHeaderKey(headers) {
+  return Object.keys(mcpObject(headers)).find((key) => key.toLowerCase() === 'authorization') ?? null;
+}
+
+/** An `Authorization` header whose value is this server's OAuth template (or the one the Host returned). */
+function mcpIsOAuthHeader(name, key, value, template) {
+  if (mcpStr(key).toLowerCase() !== 'authorization') return false;
+  const text = mcpStr(value);
+  return text === mcpOAuthTemplate(name) || (Boolean(template) && text === template);
+}
+
+/** True when a Streamable HTTP entry sends this server's OAuth token. */
+function mcpEntryUsesOAuth(name, entry, template) {
+  const e = mcpObject(entry);
+  if (e.transport !== 'streamable-http') return false;
+  return Object.entries(mcpObject(e.headers)).some(([key, value]) => mcpIsOAuthHeader(name, key, value, template));
+}
+
 /**
- * Card / title presentation of a runtime status: dot tone, label key, and the
- * error to summarize. Config `enabled: false` wins over a stale runtime status.
+ * Mutations that make an entry send the OAuth token: the Authorization header
+ * (under its existing key, whatever its case) plus `reconnect.enabled: false`,
+ * as path writes so an inherited server keeps a minimal override. Empty when
+ * the header is already in place.
  */
-function mcpStatusInfo(status, enabled, runtimeStatus) {
-  if (!enabled) return { tone: 'idle', label: 'mcp_stDisabled' };
-  if (!mcpIsObject(status)) return { tone: 'idle', label: runtimeStatus === 'ready' ? 'mcp_stUnknown' : 'mcp_stLoading' };
-  switch (status.state) {
+function mcpAuthHeaderOps(name, entry, template = mcpOAuthTemplate(name)) {
+  const e = mcpObject(entry);
+  const headers = mcpObject(e.headers);
+  const key = mcpAuthHeaderKey(headers) ?? 'Authorization';
+  if (headers[key] === template) return [];
+  const ops = [{ op: 'set', path: ['servers', name, 'headers', key], value: template }];
+  if (mcpObject(e.reconnect).enabled !== false) ops.push({ op: 'set', path: ['servers', name, 'reconnect', 'enabled'], value: false });
+  return ops;
+}
+
+/** Combine the flow this page started with the Host's view of it; the further-along status wins. */
+function mcpMergeFlow(local, remote) {
+  const a = mcpIsObject(local) ? local : null;
+  const b = mcpIsObject(remote) ? remote : null;
+  if (!a) return b;
+  if (!b) return a;
+  if (a.flowId !== b.flowId) return (Number(b.startedAt) || 0) >= (Number(a.startedAt) || 0) ? b : a;
+  return (MCP_FLOW_RANK[a.status] ?? 0) > (MCP_FLOW_RANK[b.status] ?? 0) ? { ...b, status: a.status, error: a.error ?? b.error } : b;
+}
+
+/** `{ unit, n }` for a future instant (minutes under an hour, hours under two days, else days); null when past. */
+function mcpUntil(at, now) {
+  const ms = Number(at) - now;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const minutes = Math.max(1, Math.round(ms / 60000));
+  if (minutes < 60) return { unit: 'min', n: minutes };
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return { unit: 'hour', n: hours };
+  return { unit: 'day', n: Math.round(hours / 24) };
+}
+
+/**
+ * Card / detail presentation of a server: dot tone, label key, the error to
+ * summarize, and `kind` for the detail's status area. `extra` carries the
+ * Host's supervisor and authorization state (`host`), whether the entry sends
+ * its OAuth token (`oauth`), the authorization flow in progress (`flow`), and
+ * whether a just-finished flow still explains the current status (`flowDone`).
+ * Config `enabled: false` wins over a stale runtime status.
+ */
+function mcpStatusInfo(status, enabled, runtimeStatus, extra = {}) {
+  if (!enabled) return { tone: 'idle', label: 'mcp_stDisabled', kind: 'disabled' };
+  const host = mcpObject(extra.host);
+  const state = mcpIsObject(status) ? status.state : null;
+  const flowStatus = mcpObject(extra.flow).status;
+  if (state !== 'connected' && (flowStatus === 'pending' || flowStatus === 'exchanging')) {
+    return { tone: 'busy', label: 'mcp_stAuthWaiting', kind: 'auth-flow' };
+  }
+  if (extra.flowDone && state !== 'connected' && state !== 'connecting') {
+    return { tone: 'busy', label: 'mcp_stAuthDone', kind: 'auth-done' };
+  }
+  if (!mcpIsObject(status)) return { tone: 'idle', label: runtimeStatus === 'ready' ? 'mcp_stUnknown' : 'mcp_stLoading', kind: 'unknown' };
+  const auth = (error) => ({ tone: 'warn', label: 'mcp_stNeedsAuth', kind: 'auth', error: error || null, errorTone: 'warn', block: true });
+  switch (state) {
     case 'connected':
-      return { tone: 'success', label: 'mcp_stConnected', count: Number(status.toolCount) || 0 };
+      return { tone: 'success', label: 'mcp_stConnected', kind: 'connected', count: Number(status.toolCount) || 0 };
     case 'connecting':
-      return { tone: 'busy', label: 'mcp_stConnecting' };
+      return { tone: 'busy', label: 'mcp_stConnecting', kind: 'connecting' };
     case 'disabled':
       // Just switched on: the runtime has not caught up yet.
-      return { tone: 'busy', label: 'mcp_stConnecting' };
+      return { tone: 'busy', label: 'mcp_stConnecting', kind: 'connecting' };
     case 'reconnecting':
-      return { tone: 'warn', label: 'mcp_stRetrying', values: { attempt: status.attempt, max: status.maxAttempts }, error: mcpStr(status.lastError) || null, errorTone: 'warn', block: true, summary: true };
+      return { tone: 'warn', label: 'mcp_stRetrying', kind: 'dsh-retrying', values: { attempt: status.attempt, max: status.maxAttempts }, nextAt: status.nextRetryAtMs, error: mcpStr(status.lastError) || null, errorTone: 'warn', block: true, summary: true };
     case 'waiting-credentials':
-      return { tone: 'warn', label: 'mcp_stCredentials', error: mcpStr(status.lastError) || null, errorTone: 'warn', block: true, summary: true };
+      if (extra.oauth) return auth(mcpStr(status.lastError));
+      return { tone: 'warn', label: 'mcp_stCredentials', kind: 'credentials', error: mcpStr(status.lastError) || null, errorTone: 'warn', block: true, summary: true };
     case 'failed': {
-      let error = mcpStr(status.lastError) || null;
+      const lastError = mcpStr(status.lastError);
+      if (status.reason === 'reconnect-disabled' || status.reason === 'gave-up') {
+        const retry = mcpIsObject(host.retry) ? host.retry : null;
+        if (status.reason === 'reconnect-disabled' && retry) {
+          return {
+            tone: 'warn', label: 'mcp_stAutoRetry', kind: 'retrying', values: { attempt: retry.attempt, max: retry.max },
+            nextAt: retry.nextAt, error: lastError || mcpStr(retry.lastError) || null, errorTone: 'warn', block: true, summary: true,
+          };
+        }
+        const authFailure = mcpIsObject(host.authFailure) ? mcpStr(host.authFailure.lastError) : '';
+        if (mcpIsAuthError(lastError) || (!lastError && mcpIsAuthError(authFailure))) return auth(lastError || authFailure);
+        if (status.reason === 'reconnect-disabled') {
+          const gaveUp = mcpIsObject(host.gaveUp) ? host.gaveUp : null;
+          if (gaveUp) {
+            return { tone: 'error', label: 'mcp_stReconnectFailed', kind: 'gave-up', attempts: Number(gaveUp.attempts) || 0, error: lastError || mcpStr(gaveUp.lastError) || null, errorTone: 'error', block: true, summary: true };
+          }
+          return { tone: 'error', label: 'mcp_stFailed', kind: 'failed', error: lastError || null, errorTone: 'error', block: true, summary: true };
+        }
+      }
+      let error = lastError || null;
       let errorKey = null;
       if (status.reason === 'cleanup') {
         error = mcpStr(status.result?.cleanupError) || null;
         errorKey = 'mcp_errCleanup';
       } else if (status.reason === 'gave-up') errorKey = 'mcp_errGaveUp';
-      else if (status.reason === 'reconnect-disabled') errorKey = 'mcp_errNoReconnect';
       else if (status.reason === 'unclosed-generation') errorKey = 'mcp_errUnclosed';
-      return { tone: 'error', label: 'mcp_stFailed', error, errorKey, errorTone: 'error', block: true, summary: true };
+      return { tone: 'error', label: 'mcp_stFailed', kind: 'dsh-failed', error, errorKey, errorTone: 'error', block: true, summary: true };
     }
     case 'closed':
-      return { tone: 'idle', label: 'mcp_stClosed', error: mcpStr(status.result?.cleanupError) || null, closed: true };
+      return { tone: 'idle', label: 'mcp_stClosed', kind: 'closed', error: mcpStr(status.result?.cleanupError) || null, closed: true };
     default:
-      return { tone: 'idle', label: 'mcp_stUnknown' };
+      return { tone: 'idle', label: 'mcp_stUnknown', kind: 'unknown' };
   }
 }
 
@@ -1020,7 +1134,7 @@ function mcpSleep(ms, signal) {
  */
 function createMcpController(ctx, t) {
   const form = ctx.configForms.get(MCP_FORM_NS);
-  const rpc = createRpc(ctx);
+  const rpc = createRpc(ctx, API_MCP);
   const manager = () => ctx.remote.mcpManager;
   const credentials = () => ctx.remote.credentials;
   let disposed = false;
@@ -1037,6 +1151,18 @@ function createMcpController(ctx, t) {
   let streamAbort = null;
   let streamHandle = null;
   let saveSeq = 0;
+  // Host supervisor / authorization state from the `mcp-state` long-poll.
+  const hostState = { status: 'idle', version: null, servers: {} };
+  let poll = null;
+  // `mcp-auth-check` results by URL; the add form's debounce timer.
+  let authChecks = {};
+  let checkTimer = null;
+  let checkUrl = null;
+  // Per-server authorization UI: { busy, error, clientRequired, clientId, clientSecret, callbackUrl, flow }.
+  let authUi = {};
+  // Templates `mcp-auth-start` returned, and the runtime status seen when a flow finished.
+  const oauthTemplates = {};
+  const flowDone = {};
 
   const readConfig = () => {
     const snapshot = form?.getSnapshot?.() ?? { status: 'unavailable' };
@@ -1065,22 +1191,54 @@ function createMcpController(ctx, t) {
     return new Set((runtime.list ?? []).map((item) => item.name).filter((name) => !configured.has(name)));
   };
 
+  const hostOf = (name) => mcpObject(hostState.servers[name]);
+  const effectiveFlow = (name) => {
+    const flow = mcpMergeFlow(authUi[name]?.flow, hostOf(name).flow);
+    return flow && typeof flow.flowId === 'string' ? flow : null;
+  };
+  /** A finished flow explains the status only until the runtime reports something new. */
+  const flowJustDone = (name, flow, status) => {
+    const mark = flowDone[name];
+    return Boolean(flow && flow.status === 'done' && mark && mark.flowId === flow.flowId && mark.status === JSON.stringify(status ?? null));
+  };
+  /** How a server that needs authorization can get it: oauth (授权 button), token (header hint), readonly. */
+  const authModeOf = (row, entry, writable) => {
+    if (row.origin === 'plugin' || row.readOnly || row.transport !== 'streamable-http' || !writable) return { mode: 'readonly' };
+    if (row.oauth || mcpIsObject(row.host.auth)) return { mode: 'oauth' };
+    const check = authChecks[mcpStr(entry?.url).trim()];
+    const kind = check?.status === 'done' ? check.result?.kind : null;
+    if (kind === 'token' || kind === 'forbidden') return { mode: 'token' };
+    return { mode: 'oauth', checking: check?.status === 'loading' };
+  };
+
   const serverRows = (cfg) => {
     const statusByName = new Map((runtime.list ?? []).map((item) => [item.name, item.status]));
     const row = (name, origin, entry) => {
       const transport = entry ? (entry.transport === 'streamable-http' ? 'streamable-http' : 'stdio') : null;
       const configEnabled = entry ? entry.enabled !== false : true;
-      return {
+      const status = statusByName.get(name) ?? null;
+      const host = hostOf(name);
+      const flow = effectiveFlow(name);
+      const out = {
         name,
         origin,
         transport,
+        url: transport === 'streamable-http' ? mcpStr(entry?.url).trim() : '',
         summary: entry ? mcpServerSummary({ transport, command: entry.command, args: entry.args, url: entry.url }) : '',
         enabled: mcpHasOwn(pendingEnabled, name) ? pendingEnabled[name] : configEnabled,
         pending: mcpHasOwn(pendingEnabled, name),
-        status: statusByName.get(name) ?? null,
+        status,
         busy: busy[name] ?? null,
         readOnly: origin === 'plugin' || mcpHasExpression(entry),
+        oauth: mcpEntryUsesOAuth(name, entry, oauthTemplates[name]),
+        host,
+        flow,
       };
+      out.info = mcpStatusInfo(status, out.enabled, runtime.status, { host, oauth: out.oauth, flow, flowDone: flowJustDone(name, flow, status) });
+      const auth = authModeOf(out, entry, cfg.writable && cfg.status === 'ready');
+      out.authMode = auth.mode;
+      out.authChecking = Boolean(auth.checking);
+      return out;
     };
     const rows = [];
     for (const [name, entry] of Object.entries(cfg.servers)) {
@@ -1090,6 +1248,35 @@ function createMcpController(ctx, t) {
       if (!mcpHasOwn(cfg.servers, item.name)) rows.push(row(item.name, 'plugin', null));
     }
     return rows;
+  };
+
+  /** What the add form shows under its URL and whether saving should start authorization. */
+  const draftAuthView = () => {
+    const draft = ui.draft;
+    if (!draft || draft.mode !== 'add' || draft.transport !== 'streamable-http') return null;
+    const url = draft.url.trim();
+    if (!mcpIsUrl(url)) return null;
+    const check = authChecks[url] ?? (checkUrl === url ? { status: 'loading' } : null);
+    if (!check) return null;
+    const result = mcpObject(check.result);
+    const headerKey = mcpAuthHeaderKey(Object.fromEntries(draft.headers.filter((row) => row.key.trim() && (row.value || row.ref)).map((row) => [row.key.trim(), true])));
+    return {
+      status: check.status,
+      kind: check.status === 'done' ? result.kind : check.status === 'error' ? 'unreachable' : null,
+      issuer: mcpUrlHost(mcpStr(result.issuer)) || mcpStr(result.issuer),
+      error: check.status === 'error' ? check.error : mcpStr(result.error),
+      authorizeOnAdd: check.status === 'done' && result.kind === 'oauth' && !headerKey,
+    };
+  };
+
+  const authView = () => {
+    const out = {};
+    const names = new Set([...Object.keys(authUi), ...Object.keys(hostState.servers)]);
+    for (const name of names) {
+      const { flow: _local, ...rest } = authUi[name] ?? {};
+      out[name] = { busy: null, error: null, clientRequired: false, clientId: '', clientSecret: '', callbackUrl: '', ...rest, flow: effectiveFlow(name) };
+    }
+    return out;
   };
 
   const project = () => {
@@ -1104,15 +1291,23 @@ function createMcpController(ctx, t) {
       config: { status: cfg.status, writable: cfg.writable },
       runtime: { status: runtime.status, error: runtime.error },
       servers: serverRows(cfg),
-      draft: ui.draft === null ? null : { ...ui.draft, dirty: mcpDraftSignature(ui.draft) !== ui.draft.baseline },
+      draft: ui.draft === null ? null : { ...ui.draft, dirty: mcpDraftSignature(ui.draft) !== ui.draft.baseline, auth: draftAuthView() },
       batch: ui.batch,
       credInfo,
       tools,
       probes,
+      auth: authView(),
+      authChecks,
+      hostState: { status: hostState.status, version: hostState.version, servers: hostState.servers },
     };
   };
   const store = createStore(project());
-  const publish = () => { if (!disposed) store.set(project()); };
+  const publish = () => {
+    if (disposed) return;
+    scheduleDraftCheck();
+    store.set(project());
+    ensureAuthChecks();
+  };
 
   const failure = (error) => ({ key: 'mcp_errAction', values: { reason: errorText(error, t) } });
   const refused = { key: 'mcp_errRefused' };
@@ -1160,6 +1355,251 @@ function createMcpController(ctx, t) {
     streamAbort = null;
     try { streamHandle?.dispose?.(); } catch { /* already closed */ }
     streamHandle = null;
+  };
+
+  // -- Host supervisor / authorization state (`mcp-state` long-poll) ---------
+
+  /** Remember the runtime status at the moment a flow finished, and drop local flows the Host has caught up with. */
+  const noteFlows = (initial) => {
+    const statusByName = new Map((runtime.list ?? []).map((item) => [item.name, item.status]));
+    for (const [name, server] of Object.entries(hostState.servers)) {
+      const flow = mcpObject(mcpObject(server).flow);
+      if (flow.status === 'done' && flowDone[name]?.flowId !== flow.flowId) {
+        // A flow that had already finished before this page looked explains nothing about the current status.
+        flowDone[name] = { flowId: flow.flowId, status: initial ? null : JSON.stringify(statusByName.get(name) ?? null) };
+      }
+    }
+    for (const [name, state] of Object.entries(authUi)) {
+      const local = state.flow;
+      if (!local) continue;
+      const remote = mcpObject(hostOf(name).flow);
+      const caughtUp = remote.flowId === local.flowId && (MCP_FLOW_RANK[remote.status] ?? 0) >= (MCP_FLOW_RANK[local.status] ?? 0);
+      const stale = Date.now() - (Number(local.startedAt) || 0) > 10 * 60 * 1000;
+      if (caughtUp || stale) authUi = { ...authUi, [name]: { ...state, flow: null } };
+      if (remote.flowId === local.flowId && remote.status === 'done') authUi = { ...authUi, [name]: { ...authUi[name], clientRequired: false, clientSecret: '', callbackUrl: '', error: null } };
+    }
+  };
+
+  const startPoll = () => {
+    if (poll || disposed) return;
+    const token = { abort: new AbortController() };
+    poll = token;
+    if (hostState.status === 'idle') hostState.status = 'loading';
+    void (async () => {
+      let since;
+      while (poll === token && !disposed) {
+        const began = Date.now();
+        try {
+          const value = await rpc('state', since === undefined ? {} : { since });
+          if (poll !== token || disposed) break;
+          const version = Number(value?.version);
+          const changed = since === undefined || version !== hostState.version;
+          hostState.status = 'ready';
+          if (changed) {
+            hostState.version = Number.isFinite(version) ? version : null;
+            hostState.servers = mcpObject(value?.servers);
+            noteFlows(since === undefined);
+            publish();
+          }
+          since = Number.isFinite(version) ? version : undefined;
+          // A Host that answers at once without a change would make this loop spin.
+          if (!changed && Date.now() - began < 1000) await mcpSleep(MCP_STATE_RETRY_MS, token.abort.signal);
+          else if (since === undefined) await mcpSleep(MCP_STATE_RETRY_MS, token.abort.signal);
+        } catch {
+          if (poll !== token || disposed) break;
+          if (hostState.status !== 'ready') hostState.status = 'error';
+          await mcpSleep(MCP_STATE_RETRY_MS, token.abort.signal);
+        }
+      }
+    })();
+  };
+  const stopPoll = () => {
+    poll?.abort.abort();
+    poll = null;
+  };
+
+  // -- Authorization ----------------------------------------------------------
+
+  const setAuth = (name, patch) => {
+    authUi = { ...authUi, [name]: { ...(authUi[name] ?? {}), ...patch } };
+    publish();
+  };
+
+  /** `mcp-auth-check` once per URL (the Host caches for a minute too). */
+  const checkAuth = async (url, force) => {
+    if (!mcpIsUrl(url)) return;
+    const current = authChecks[url];
+    if (current && (current.status === 'loading' || (!force && current.status === 'done'))) return;
+    authChecks = { ...authChecks, [url]: { status: 'loading' } };
+    if (checkUrl === url) checkUrl = null;
+    publish();
+    let entry;
+    try {
+      entry = { status: 'done', result: mcpObject(await rpc('auth-check', { url })) };
+    } catch (error) {
+      entry = { status: 'error', error: errorText(error, t) };
+    }
+    if (disposed) return;
+    authChecks = { ...authChecks, [url]: entry };
+    publish();
+  };
+
+  /** Servers stopped on an authorization failure without OAuth in their entry: find out whether OAuth is on offer. */
+  function ensureAuthChecks() {
+    if (disposed || watchers === 0) return;
+    for (const row of store.getSnapshot().servers) {
+      if (row.info.kind !== 'auth' || row.authMode !== 'oauth' || row.oauth || mcpIsObject(row.host.auth) || !row.url) continue;
+      if (!authChecks[row.url]) void checkAuth(row.url);
+    }
+  }
+
+  /** Debounced check of the add form's URL. */
+  const scheduleDraftCheck = () => {
+    const draft = ui.draft;
+    const url = draft && draft.mode === 'add' && draft.transport === 'streamable-http' ? draft.url.trim() : '';
+    const wanted = mcpIsUrl(url) && !authChecks[url] ? url : null;
+    if (wanted === checkUrl) return;
+    clearTimeout(checkTimer);
+    checkTimer = null;
+    checkUrl = wanted;
+    if (wanted) {
+      checkTimer = setTimeout(() => {
+        checkTimer = null;
+        void checkAuth(wanted);
+      }, MCP_AUTH_CHECK_DEBOUNCE_MS);
+    }
+  };
+
+  /** Show the OAuth header in an open edit draft that has unsaved changes, so saving it keeps the header. */
+  const injectOAuthRow = (name, template) => {
+    const draft = ui.draft;
+    if (!draft || draft.mode !== 'edit' || draft.target !== name || draft.transport !== 'streamable-http') return;
+    const existing = draft.headers.find((row) => row.key.toLowerCase() === 'authorization');
+    const oauthRow = { ...mcpRow(existing?.key ?? 'Authorization', template), oauth: true, locked: Boolean(existing?.locked) };
+    ui.draft = { ...draft, headers: existing ? draft.headers.map((row) => (row === existing ? { ...oauthRow, id: row.id } : row)) : [...draft.headers, oauthRow] };
+  };
+
+  /**
+   * 授权: start the flow, open the authorization page right away, then make the
+   * entry send the token (header and reconnect policy in one write).
+   */
+  const startAuth = async (name, options = {}) => {
+    const state = authUi[name] ?? {};
+    if (state.busy === 'start' || state.busy === 'header') return;
+    const entry = readConfig().servers[name];
+    // Right after an add the snapshot may not carry the entry yet; the caller passes its URL.
+    const url = options.url ?? (mcpIsObject(entry) && entry.transport === 'streamable-http' ? mcpStr(entry.url).trim() : '');
+    if (!url) return;
+    const clientId = mcpStr(state.clientId).trim();
+    const clientSecret = mcpStr(state.clientSecret);
+    if (state.clientRequired && !clientId) {
+      setAuth(name, { error: { key: 'mcp_errClientIdRequired' } });
+      return;
+    }
+    if (options.fromCard) ui.notice = null;
+    setAuth(name, { busy: 'start', error: null });
+    let value;
+    try {
+      value = mcpObject(await rpc('auth-start', {
+        server: name, url, ...(clientId ? { clientId } : {}), ...(clientId && clientSecret ? { clientSecret } : {}),
+      }));
+    } catch (error) {
+      if (disposed) return;
+      if (error?.code === 'oauth-client-required') {
+        setAuth(name, { busy: null, clientRequired: true, error: null });
+        // The client ID fields live in the detail view.
+        if (options.fromCard) openDetail(name);
+        return;
+      }
+      const problem = { key: 'mcp_authFlowError', values: { reason: errorText(error, t) } };
+      if (options.fromCard) ui.notice = { tone: 'error', ...problem };
+      setAuth(name, { busy: null, error: problem });
+      return;
+    }
+    if (disposed) return;
+    const authUrl = mcpStr(value.authUrl);
+    if (authUrl) {
+      try { window.open(authUrl, '_blank', 'noopener'); } catch { /* blocked: the panel's link opens it */ }
+    }
+    const template = mcpStr(value.template) || mcpOAuthTemplate(name);
+    oauthTemplates[name] = template;
+    const flow = { flowId: mcpStr(value.flowId), authUrl, redirectUri: mcpStr(value.redirectUri), status: 'pending', startedAt: Date.now() };
+    setAuth(name, { busy: 'header', flow, clientRequired: false, clientSecret: '', callbackUrl: '', error: null });
+    const ops = options.writtenTemplate === template ? [] : mcpAuthHeaderOps(name, readConfig().servers[name], template);
+    let problem = null;
+    if (ops.length) {
+      try {
+        if (!(await form.mutate(ops))) problem = refused;
+      } catch (error) {
+        problem = { key: 'mcp_errSave', values: { reason: errorText(error, t) } };
+      }
+    }
+    if (disposed) return;
+    if (problem) {
+      // Without the header the token would never be used.
+      void rpc('auth-cancel', { flowId: flow.flowId }).catch(() => {});
+      setAuth(name, { busy: null, flow: { ...flow, status: 'cancelled' }, error: problem });
+      return;
+    }
+    if (ops.length) injectOAuthRow(name, template);
+    setAuth(name, { busy: null });
+  };
+
+  const completeAuth = async (name) => {
+    const state = authUi[name] ?? {};
+    const flow = effectiveFlow(name);
+    const callbackUrl = mcpStr(state.callbackUrl).trim();
+    if (!flow || state.busy) return;
+    if (!callbackUrl) {
+      setAuth(name, { error: { key: 'mcp_errCallbackRequired' } });
+      return;
+    }
+    setAuth(name, { busy: 'complete', error: null });
+    try {
+      await rpc('auth-complete', { flowId: flow.flowId, callbackUrl });
+      if (disposed) return;
+      setAuth(name, { busy: null, callbackUrl: '', flow: { ...flow, status: 'done' } });
+      noteFlowDone(name, flow.flowId);
+    } catch (error) {
+      if (disposed) return;
+      setAuth(name, { busy: null, error: { key: 'mcp_authFlowError', values: { reason: errorText(error, t) } } });
+    }
+  };
+  const noteFlowDone = (name, flowId) => {
+    const status = (runtime.list ?? []).find((item) => item.name === name)?.status ?? null;
+    flowDone[name] = { flowId, status: JSON.stringify(status) };
+    publish();
+  };
+
+  const cancelAuth = async (name) => {
+    const flow = effectiveFlow(name);
+    const state = authUi[name] ?? {};
+    if (state.busy) return;
+    if (!flow || (flow.status !== 'pending' && flow.status !== 'exchanging')) {
+      setAuth(name, { clientRequired: false, clientSecret: '', error: null });
+      return;
+    }
+    setAuth(name, { busy: 'cancel', error: null, flow: { ...flow, status: 'cancelled' }, callbackUrl: '' });
+    try {
+      await rpc('auth-cancel', { flowId: flow.flowId });
+    } catch { /* the flow expires on its own */ }
+    if (disposed) return;
+    setAuth(name, { busy: null });
+  };
+
+  /** 退出授权: revoke and forget the grant; the header stays, so the server needs authorization again. */
+  const forgetAuth = async (name) => {
+    if (authUi[name]?.busy) return;
+    setAuth(name, { busy: 'forget', error: null });
+    let problem = null;
+    try {
+      await rpc('auth-forget', { server: name });
+    } catch (error) {
+      problem = { key: 'mcp_authFlowError', values: { reason: errorText(error, t) } };
+    }
+    if (disposed) return;
+    ui.notice = problem ? { tone: 'error', ...problem } : { tone: 'success', key: 'mcp_signedOut', values: { name } };
+    setAuth(name, { busy: null });
   };
 
   // -- Credentials ------------------------------------------------------------
@@ -1212,7 +1652,7 @@ function createMcpController(ctx, t) {
     const cfg = readConfig();
     const entry = cfg.servers[name];
     if (!mcpIsObject(entry) || mcpHasExpression(entry)) return null;
-    return mcpDraftFromEntry(name, entry, originOf(cfg, name), cfg.base[name]);
+    return mcpDraftFromEntry(name, entry, originOf(cfg, name), cfg.base[name], oauthTemplates[name]);
   };
   const isDirty = (draft) => mcpDraftSignature(draft) !== draft.baseline;
 
@@ -1346,6 +1786,7 @@ function createMcpController(ctx, t) {
       publish();
       return;
     }
+    const authorizeOnAdd = draft.mode === 'add' && Boolean(draftAuthView()?.authorizeOnAdd);
     const seq = ++saveSeq;
     ui.draft = { ...draft, saving: true, saveError: null, errors: {} };
     publish();
@@ -1364,6 +1805,11 @@ function createMcpController(ctx, t) {
     }
     if (!outcome) {
       next = mcpDraftToEntry(draft, plan.templates);
+      if (authorizeOnAdd) {
+        // The server needs OAuth: write the token header now, start authorization once it is saved.
+        const headers = Object.fromEntries(Object.entries(next.headers).filter(([key]) => key.toLowerCase() !== 'authorization'));
+        next.headers = { ...headers, Authorization: mcpOAuthTemplate(name) };
+      }
       const user = mcpObject(userRaw);
       const carry = draft.mode === 'add'
         ? { enabled: draft.enabled }
@@ -1409,6 +1855,7 @@ function createMcpController(ctx, t) {
     }
     describeDraftRefs();
     publish();
+    if (authorizeOnAdd) void startAuth(name, { url: next.url, writtenTemplate: next.headers.Authorization });
   };
 
   const toggleEnabled = async (name, next) => {
@@ -1440,13 +1887,14 @@ function createMcpController(ctx, t) {
     publish();
   };
 
+  /** 重试 / 立即重试: the Host route resets its reconnect supervision, then restarts (§4). */
   const restart = async (name) => {
     if (busy[name]) return;
     busy[name] = 'restart';
     ui.notice = null;
     publish();
     try {
-      unwrapRemote(await manager().restart(name));
+      await rpc('retry', { server: name });
     } catch (error) {
       ui.notice = { tone: 'error', ...failure(error) };
     }
@@ -1479,7 +1927,7 @@ function createMcpController(ctx, t) {
     publish();
     let entry;
     try {
-      const value = await rpc('mcp-tools', { server: name });
+      const value = await rpc('tools', { server: name });
       const items = Array.isArray(value?.tools) ? value.tools.filter((tool) => mcpIsObject(tool) && typeof tool.name === 'string') : [];
       entry = { status: 'ready', items, key };
     } catch (error) {
@@ -1540,7 +1988,12 @@ function createMcpController(ctx, t) {
     }
     const prefix = mcpRefPrefix(name);
     const others = mcpConfigRefs(cfg.servers, name);
-    void unsetQuietly([...mcpEntryRefs(entry)].filter((ref) => ref.startsWith(prefix) && !others.has(ref)));
+    // The OAuth grant and its token reference go through the Host, which also revokes the refresh token.
+    void rpc('auth-forget', { server: name }).catch(() => {});
+    const oauthRef = mcpOAuthRef(name);
+    void unsetQuietly([...mcpEntryRefs(entry)].filter((ref) => ref.startsWith(prefix) && ref !== oauthRef && !others.has(ref)));
+    const { [name]: _auth, ...restAuth } = authUi;
+    authUi = restAuth;
     probeAborts.get(name)?.abort();
     probeAborts.delete(name);
     const { [name]: _probe, ...restProbes } = probes;
@@ -1644,6 +2097,10 @@ function createMcpController(ctx, t) {
     if (ui.view.kind === 'batch') ui.view = { kind: 'add' };
     if (ui.draft) ui.draft = mcpScrubDraft(ui.draft);
     ui.confirm = null;
+    clearTimeout(checkTimer);
+    checkTimer = null;
+    checkUrl = null;
+    authUi = Object.fromEntries(Object.entries(authUi).map(([name, state]) => [name, { ...state, clientSecret: '', callbackUrl: '' }]));
   };
 
   return {
@@ -1652,6 +2109,10 @@ function createMcpController(ctx, t) {
       if (kind !== 'config' && streamAbort) {
         stopStream();
         startStream();
+      }
+      if (kind !== 'config' && poll) {
+        stopPoll();
+        startPoll();
       }
       prunePending();
       syncDraft();
@@ -1665,6 +2126,8 @@ function createMcpController(ctx, t) {
     dispose() {
       disposed = true;
       stopStream();
+      stopPoll();
+      clearTimeout(checkTimer);
       for (const abort of probeAborts.values()) abort.abort();
       probeAborts.clear();
       for (const timer of pendingTimers.values()) clearTimeout(timer);
@@ -1676,7 +2139,10 @@ function createMcpController(ctx, t) {
       /** Open the status stream while the page is mounted; returns the stop function. */
       watch() {
         watchers += 1;
-        if (watchers === 1) startStream();
+        if (watchers === 1) {
+          startStream();
+          startPoll();
+        }
         let stopped = false;
         return () => {
           if (stopped) return;
@@ -1684,6 +2150,7 @@ function createMcpController(ctx, t) {
           watchers -= 1;
           if (watchers === 0) {
             stopStream();
+            stopPoll();
             scrub();
             publish();
           }
@@ -1691,7 +2158,11 @@ function createMcpController(ctx, t) {
       },
       retry() {
         stopStream();
-        if (watchers > 0) startStream();
+        stopPoll();
+        if (watchers > 0) {
+          startStream();
+          startPoll();
+        }
         publish();
       },
       takeOpener() {
@@ -1810,7 +2281,7 @@ function createMcpController(ctx, t) {
         if ('key' in next && kind === 'env') next.key = mcpEnvKey(next.key);
         editDraft((d) => {
           d[kind] = d[kind].map((row) => {
-            if (row.id !== id) return row;
+            if (row.id !== id || row.oauth) return row;
             if (row.locked && 'key' in next) return { ...row, ...next, key: row.key };
             return { ...row, ...next };
           });
@@ -1820,7 +2291,7 @@ function createMcpController(ctx, t) {
       removeKv(kind, id) {
         if (kind !== 'env' && kind !== 'headers') return;
         editDraft((d) => {
-          d[kind] = d[kind].filter((row) => row.id !== id || row.locked);
+          d[kind] = d[kind].filter((row) => row.id !== id || row.locked || row.oauth);
           d.errors = dropErrors(d.errors, `${kind}:${id}`);
         });
       },
@@ -1828,7 +2299,7 @@ function createMcpController(ctx, t) {
         if (kind !== 'env' && kind !== 'headers') return;
         editDraft((d) => {
           d[kind] = d[kind].map((row) => {
-            if (row.id !== id) return row;
+            if (row.id !== id || row.oauth) return row;
             if (row.secret) return { ...row, secret: false, value: row.value || (row.ref ? mcpTemplate(row.ref) : ''), ref: null };
             const ref = mcpSoleCredential(row.value);
             return ref ? { ...row, secret: true, ref, value: '' } : { ...row, secret: true };
@@ -1867,6 +2338,19 @@ function createMcpController(ctx, t) {
       probe,
       loadTools,
       restoreDefault,
+      startAuth,
+      /** 授权 on a card: same flow, without opening the detail. */
+      authorizeFromCard(name) { void startAuth(name, { fromCard: true }); },
+      completeAuth,
+      cancelAuth,
+      forgetAuth,
+      /** clientId | clientSecret | callbackUrl */
+      setAuthField(name, field, value) {
+        if (field !== 'clientId' && field !== 'clientSecret' && field !== 'callbackUrl') return;
+        setAuth(name, { [field]: String(value ?? ''), error: null });
+      },
+      /** Re-run `mcp-auth-check` for a URL (the add form's retry). */
+      recheckAuth(url) { void checkAuth(String(url ?? '').trim(), true); },
       askDelete(name) {
         ui.confirm = { name, busy: false, error: null };
         publish();
@@ -1924,7 +2408,6 @@ addDict({
   mcp_stUnknown: '状态未知',
   mcp_stLoading: '读取状态…',
   mcp_errGaveUp: '多次重试仍然失败，已停止重试',
-  mcp_errNoReconnect: '连接断开，且没有开启自动重连',
   mcp_errUnclosed: '上一个连接没有正常关闭，请重启 DSH',
   mcp_errCleanup: '没能确认进程已经退出，请重启 DSH',
   mcp_runtimeError: '无法读取运行状态：{reason}。正在重试…',
@@ -2045,6 +2528,58 @@ addDict({
   mcp_problemTemplate: '包含写法不正确的 ${credential:…}',
   mcp_problemPlugin: '插件已经注册了同名服务器',
   mcp_dismiss: '关闭提示',
+  mcp_stAutoRetry: '重新连接中（{attempt}/{max}）',
+  mcp_stReconnectFailed: '重连失败',
+  mcp_stNeedsAuth: '需要授权',
+  mcp_stAuthWaiting: '等待授权…',
+  mcp_stAuthDone: '授权成功，正在连接…',
+  mcp_autoRetryIn: '连接断开，{s} 秒后自动重连',
+  mcp_autoRetryNow: '连接断开，正在自动重连…',
+  mcp_gaveUpLine: '已自动重连 {n} 次仍失败',
+  mcp_failedManual: '连接失败，不会自动重试。检查配置后点「重试」。',
+  mcp_retry: '重试',
+  mcp_retryNow: '立即重试',
+  mcp_authorize: '授权',
+  mcp_authorizeName: '授权 {name}',
+  mcp_authNeeded: '这个服务器需要登录授权，授权后自动连接。',
+  mcp_authTokenOnly: '服务器拒绝了请求（401），但没有提供 OAuth 授权。请在请求头里填写访问令牌，例如 Authorization: Bearer …',
+  mcp_authReadOnly: '这个服务器需要授权，但它的配置不能在这里修改。',
+  mcp_authChecking: '正在检查是否需要授权…',
+  mcp_authOpened: '已在浏览器打开 {issuer} 的授权页，完成后会自动连接。',
+  mcp_authReopen: '重新打开授权页',
+  mcp_authNoRedirect: '浏览器没有跳回来？',
+  mcp_authCallbackHint: '授权完成后，把浏览器地址栏里的完整地址（以 {redirect} 开头）粘贴到这里。',
+  mcp_authCallbackLabel: '回调地址',
+  mcp_authComplete: '完成授权',
+  mcp_authExchanging: '正在获取令牌…',
+  mcp_authFlowError: '授权失败：{reason}',
+  mcp_reauthorize: '重新授权',
+  mcp_authClientRequired: '这个授权服务器不支持自动注册客户端。请填写在它那里注册的 Client ID。',
+  mcp_clientId: 'Client ID',
+  mcp_clientSecret: 'Client Secret（可选）',
+  mcp_errClientIdRequired: '请填写 Client ID',
+  mcp_errCallbackRequired: '请粘贴回调地址',
+  mcp_authSection: '授权',
+  mcp_authOk: '已授权 · {issuer}',
+  mcp_authIssuer: '授权服务器：{issuer}',
+  mcp_authExpiresRefresh: '令牌 {time}后过期，会自动续期',
+  mcp_authExpiresManual: '令牌 {time}后过期，过期后需要重新授权',
+  mcp_authRenewing: '令牌正在续期',
+  mcp_authNoRefresh: '过期后需要重新授权',
+  mcp_authExpired: '授权已失效，请重新授权',
+  mcp_authErrorState: '授权出错：{reason}',
+  mcp_signOut: '退出授权',
+  mcp_signedOut: '已退出 {name} 的授权',
+  mcp_durMin: '{n} 分钟',
+  mcp_durHour: '{n} 小时',
+  mcp_durDay: '{n} 天',
+  mcp_oauthManaged: '由 OAuth 授权管理',
+  mcp_oauthManagedTip: 'Authorization 请求头由 OAuth 授权管理',
+  mcp_checkOauth: '需要登录授权（{issuer}），添加后会打开授权页。',
+  mcp_checkToken: '服务器要求访问令牌（401）：请在请求头里填写。',
+  mcp_checkForbidden: '服务器拒绝访问（403）。',
+  mcp_checkUnreachable: '暂时连不上：{error}。仍可添加。',
+  mcp_addAuthorize: '添加并授权',
 }, {
   mcp_nav: 'MCP servers',
   mcp_title: 'MCP servers',
@@ -2084,7 +2619,6 @@ addDict({
   mcp_stUnknown: 'Status unknown',
   mcp_stLoading: 'Loading status…',
   mcp_errGaveUp: 'Stopped retrying after repeated failures',
-  mcp_errNoReconnect: 'The connection dropped and automatic reconnect is off',
   mcp_errUnclosed: 'The previous connection did not close. Restart DSH.',
   mcp_errCleanup: 'Could not confirm the process exited. Restart DSH.',
   mcp_runtimeError: 'Could not read server status: {reason}. Retrying…',
@@ -2205,6 +2739,58 @@ addDict({
   mcp_problemTemplate: 'Contains a malformed ${credential:…}',
   mcp_problemPlugin: 'A plugin already registers this name',
   mcp_dismiss: 'Dismiss',
+  mcp_stAutoRetry: 'Reconnecting ({attempt}/{max})',
+  mcp_stReconnectFailed: 'Reconnect failed',
+  mcp_stNeedsAuth: 'Needs authorization',
+  mcp_stAuthWaiting: 'Waiting for authorization…',
+  mcp_stAuthDone: 'Authorized. Connecting…',
+  mcp_autoRetryIn: 'Disconnected. Reconnecting automatically in {s}s',
+  mcp_autoRetryNow: 'Disconnected. Reconnecting automatically…',
+  mcp_gaveUpLine: 'Still failing after {n} automatic reconnects',
+  mcp_failedManual: 'Couldn’t connect, and DSH won’t retry on its own. Check the configuration, then select Retry.',
+  mcp_retry: 'Retry',
+  mcp_retryNow: 'Retry now',
+  mcp_authorize: 'Authorize',
+  mcp_authorizeName: 'Authorize {name}',
+  mcp_authNeeded: 'This server needs you to sign in. It connects automatically once authorized.',
+  mcp_authTokenOnly: 'The server rejected the request (401) but doesn’t offer OAuth sign-in. Add an access token in the request headers, for example Authorization: Bearer …',
+  mcp_authReadOnly: 'This server needs authorization, but its configuration can’t be changed here.',
+  mcp_authChecking: 'Checking whether sign-in is required…',
+  mcp_authOpened: 'Opened the {issuer} sign-in page in your browser. The server connects automatically when you finish.',
+  mcp_authReopen: 'Reopen sign-in page',
+  mcp_authNoRedirect: 'Browser didn’t come back here?',
+  mcp_authCallbackHint: 'After you sign in, paste the full address from the browser’s address bar (it starts with {redirect}).',
+  mcp_authCallbackLabel: 'Callback URL',
+  mcp_authComplete: 'Finish authorization',
+  mcp_authExchanging: 'Getting the token…',
+  mcp_authFlowError: 'Authorization failed: {reason}',
+  mcp_reauthorize: 'Authorize again',
+  mcp_authClientRequired: 'This authorization server doesn’t support automatic client registration. Enter the client ID registered with it.',
+  mcp_clientId: 'Client ID',
+  mcp_clientSecret: 'Client secret (optional)',
+  mcp_errClientIdRequired: 'Enter the client ID',
+  mcp_errCallbackRequired: 'Paste the callback URL',
+  mcp_authSection: 'Authorization',
+  mcp_authOk: 'Authorized · {issuer}',
+  mcp_authIssuer: 'Authorization server: {issuer}',
+  mcp_authExpiresRefresh: 'token expires in {time} and renews automatically',
+  mcp_authExpiresManual: 'token expires in {time}; authorize again after that',
+  mcp_authRenewing: 'renewing the token',
+  mcp_authNoRefresh: 'authorize again when the token expires',
+  mcp_authExpired: 'Authorization expired. Authorize again.',
+  mcp_authErrorState: 'Authorization error: {reason}',
+  mcp_signOut: 'Sign out',
+  mcp_signedOut: 'Signed out of {name}',
+  mcp_durMin: '{n} min',
+  mcp_durHour: '{n} h',
+  mcp_durDay: '{n} d',
+  mcp_oauthManaged: 'Managed by OAuth authorization',
+  mcp_oauthManagedTip: 'OAuth authorization manages the Authorization header',
+  mcp_checkOauth: 'Requires sign-in ({issuer}). The sign-in page opens after you add it.',
+  mcp_checkToken: 'The server requires an access token (401). Add it in the request headers.',
+  mcp_checkForbidden: 'The server denied access (403).',
+  mcp_checkUnreachable: 'Can’t reach the server right now: {error}. You can still add it.',
+  mcp_addAuthorize: 'Add and authorize',
 });
 
 // ---------------------------------------------------------------------------
@@ -2305,6 +2891,24 @@ addCss(`
 .${PREFIX}-mcp-danger { align-items: flex-start; }
 .${PREFIX}-mcp-danger .${PREFIX}-btn { margin-left: -14px; }
 
+.${PREFIX}-mcp-card .${PREFIX}-mcp-card-action { position: relative; z-index: 1; height: 22px; padding: 0 8px; }
+.${PREFIX}-mcp-detect[data-tone="info"] { color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-mcp-detect[data-tone="info"] > svg { color: var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); }
+a.${PREFIX}-mcp-link-btn { text-decoration: none; }
+.${PREFIX}-mcp-link-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary))); }
+.${PREFIX}-mcp-auth-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 6px; color: var(--dsw-alias-label-primary); }
+.${PREFIX}-mcp-auth-callback { display: flex; gap: 6px; align-items: center; }
+.${PREFIX}-mcp-auth-callback .${PREFIX}-input { flex: 1 1 auto; }
+.${PREFIX}-mcp-auth-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.${PREFIX}-mcp-auth-line .${PREFIX}-mcp-status-line { flex: 1 1 240px; min-width: 0; flex-wrap: nowrap; align-items: flex-start; }
+.${PREFIX}-mcp-auth-line .${PREFIX}-dot { margin-top: 6px; }
+.${PREFIX}-mcp-auth-error { color: var(--dsw-alias-state-error-primary); }
+.${PREFIX}-mcp-kv-lock { display: inline-flex; justify-content: center; color: var(--dsw-alias-label-tertiary); }
+.${PREFIX}-mcp-kv-row[data-oauth] .${PREFIX}-input { color: var(--dsw-alias-label-tertiary); }
+.${PREFIX}-mcp-kv-row[data-oauth] .${PREFIX}-input:not(.${PREFIX}-mono) { font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, sans-serif); font-size: 13px; }
+.${PREFIX}-mcp-auth-pending { display: flex; flex-direction: column; gap: 4px; }
+.${PREFIX}-mcp-auth-pending .${PREFIX}-alert-actions { margin: 4px 0 2px; }
+
 @media (prefers-reduced-motion: reduce) {
   .${PREFIX}-mcp-notice { animation: none; }
   .${PREFIX}-mcp-card-link { transition: none; }
@@ -2370,11 +2974,12 @@ function McpArgChips({ t, words }) {
 
 // -- List ---------------------------------------------------------------------
 
-function McpCard({ api, server, runtimeStatus, writable }) {
+function McpCard({ api, server, writable, auth }) {
   const { t } = api;
   const id = mcpDomId(useId());
-  const info = mcpStatusInfo(server.status, server.enabled, runtimeStatus);
+  const info = server.info;
   const summary = info.summary ? mcpFirstLine(mcpErrorSummary(t, info)) : '';
+  const authorize = info.kind === 'auth' && server.authMode === 'oauth' && writable;
   const origin = mcpOriginLabel(t, server.origin);
   const described = [`${id}-cmd`, `${id}-meta`, summary ? `${id}-err` : null].filter(Boolean).join(' ');
   return h('li', { className: cx(`${PREFIX}-card`, `${PREFIX}-mcp-card`), 'data-off': server.enabled ? undefined : 'true' },
@@ -2393,6 +2998,10 @@ function McpCard({ api, server, runtimeStatus, writable }) {
     }, server.summary || (server.origin === 'plugin' ? t('mcp_pluginLine') : '\u00a0')),
     h('div', { id: `${id}-meta`, className: `${PREFIX}-mcp-card-meta` },
       h('span', { className: `${PREFIX}-mcp-card-status`, 'data-tone': info.tone }, mcpStatusLabel(t, info)),
+      authorize ? h(Button, {
+        size: 'sm', className: `${PREFIX}-mcp-card-action`, busy: auth?.busy === 'start', disabled: Boolean(auth?.busy),
+        'aria-label': fill(t('mcp_authorizeName'), { name: server.name }), onClick: () => api.authorizeFromCard(server.name),
+      }, t('mcp_authorize')) : null,
       server.transport || origin ? h('span', { className: `${PREFIX}-mcp-card-tags` },
         server.transport ? h(Tag, { tone: 'outline' }, t(server.transport === 'stdio' ? 'mcp_local' : 'mcp_remote')) : null,
         origin ? h(Tag, { tone: 'neutral' }, origin) : null) : null),
@@ -2477,7 +3086,7 @@ function McpListView({ api, state }) {
       servers.length > 6 ? h(SearchInput, { value: state.query, onValue: api.setQuery, placeholder: t('mcp_search'), t }) : null,
       shown.length
         ? h('ul', { className: `${PREFIX}-mcp-grid` }, shown.map((server) => h(McpCard, {
-          key: server.name, api, server, runtimeStatus: runtime.status, writable: config.writable,
+          key: server.name, api, server, writable: config.writable, auth: state.auth[server.name],
         })))
         : h('p', { className: `${PREFIX}-mcp-empty-note`, role: 'status' }, fill(t('mcp_noMatch'), { q: state.query.trim() })),
       config.writable ? h('button', { type: 'button', className: `${PREFIX}-add-row`, 'data-mcp-add': '', onClick: api.openAdd },
@@ -2554,6 +3163,13 @@ function McpKvEditor({ api, draft, kind, credInfo }) {
   return h('div', { className: `${PREFIX}-mcp-kv`, style: { '--mcp-key-ch': keyCh } },
     rows.map((row) => {
       const base = `${kind}:${row.id}`;
+      if (row.oauth) {
+        return h('div', { key: row.id, className: `${PREFIX}-mcp-kv-row`, 'data-oauth': 'true', title: t('mcp_oauthManagedTip') },
+          h(TextInput, { id: mcpFieldDomId(`${base}:key`), mono: true, value: row.key, readOnly: true, 'aria-label': t('mcp_kvKey') }),
+          h(TextInput, { id: mcpFieldDomId(`${base}:value`), value: t('mcp_oauthManaged'), readOnly: true, 'aria-label': fill(t('mcp_kvValueOf'), { key: row.key }) }),
+          h('span', { className: `${PREFIX}-mcp-kv-lock`, 'aria-hidden': true }, Icon.lock(14)),
+          h('span', null));
+      }
       const keyError = errors[`${base}:key`];
       const valueError = errors[`${base}:value`];
       const info = row.ref ? credInfo[row.ref] : undefined;
@@ -2592,6 +3208,19 @@ function McpKvEditor({ api, draft, kind, credInfo }) {
     h(Button, {
       variant: 'ghost', size: 'sm', icon: Icon.plus(12), className: `${PREFIX}-mcp-kv-add`, onClick: () => api.addKv(kind),
     }, t(kind === 'env' ? 'mcp_addEnv' : 'mcp_addHeader')));
+}
+
+/** What `mcp-auth-check` found for the add form's URL. */
+function McpAuthCheckLine({ t, check }) {
+  if (!check) return null;
+  if (check.status === 'loading') {
+    return h('p', { className: `${PREFIX}-mcp-detect`, role: 'status' }, h(Spinner, { size: 12 }), t('mcp_authChecking'));
+  }
+  if (check.kind === 'oauth') return h('p', { className: `${PREFIX}-mcp-detect`, 'data-tone': 'info', role: 'status' }, Icon.lock(12), fill(t('mcp_checkOauth'), { issuer: check.issuer }));
+  if (check.kind === 'token') return h('p', { className: `${PREFIX}-mcp-detect`, 'data-tone': 'warn', role: 'status' }, Icon.warning(12), t('mcp_checkToken'));
+  if (check.kind === 'forbidden') return h('p', { className: `${PREFIX}-mcp-detect`, 'data-tone': 'warn', role: 'status' }, Icon.warning(12), t('mcp_checkForbidden'));
+  if (check.kind === 'unreachable') return h('p', { className: `${PREFIX}-mcp-detect`, role: 'status' }, fill(t('mcp_checkUnreachable'), { error: check.error || t('c_unknownError') }));
+  return null;
 }
 
 /** The add / edit form. `mode` add shows the name field and "Add and connect". */
@@ -2672,7 +3301,8 @@ function McpServerForm({ api, state, draft, mode }) {
         h(TextInput, {
           id: fieldId('url'), mono: true, value: draft.url, inputMode: 'url', invalid: Boolean(errors.url),
           placeholder: 'https://mcp.example.com/mcp', onValue: api.setUrl, onPaste: pasteHandler(api.pasteUrl),
-        })),
+        }),
+        mode === 'add' ? h(McpAuthCheckLine, { t, check: draft.auth }) : null),
     h('div', { className: `${PREFIX}-field`, role: 'group', 'aria-labelledby': `${groupId}-kv` },
       h('div', { className: `${PREFIX}-field-head` },
         h('span', { id: `${groupId}-kv`, className: cx(`${PREFIX}-field-label`, `${PREFIX}-mcp-group-label`) },
@@ -2703,7 +3333,7 @@ function McpServerForm({ api, state, draft, mode }) {
       h('div', { className: `${PREFIX}-actions-end` },
         h(Button, { onClick: mode === 'add' ? api.back : api.resetDraft, disabled: mode === 'edit' && !draft.dirty }, t('c_cancel')),
         h(Button, { type: 'submit', variant: 'primary', busy: draft.saving, disabled: mode === 'edit' && !draft.dirty },
-          mode === 'add' ? t('mcp_addConnect') : t('c_save'))))));
+          mode === 'add' ? t(draft.auth?.authorizeOnAdd ? 'mcp_addAuthorize' : 'mcp_addConnect') : t('c_save'))))));
 }
 
 function McpFormView({ api, state }) {
@@ -2749,13 +3379,13 @@ function McpProbeResult({ t, probe }) {
     unclosed);
 }
 
-function McpStatusBlock({ api, server, info, now }) {
+function McpStatusBlock({ api, server, info, now, auth }) {
   const { t } = api;
   const status = server.status;
-  const restartButton = h(Button, {
+  const retryButton = (labelKey) => h(Button, {
     size: 'sm', icon: Icon.refresh(12), busy: server.busy === 'restart', disabled: Boolean(server.busy),
     onClick: () => api.restart(server.name),
-  }, t('mcp_restart'));
+  }, t(labelKey));
   if (!server.enabled) return h('p', { className: `${PREFIX}-mcp-status-line` }, t('mcp_disabledLine'));
   if (!mcpIsObject(status) || info.tone === 'busy') {
     const waiting = info.tone === 'busy' || info.label === 'mcp_stLoading';
@@ -2767,20 +3397,144 @@ function McpStatusBlock({ api, server, info, now }) {
     return h('p', { className: `${PREFIX}-mcp-status-line` }, h(StatusDot, { tone: 'success' }),
       fill(t(n === 1 ? 'mcp_connectedLineOne' : 'mcp_connectedLine'), { n, ago }));
   }
+  if (info.kind === 'auth') {
+    const text = mcpErrorSummary(t, info);
+    if (server.authMode === 'oauth') {
+      return h(Alert, {
+        tone: 'warn', title: t('mcp_authNeeded'),
+        actions: h(Button, {
+          variant: 'primary', size: 'sm', icon: Icon.lock(12), busy: auth?.busy === 'start' || auth?.busy === 'header', disabled: Boolean(auth?.busy),
+          onClick: () => api.startAuth(server.name),
+        }, t('mcp_authorize')),
+      }, auth?.error ? h('span', { role: 'alert', className: `${PREFIX}-mcp-auth-error` }, mcpMessage(t, auth.error)) : null);
+    }
+    return h(Alert, {
+      tone: 'warn', title: t(server.authMode === 'token' ? 'mcp_authTokenOnly' : 'mcp_authReadOnly'),
+      actions: retryButton('mcp_retry'),
+    }, text ? h(McpErrorText, { t, text }) : null);
+  }
   if (!info.block) {
     return h('div', { className: `${PREFIX}-mcp-status-line` },
-      h('span', null, info.closed ? t('mcp_closedLine') : mcpStatusLabel(t, info)), restartButton);
+      h('span', null, info.closed ? t('mcp_closedLine') : mcpStatusLabel(t, info)), retryButton('mcp_restart'));
   }
   let title = mcpStatusLabel(t, info);
-  if (status.state === 'reconnecting' && typeof status.nextRetryAtMs === 'number') {
-    const seconds = Math.ceil((status.nextRetryAtMs - now) / 1000);
+  let action = 'mcp_restart';
+  if (info.kind === 'retrying') {
+    const seconds = Math.ceil((Number(info.nextAt) - now) / 1000);
+    title = seconds > 0 ? fill(t('mcp_autoRetryIn'), { s: seconds }) : t('mcp_autoRetryNow');
+    action = 'mcp_retryNow';
+  } else if (info.kind === 'gave-up') {
+    title = fill(t('mcp_gaveUpLine'), { n: info.attempts });
+    action = 'mcp_retry';
+  } else if (info.kind === 'failed') {
+    title = t('mcp_failedManual');
+    action = 'mcp_retry';
+  } else if (info.kind === 'dsh-retrying' && typeof info.nextAt === 'number') {
+    const seconds = Math.ceil((info.nextAt - now) / 1000);
     if (seconds > 0 && seconds < 3600) title = `${title} · ${fill(t('mcp_retryIn'), { s: seconds })}`;
   }
   const text = mcpErrorSummary(t, info);
   return h(Alert, {
     tone: info.tone === 'error' ? 'error' : 'warn', title,
-    actions: restartButton,
+    actions: retryButton(action),
   }, text ? h(McpErrorText, { t, text }) : null);
+}
+
+/**
+ * The authorization flow in the detail's status area: client ID entry when the
+ * server needs one, the pending flow (reopen link, cancel, paste-the-callback),
+ * token exchange, and a failed flow.
+ */
+function McpAuthFlowPanel({ api, server, auth }) {
+  const { t } = api;
+  const name = server.name;
+  const id = mcpDomId(useId());
+  const flow = auth.flow;
+  const error = auth.error ? h('p', { className: `${PREFIX}-field-error`, role: 'alert' }, mcpMessage(t, auth.error)) : null;
+  const active = flow && (flow.status === 'pending' || flow.status === 'exchanging');
+  if (auth.clientRequired && !active) {
+    const submit = (event) => { if (event.key === 'Enter') { event.preventDefault(); api.startAuth(name); } };
+    return h(Alert, {
+      tone: 'info', title: t('mcp_authClientRequired'),
+      actions: h(Fragment, null,
+        h(Button, { variant: 'primary', size: 'sm', icon: Icon.lock(12), busy: auth.busy === 'start', disabled: Boolean(auth.busy), onClick: () => api.startAuth(name) }, t('mcp_authorize')),
+        h(Button, { size: 'sm', disabled: Boolean(auth.busy), onClick: () => api.cancelAuth(name) }, t('c_cancel'))),
+    },
+    h('div', { className: `${PREFIX}-mcp-auth-fields` },
+      h(Field, { label: t('mcp_clientId'), htmlFor: `${id}-cid`, required: true, t },
+        h(TextInput, { id: `${id}-cid`, mono: true, value: auth.clientId, autoFocus: true, onValue: (value) => api.setAuthField(name, 'clientId', value), onKeyDown: submit })),
+      h(Field, { label: t('mcp_clientSecret'), htmlFor: `${id}-cs`, t },
+        h(TextInput, { id: `${id}-cs`, mono: true, type: 'password', autoComplete: 'new-password', value: auth.clientSecret, onValue: (value) => api.setAuthField(name, 'clientSecret', value), onKeyDown: submit }))),
+    error);
+  }
+  if (!flow) return null;
+  if (flow.status === 'error') {
+    return h(Alert, {
+      tone: 'error', title: fill(t('mcp_authFlowError'), { reason: flow.error || t('c_unknownError') }),
+      actions: h(Button, { variant: 'primary', size: 'sm', icon: Icon.lock(12), busy: auth.busy === 'start', disabled: Boolean(auth.busy), onClick: () => api.startAuth(name) }, t('mcp_reauthorize')),
+    }, error);
+  }
+  if (flow.status === 'exchanging') {
+    return h('p', { className: `${PREFIX}-mcp-status-line`, role: 'status' }, h(Spinner, { size: 12 }), t('mcp_authExchanging'));
+  }
+  if (flow.status !== 'pending') return null;
+  const issuer = mcpObject(server.host.auth).issuer || mcpUrlHost(flow.authUrl);
+  // Actions sit right under the message; the paste-the-callback fallback comes last.
+  return h(Alert, { tone: 'info', title: fill(t('mcp_authOpened'), { issuer }) },
+    h('div', { className: `${PREFIX}-mcp-auth-pending` },
+      h('div', { className: `${PREFIX}-alert-actions` },
+        flow.authUrl ? h('a', {
+          className: cx(`${PREFIX}-btn`, `${PREFIX}-mcp-link-btn`), 'data-variant': 'secondary', 'data-size': 'sm',
+          href: flow.authUrl, target: '_blank', rel: 'noopener noreferrer',
+        }, Icon.globe(12), h('span', null, t('mcp_authReopen'))) : null,
+        h(Button, { size: 'sm', busy: auth.busy === 'cancel', disabled: Boolean(auth.busy), onClick: () => api.cancelAuth(name) }, t('c_cancel'))),
+  h(Disclosure, { title: t('mcp_authNoRedirect') },
+    h('p', { className: `${PREFIX}-mcp-detect` }, fill(t('mcp_authCallbackHint'), { redirect: flow.redirectUri || 'http://localhost' })),
+    h('div', { className: `${PREFIX}-mcp-auth-callback` },
+      h(TextInput, {
+        mono: true, value: auth.callbackUrl, placeholder: `${flow.redirectUri || 'http://localhost'}?code=…`, 'aria-label': t('mcp_authCallbackLabel'),
+        onValue: (value) => api.setAuthField(name, 'callbackUrl', value),
+        onKeyDown: (event) => { if (event.key === 'Enter') { event.preventDefault(); api.completeAuth(name); } },
+      }),
+      h(Button, { size: 'sm', busy: auth.busy === 'complete', disabled: Boolean(auth.busy), onClick: () => api.completeAuth(name) }, t('mcp_authComplete')))),
+  error));
+}
+
+/** 授权 section of an authorized server: who, how long, re-authorize / sign out. */
+function McpAuthSection({ api, server, auth, now }) {
+  const { t } = api;
+  const headingId = `${mcpDomId(useId())}-auth`;
+  const grant = mcpObject(server.host.auth);
+  const issuer = mcpStr(grant.issuer);
+  const busy = Boolean(auth?.busy);
+  const actions = h(Fragment, null,
+    h(Button, { size: 'sm', icon: Icon.lock(12), busy: auth?.busy === 'start', disabled: busy, onClick: () => api.startAuth(server.name) }, t('mcp_reauthorize')),
+    h(Button, { size: 'sm', variant: 'ghost', busy: auth?.busy === 'forget', disabled: busy, onClick: () => api.forgetAuth(server.name) }, t('mcp_signOut')));
+  let body;
+  if (grant.state === 'expired' || grant.state === 'error') {
+    body = h(Alert, {
+      tone: 'warn',
+      title: grant.state === 'expired' ? t('mcp_authExpired') : fill(t('mcp_authErrorState'), { reason: mcpStr(grant.error) || t('c_unknownError') }),
+      actions,
+    }, issuer ? fill(t('mcp_authIssuer'), { issuer }) : null);
+  } else {
+    const until = mcpUntil(grant.expiresAt, now);
+    const unit = until ? fill(t(until.unit === 'min' ? 'mcp_durMin' : until.unit === 'hour' ? 'mcp_durHour' : 'mcp_durDay'), { n: until.n }) : '';
+    let expiry = '';
+    if (typeof grant.expiresAt === 'number') {
+      if (!until) expiry = grant.canRefresh ? t('mcp_authRenewing') : t('mcp_authExpired');
+      else expiry = fill(t(grant.canRefresh ? 'mcp_authExpiresRefresh' : 'mcp_authExpiresManual'), { time: unit });
+    } else if (!grant.canRefresh) {
+      expiry = t('mcp_authNoRefresh');
+    }
+    body = h('div', { className: `${PREFIX}-mcp-auth-line` },
+      h('span', { className: `${PREFIX}-mcp-status-line` }, h(StatusDot, { tone: 'success' }),
+        h('span', null, [fill(t('mcp_authOk'), { issuer: issuer || '—' }), expiry].filter(Boolean).join(' · '))),
+      h('span', { className: `${PREFIX}-actions-end` }, actions));
+  }
+  return h('section', { className: `${PREFIX}-section`, 'aria-labelledby': headingId },
+    h(SectionHeading, { id: headingId, title: t('mcp_authSection') }),
+    body);
 }
 
 function McpToolsSection({ api, server, state }) {
@@ -2831,12 +3585,14 @@ function McpToolsSection({ api, server, state }) {
 function McpDetailView({ api, state, name }) {
   const { t } = api;
   const server = state.servers.find((item) => item.name === name);
-  const reconnecting = server?.status?.state === 'reconnecting';
+  // Countdowns tick every second only while a retry is scheduled.
+  const ticking = server?.info?.kind === 'retrying' || server?.info?.kind === 'dsh-retrying';
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), reconnecting ? 1000 : 15000);
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), ticking ? 1000 : 15000);
     return () => clearInterval(timer);
-  }, [reconnecting]);
+  }, [ticking]);
   const configHeading = `${mcpDomId(useId())}-config`;
   const back = h(BackBar, { label: t('mcp_title'), onBack: api.back, t });
   if (!server) {
@@ -2845,7 +3601,17 @@ function McpDetailView({ api, state, name }) {
         ? h('div', { className: `${PREFIX}-skeleton`, 'aria-busy': 'true', 'aria-label': t('c_loading') })
         : h('p', { className: `${PREFIX}-mcp-empty-note` }, t('mcp_notFound')));
   }
-  const info = mcpStatusInfo(server.status, server.enabled, state.runtime.status);
+  const info = server.info;
+  const auth = state.auth[name] ?? {};
+  const flow = auth.flow;
+  const flowShown = Boolean(flow && (flow.status === 'pending' || flow.status === 'exchanging' || flow.status === 'error'));
+  const panel = flowShown || (auth.clientRequired && server.enabled) ? h(McpAuthFlowPanel, { api, server, auth }) : null;
+  // The flow panel replaces the "needs authorization" alert; on a working server it sits under the status line.
+  const authErrorShown = Boolean(panel) || (info.kind === 'auth' && server.authMode === 'oauth');
+  const statusArea = panel && (info.kind === 'auth' || info.kind === 'auth-flow')
+    ? panel
+    : h(Fragment, null, h(McpStatusBlock, { api, server, info, now, auth }), panel,
+      !authErrorShown && auth.error ? h('p', { className: `${PREFIX}-field-error`, role: 'alert' }, mcpMessage(t, auth.error)) : null);
   const draft = state.draft && state.draft.mode === 'edit' && state.draft.target === name ? state.draft : null;
   const writable = state.config.writable;
   const inherited = server.origin === 'inherited' || server.origin === 'overridden';
@@ -2880,8 +3646,9 @@ function McpDetailView({ api, state, name }) {
       }),
     }),
     h(McpNotice, { api, notice: state.notice }),
-    h(McpStatusBlock, { api, server, info, now }),
+    statusArea,
     h(McpToolsSection, { api, server, state }),
+    server.transport === 'streamable-http' && mcpIsObject(server.host.auth) ? h(McpAuthSection, { api, server, auth, now }) : null,
     h('section', { className: `${PREFIX}-section`, 'aria-labelledby': configHeading },
       h(SectionHeading, { id: configHeading, title: t('mcp_config') }),
       configBody),

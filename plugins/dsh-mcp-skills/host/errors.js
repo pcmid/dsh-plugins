@@ -3,9 +3,10 @@
  * Failures carry `details: {}` because the Client Connection RPC parser requires an object there.
  */
 
-/** Error codes of the Host API contract (docs/host-api.md). */
+/** Error codes of the Host API contract (docs/host-api.md, docs/auth-retry.md). */
 export const ERROR_CODES = new Set([
   'bad-request', 'not-found', 'exists', 'forbidden', 'invalid', 'git-failed', 'unavailable', 'internal',
+  'oauth-client-required', 'oauth-failed',
 ])
 
 /** An expected failure that becomes `{ ok: false, error: { code, message } }`. */
