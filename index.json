@@ -155,16 +155,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.3.0"
+        "latest": "0.3.1"
       },
       "versions": [
         {
-          "version": "0.3.0",
-          "publishTimestamp": 1794464792,
+          "version": "0.3.1",
+          "publishTimestamp": 1794470711,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "94fd52ad2c2658f085166d0116723577bdbbc1f0",
+            "commit": "72fb763f5a777560f7218f05ab5ddb66389eb489",
             "path": "plugins/dsh-retry-advisor"
           },
           "engines": {
