@@ -25,6 +25,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-auto-restart`](plugins/dsh-auto-restart) | 本仓库 | 工具与能力 | agent 运行中 Harness 被退出、重启或崩溃时，下次启动后自动继续这些会话 |
 | [`@pcmid/dsh-remote-relay`](plugins/dsh-remote-relay) | 本仓库 | 工具与能力 | 通过自建的 OpenChamber relay 从手机或其他电脑远程使用 DSH，端到端加密 |
 | [`@pcmid/dsh-todo-guard`](plugins/dsh-todo-guard) | 本仓库 | 工具与能力 | agent 连续多步没更新 `todo_write` 任务列表时提醒它更新；可选在回合结束时把剩余任务标为完成 |
+| [`@pcmid/dsh-mcp-skills`](plugins/dsh-mcp-skills) | 本仓库 | 工具与能力 | 在设置里添加、测试和管理 MCP 服务器与技能：粘贴命令或 JSON 即可添加 MCP，密钥存凭据库；技能可新建、编辑，并从技能仓库（GitHub 或本地文件夹）安装和更新 |
 | [`@pcmid/dsh-workspace-agent-preset`](plugins/dsh-workspace-agent-preset) | 本仓库 | 工具与能力 | 在工作区菜单里为工作区选择 Agent 预设，该工作区打开的新会话默认使用它 |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 

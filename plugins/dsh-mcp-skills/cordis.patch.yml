@@ -1,0 +1,6 @@
+# Bundle patch of @pcmid/dsh-mcp-skills. The Host half serves skill files and
+# MCP tool listings to the two Settings pages; MCP servers themselves stay in the
+# shipped `mcp-manager` row's settings, which the MCP page edits.
+- insert:
+    - id: mcp-skills
+      name: '@pcmid/dsh-mcp-skills'
