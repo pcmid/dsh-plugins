@@ -284,16 +284,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.2.4"
+        "latest": "0.2.5"
       },
       "versions": [
         {
-          "version": "0.2.4",
-          "publishTimestamp": 1794449998,
+          "version": "0.2.5",
+          "publishTimestamp": 1794451792,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "c0e583016122486d7a7ea74eec50c594089efcc2",
+            "commit": "160ecb71aa051bc49607028f405fa36b74532b3c",
             "path": "plugins/dsh-remote-relay"
           },
           "engines": {
