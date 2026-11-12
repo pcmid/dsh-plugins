@@ -11,7 +11,7 @@
  *
  * The identity key and the paired-device list live in `ctx.credentials` records. Pairing offers
  * are one-time, short-lived, and kept in memory only. The Client half manages everything through
- * exact `/api/remote-relay/*` Connection routes and the row's volatile Config fields.
+ * exact `/api/pcmid/remote-relay/*` Connection routes and the row's volatile Config fields.
  *
  * @module @pcmid/dsh-remote-relay
  */
@@ -44,7 +44,7 @@ export const Config = z.object({
 })
 
 /** Exact `/api` routes this plugin answers; only owner Peers reach exact routes. */
-const API_PREFIX = '/api/remote-relay'
+const API_PREFIX = '/api/pcmid/remote-relay'
 const OPERATIONS = [
   'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close',
   'last-session', 'session-opened',

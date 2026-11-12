@@ -192,7 +192,7 @@ export class RemoteDevices {
       const body = JSON.stringify({ type: 'client-request', rpcId: 'forget', payload: { id: remote.deviceId } })
       const abort = new AbortController()
       const answer = session.remote
-        .request({ method: 'POST', path: '/api/remote-relay/revoke', headers: [['content-type', 'application/json']], body }, abort.signal)
+        .request({ method: 'POST', path: '/api/pcmid/remote-relay/revoke', headers: [['content-type', 'application/json']], body }, abort.signal)
         .then(async (response) => {
           const text = response.body === null ? '' : await new Response(response.body).text()
           try { return JSON.parse(text)?.result?.ok === true } catch (_invalid) { return false }

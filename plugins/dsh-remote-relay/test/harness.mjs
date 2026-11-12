@@ -35,7 +35,7 @@ export const COOKIE = 'dsh-auth-test=v1.signed'
 
 /**
  * Fake DSH Web GUI: token exchange, cookie-gated routes, and a cookie-gated echo WebSocket.
- * Assign `rpc` on the result to answer `/api/remote-relay/<endpoint>` like the plugin's own routes.
+ * Assign `rpc` on the result to answer `/api/pcmid/remote-relay/<endpoint>` like the plugin's own routes.
  */
 export async function startFakeGui() {
   const seen = []
@@ -61,11 +61,11 @@ export async function startFakeGui() {
       const chunks = []
       for await (const chunk of req) chunks.push(chunk)
       res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'leak=1' }).end(JSON.stringify({ body: Buffer.concat(chunks).toString(), method: req.method }))
-    } else if (url.pathname.startsWith('/api/remote-relay/') && gui.rpc !== undefined) {
+    } else if (url.pathname.startsWith('/api/pcmid/remote-relay/') && gui.rpc !== undefined) {
       const chunks = []
       for await (const chunk of req) chunks.push(chunk)
       const envelope = JSON.parse(Buffer.concat(chunks).toString())
-      const result = await gui.rpc(url.pathname.slice('/api/remote-relay/'.length), envelope.payload)
+      const result = await gui.rpc(url.pathname.slice('/api/pcmid/remote-relay/'.length), envelope.payload)
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ rpcId: envelope.rpcId, result }))
     } else if (url.pathname === '/asset.js') {
       const body = gzipSync(Buffer.from('window.__assetLoaded = true;' + '/* padding */'.repeat(2000)))
@@ -98,8 +98,8 @@ export function fakeContext(origin, settings) {
       authenticatedUrl: (base) => `${base}?token=${TOKEN}`,
       fetch: {
         register: (route) => {
-          assert.ok(route.path.startsWith('/api/remote-relay/'))
-          routes.set(route.path.slice('/api/remote-relay/'.length), route)
+          assert.ok(route.path.startsWith('/api/pcmid/remote-relay/'))
+          routes.set(route.path.slice('/api/pcmid/remote-relay/'.length), route)
           return async () => {}
         },
       },
@@ -125,7 +125,7 @@ export function fakeContext(origin, settings) {
     config,
     records,
     call: async (endpoint, payload = {}) => {
-      const request = new Request('http://dsh.invalid/api/remote-relay/' + endpoint, {
+      const request = new Request('http://dsh.invalid/api/pcmid/remote-relay/' + endpoint, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ type: 'client-request', rpcId: 'rpc-1', method: endpoint, payload }),

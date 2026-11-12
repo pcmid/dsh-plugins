@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     const NS = 'settings.remoteRelay';
     const NAMESPACE = 'remote-relay';
     const CHANNEL = '/api';
-    const ENDPOINT = 'remote-relay';
+    const ENDPOINT = 'pcmid/remote-relay';
     const PREFIX = 'dsh-rr';
     const POLL_MS = 2000;
     const NOTICE_MS = 1600;

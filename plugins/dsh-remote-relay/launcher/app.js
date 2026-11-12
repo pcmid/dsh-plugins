@@ -209,7 +209,7 @@ async function fetchLastSession(remote) {
     const envelope = JSON.stringify({ type: 'client-request', rpcId: crypto.randomUUID(), method: 'last-session', payload: {} })
     const response = await remote.request({
       method: 'POST',
-      path: '/api/remote-relay/last-session',
+      path: '/api/pcmid/remote-relay/last-session',
       headers: [['content-type', 'application/json'], ['accept-encoding', 'identity']],
       body: encoder.encode(envelope),
     }, AbortSignal.timeout(5000))
