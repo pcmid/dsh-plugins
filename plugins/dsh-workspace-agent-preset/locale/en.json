@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Workspace agent presets",
+    "description": "Adds \"Agent preset\" to the workspace menu. New sessions opened in a workspace start with the preset chosen for it."
+  }
+}

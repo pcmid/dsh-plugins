@@ -25,6 +25,7 @@
     { "path": "plugins/dsh-auto-restart", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-remote-relay", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-todo-guard", "category": "tools", "labels": ["own"] },
+    { "path": "plugins/dsh-workspace-agent-preset", "category": "tools", "labels": ["own"] },
     { "git": "https://github.com/pcmid/dsh-token-usage", "commit": "247c846fb7f39badd5cf2d61832cccebd6a7b626", "category": "usage", "labels": ["external"] }
   ]
 }

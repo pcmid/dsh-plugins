@@ -1,0 +1,54 @@
+{
+  "name": "@pcmid/dsh-workspace-agent-preset",
+  "version": "0.1.0",
+  "description": "Choose an agent preset per workspace from the workspace menu; new sessions opened in that workspace start with it.",
+  "author": "pcmid",
+  "license": "MIT",
+  "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-workspace-agent-preset#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-workspace-agent-preset"
+  },
+  "private": true,
+  "type": "module",
+  "engines": {
+    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "route.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/route.test.mjs test/client.test.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-context-menu",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-agent-preset"
+      ]
+    }
+  }
+}

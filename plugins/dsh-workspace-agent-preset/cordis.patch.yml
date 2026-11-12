@@ -1,0 +1,6 @@
+# Bundle patch of @pcmid/dsh-workspace-agent-preset. The workspace → preset
+# table is this row's volatile `workspaces` Config; the workspace menu writes it
+# into the profile's user patch layer, so this row ships empty.
+- insert:
+    - id: workspace-agent-preset
+      name: '@pcmid/dsh-workspace-agent-preset'
