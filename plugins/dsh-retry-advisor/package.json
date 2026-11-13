@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-retry-advisor",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Asks a model to analyze model-request failures that no built-in handler retries, and retries when the analysis says a resend can succeed.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-retry-advisor#readme",
@@ -12,7 +12,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
   },
   "exports": {
     ".": "./index.js",
@@ -48,9 +48,7 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-ui-chat",
-        "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-plugin-manager"
+        "@deepseek-ai/dsh-client-ui-chat"
       ]
     }
   }
