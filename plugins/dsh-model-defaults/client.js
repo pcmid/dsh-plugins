@@ -13,7 +13,10 @@ window.__ModuleLoader__.load({
       conversation: 'agent-default-model',
       permission: 'permission',
       agent: 'agent-preset-registry',
+      team: 'model-defaults',
     };
+    /** This bundle's own volatile Host Config field behind the teamwork switch. */
+    const TEAM_FIELD = 'agentTeams';
     /** Host dictionary keys for shipped permission presets; Harness owns these names. */
     const PERMISSION_LABEL_KEYS = {
       'read-only': 'preset.readOnly',
@@ -38,6 +41,8 @@ window.__ModuleLoader__.load({
       modelTip: '新会话始终使用这个模型。在输入框切换模型只影响当前会话。',
       agentLabel: '智能体',
       agentTip: '新会话默认使用的智能体。已开始的会话不受影响。',
+      teamLabel: '团队协作',
+      teamTip: '新会话是否默认开启智能体团队协作。团队协作通过共享任务板协调多个智能体分工，复杂任务效果更好，token 开销也更高。已开始的会话不受影响，也可以在会话的输入框里单独开关。',
       permissionLabel: '权限',
       permissionTip: '新会话的默认权限，不影响已开始的会话。当前会话的权限在输入框切换。',
       chooseModel: '选择模型',
@@ -66,6 +71,8 @@ window.__ModuleLoader__.load({
       modelTip: 'New sessions always start with this model. Switching models in the composer only affects the current session.',
       agentLabel: 'Agent',
       agentTip: 'The agent new sessions start with. Sessions already started keep theirs.',
+      teamLabel: 'Agent teamwork',
+      teamTip: 'Whether new sessions start with agent teamwork, which coordinates several agents through a shared task board: better on complex tasks, at a higher token cost. Sessions already started keep theirs; switch one in its composer.',
       permissionLabel: 'Permissions',
       permissionTip: 'The default permissions for new sessions. Sessions already started keep theirs; switch the current one in the composer.',
       chooseModel: 'Choose a model',
@@ -133,6 +140,12 @@ ${SECTION} > ul { margin-top: 0; }
 .${PREFIX}-checkbox input { flex: none; width: 16px; height: 16px; margin: 0; accent-color: var(--dsw-alias-brand-primary); cursor: inherit; }
 .${PREFIX}-checkbox input:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); outline-offset: 2px; }
 .${PREFIX}-checkbox:has(input:disabled) { cursor: default; opacity: 0.5; }
+.${PREFIX}-switch { box-sizing: border-box; position: relative; flex: none; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; corner-shape: round; background: var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); cursor: pointer; transition: background-color 120ms ease; }
+.${PREFIX}-switch[aria-checked="true"] { background: var(--dsw-alias-brand-primary); }
+.${PREFIX}-switch:disabled { cursor: default; opacity: 0.5; }
+.${PREFIX}-switch:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); outline-offset: 2px; }
+.${PREFIX}-switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; corner-shape: round; background: var(--dsw-alias-switch-thumb, var(--dsw-alias-bg-layer-1)); transition: transform 120ms ease; }
+.${PREFIX}-switch[aria-checked="true"] .${PREFIX}-switch-thumb { transform: translateX(16px); background: var(--dsw-alias-label-primary-foreground, var(--dsw-alias-bg-layer-1)); }
 .${PREFIX}-tip { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); cursor: help; anchor-name: var(--${PREFIX}-anchor); transition: color 120ms ease; }
 @media (hover: hover) { .${PREFIX}-tip:hover { color: var(--dsw-alias-label-primary); } }
 .${PREFIX}-tip:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary, var(--dsw-alias-brand-primary)); outline-offset: 1px; color: var(--dsw-alias-label-primary); }
@@ -158,7 +171,7 @@ ${SECTION} > ul { margin-top: 0; }
 @keyframes ${PREFIX}-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   .${PREFIX}-menu:popover-open, .${PREFIX}-bubble:popover-open, .${PREFIX}-status { animation: none; }
-  .${PREFIX}-segmented-pill, .${PREFIX}-segment, .${PREFIX}-trigger, .${PREFIX}-tip, .${PREFIX}-name { transition: none; }
+  .${PREFIX}-segmented-pill, .${PREFIX}-segment, .${PREFIX}-trigger, .${PREFIX}-tip, .${PREFIX}-name, .${PREFIX}-switch, .${PREFIX}-switch-thumb { transition: none; }
 }
 `;
 
@@ -216,9 +229,10 @@ ${SECTION} > ul { margin-top: 0; }
         conversation: ctx.configForms.get(NAMESPACES.conversation),
         permission: ctx.configForms.get(NAMESPACES.permission),
         agent: ctx.configForms.get(NAMESPACES.agent),
+        team: ctx.configForms.get(NAMESPACES.team),
       };
       const developerTools = ctx.configForms.developerTools.enabled;
-      const fields = ['conversation', 'agent', 'permission'];
+      const fields = ['conversation', 'agent', 'permission', 'team'];
       const writes = Object.fromEntries(fields.map(field => [field, { saving: false, failed: false, saved: false, notice: null }]));
       const timers = new Map();
       const resources = {
@@ -229,6 +243,8 @@ ${SECTION} > ul { margin-top: 0; }
       let pendingRisk = false;
       let requested = false;
       let disposed = false;
+      /** `remote.agentTeams` while the Host serves agent teamwork; the switch shows only then. */
+      let teams = null;
 
       const agentOptions = () => {
         const tools = developerTools.getSnapshot();
@@ -267,6 +283,12 @@ ${SECTION} > ul { margin-top: 0; }
             enabled: snapshots.permission.status === 'ready' && snapshots.permission.writable,
             loading: permissionCatalog === null,
             visible: snapshots.permission.status !== 'unavailable',
+          },
+          team: {
+            ...writes.team,
+            checked: snapshots.team.value?.[TEAM_FIELD] === true,
+            enabled: snapshots.team.status === 'ready' && snapshots.team.writable,
+            visible: teams !== null && snapshots.team.status !== 'unavailable',
           },
         };
       };
@@ -386,6 +408,11 @@ ${SECTION} > ul { margin-top: 0; }
           else if (key === 'permissions') void loadPermissions();
           else loadAll();
         },
+        /** Follow the Host's agent teamwork service; null hides the switch. */
+        setTeams(remote) {
+          teams = remote;
+          publish();
+        },
         dispose() {
           disposed = true;
           for (const timer of timers.values()) clearTimeout(timer);
@@ -408,6 +435,17 @@ ${SECTION} > ul { margin-top: 0; }
               await loadRoster();
               if (blank === undefined || blank.projectionValues?.agentPreset === id) return true;
               const switched = await ctx.remote.agentPresets.select(blank.id, id);
+              return switched.ok ? true : (switched.error?.message ?? '');
+            });
+          },
+          /** Save the teamwork default, then bring the blank session on screen to it, as the agent choice does. */
+          pickTeam(on) {
+            const blank = mainBlankSession();
+            const remote = teams;
+            void run('team', async () => {
+              if (!(await forms.team.set(TEAM_FIELD, on))) return false;
+              if (blank === undefined || remote === null || blank.projectionValues?.agentTeam?.enabled === on) return true;
+              const switched = await remote.setEnabled(blank.id, on);
               return switched.ok ? true : (switched.error?.message ?? '');
             });
           },
@@ -602,6 +640,19 @@ ${SECTION} > ul { margin-top: 0; }
       option.label)));
     }
 
+    /** Two-state switch drawn like the Harness Switch; `aria-checked` carries the state and the look. */
+    function Toggle({ checked, label, disabled, onChange }) {
+      return h('button', {
+        type: 'button',
+        role: 'switch',
+        'aria-checked': checked,
+        'aria-label': label,
+        disabled,
+        className: `${PREFIX}-switch`,
+        onClick: () => { onChange(!checked); },
+      }, h('span', { className: `${PREFIX}-switch-thumb`, 'aria-hidden': true }));
+    }
+
     /** Modal in the top layer: the platform traps focus and closes on Esc. */
     function RiskDialog({ open, t, onCancel, onConfirm }) {
       const dialog = useRef(null);
@@ -704,8 +755,8 @@ ${SECTION} > ul { margin-top: 0; }
       const { t, load } = props;
       const state = props.useModelDefaults(snapshot => snapshot);
       useEffect(() => { load(); }, [load]);
-      const { conversation, agent, permission, groups, modelsReady } = state;
-      const hasNewSessions = conversation.visible || agent.visible || permission.visible;
+      const { conversation, agent, permission, team, groups, modelsReady } = state;
+      const hasNewSessions = conversation.visible || agent.visible || permission.visible || team.visible;
       const agentOptions = agent.options.map(option => ({ value: option.id, label: props.agentLabel(option) }));
       const agentCurrent = agentOptions.find(option => option.value === agent.current);
       const permissionOptions = permission.options.map(option => ({ id: option.id, label: props.permissionLabel(option) }));
@@ -756,6 +807,16 @@ ${SECTION} > ul { margin-top: 0; }
                     onSelect: props.pickPermission,
                   }),
                 h(WriteStatus, { write: permission, t }))
+              : null,
+            team.visible
+              ? h(Row, { label: t('teamLabel'), tip: t('teamTip'), t },
+                h(Toggle, {
+                  checked: team.checked,
+                  label: t('teamLabel'),
+                  disabled: !team.enabled || team.saving,
+                  onChange: props.pickTeam,
+                }),
+                h(WriteStatus, { write: team, t }))
               : null)
           : null,
         state.loadFailed
@@ -774,6 +835,13 @@ ${SECTION} > ul { margin-top: 0; }
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'model-defaults: dictionaries');
         const controller = createController(ctx);
         ctx.effect(() => () => { controller.dispose(); }, 'model-defaults: form subscriptions');
+        // The teamwork switch follows the Host's agent teamwork service.
+        ctx.inject(['remote.agentTeams'], (child) => {
+          child.effect(() => {
+            controller.setTeams(child.remote.agentTeams);
+            return () => { controller.setTeams(null); };
+          }, 'model-defaults: agent teamwork service');
+        });
         ctx.effect(() => {
           const disposers = [
             ctx.remote.$on('llm/adapters-updated', () => { controller.refresh('catalog'); }),

@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-model-defaults",
-  "version": "0.4.0",
-  "description": "Adds new-session defaults (model, agent, permissions) to the top of the Models settings page.",
+  "version": "0.5.0",
+  "description": "Adds new-session defaults (model, agent, permissions, agent teamwork) to the top of the Models settings page.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-model-defaults#readme",
   "repository": {
@@ -12,7 +12,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/defaults.test.mjs"
+    "test": "node --import ./test/hooks.mjs --test test/defaults.test.mjs test/client.test.mjs"
   },
   "engines": {
     "dsh": ">=0.2.2-rc.1 <0.3.0-0"
@@ -32,6 +32,12 @@
     "icon.svg",
     "README.md"
   ],
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

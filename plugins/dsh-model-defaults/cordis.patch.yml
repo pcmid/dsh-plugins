@@ -1,6 +1,7 @@
-# Bundle patch of @pcmid/dsh-model-defaults. The page's values are Harness
-# settings written through the settings API, so this row holds no config; it
-# only keeps the conversation default from following composer switches.
+# Bundle patch of @pcmid/dsh-model-defaults. The page's model, agent, and
+# permission values are Harness settings written through the settings API. The
+# teamwork switch is this row's volatile `agentTeams` Config; the page writes it
+# into the profile's user patch layer, so this row ships empty.
 - insert:
     - id: model-defaults
       name: '@pcmid/dsh-model-defaults'
