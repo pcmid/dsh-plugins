@@ -12,17 +12,22 @@
  * Edit opens an inline editor (Cancel / Send). Send restarts the
  * conversation from the edited prompt. Session logs are append-only, so the
  * restart is a fork:
- *   1. find the `turn/start` of the edited message's Turn and fork at the
- *      event just before it (the fork inherits nothing of that Turn);
- *   2. remove the input the fork inherited as still pending (the edited
+ *   1. find the `turn/start` of the edited message's Turn;
+ *   2. ask the Host half to rewind files: it stops the original conversation
+ *      and restores every file the dropped Turns changed. Files changed since,
+ *      or whose earlier content was not kept, come back as a list the editor
+ *      shows; sending again confirms them;
+ *   3. fork at the event just before that Turn (the fork inherits nothing of it);
+ *   4. remove the input the fork inherited as still pending (the edited
  *      message itself when it was queued, or any other queued message), and
  *      keep the original's current model when the fork recorded another;
- *   3. prompt the fork with the edited text plus the original images, through
+ *   5. prompt the fork with the edited text plus the original images, through
  *      the Session's local echo like the composer, so the message shows at
  *      once even while the Host is still preparing the Turn;
- *   4. open the fork and, unless the `archiveSource` setting is off, archive
- *      the original conversation (stopping it when it is running).
- * The original conversation is never modified, so nothing is lost.
+ *   6. open the fork and, unless the `archiveSource` setting is off, archive
+ *      the original conversation.
+ * When a step after the file rewind fails, the rewind is undone. The original
+ * conversation's log is never modified.
  *
  * Steering messages (sent while a Turn was running) keep the shipped
  * renderer: they sit inside a Turn, so there is no clean restart point.
@@ -57,6 +62,12 @@ window.__ModuleLoader__.load({
       'editor.sending': '发送中…',
       'editor.shortcut': '{mod}+Enter 发送，Esc 取消',
       'editor.dropsFiles': '文件附件无法重新发送，会被丢弃。',
+      'editor.sendAnyway': '仍然发送',
+      'attention.title': '回退文件前请确认：',
+      'attention.modified': '之后又被改过，回退会覆盖这些改动',
+      'attention.oversized': '文件太大，没有保留之前的内容，保持现状',
+      'attention.unsupported': '现在是目录或特殊文件，保持现状',
+      'attention.more': '还有 {count} 个文件',
       'error.noBoundary': '找不到这条消息所在轮次的起点，无法回退。',
       'error.failed': '发送失败：{message}',
     }
@@ -72,6 +83,12 @@ window.__ModuleLoader__.load({
       'editor.sending': 'Sending…',
       'editor.shortcut': '{mod}+Enter to send, Esc to cancel',
       'editor.dropsFiles': 'File attachments cannot be sent again and will be dropped.',
+      'editor.sendAnyway': 'Send anyway',
+      'attention.title': 'Check these files before they are rewound:',
+      'attention.modified': 'changed since; rewinding overwrites those changes',
+      'attention.oversized': 'too large; its earlier content was not kept, so it stays as it is',
+      'attention.unsupported': 'now a directory or special file, so it stays as it is',
+      'attention.more': '{count} more files',
       'error.noBoundary': 'Could not find where this message\'s turn starts, so it cannot be rewound.',
       'error.failed': 'Could not send: {message}',
     }
@@ -104,6 +121,9 @@ window.__ModuleLoader__.load({
 .${PREFIX}-footer { display: flex; align-items: flex-end; gap: 8px; }
 .${PREFIX}-notes { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }
 .${PREFIX}-error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
+.${PREFIX}-attention { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-attention li { overflow-wrap: anywhere; }
+.${PREFIX}-path { font-family: var(--dsw-font-family-mono, ui-monospace, monospace); color: var(--dsw-alias-label-primary); }
 .${PREFIX}-buttons { display: flex; align-items: center; gap: 8px; flex: none; }
 .${PREFIX}-button { box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 14px; border: none; border-radius: var(--dsw-radius-md); font: inherit; font-size: 14px; line-height: 22px; white-space: nowrap; cursor: pointer; }
 .${PREFIX}-button:disabled { cursor: not-allowed; opacity: 0.4; }
@@ -272,12 +292,35 @@ window.__ModuleLoader__.load({
     }
 
     const MOD_KEY = /Mac|iPhone|iPad/.test(navigator.platform ?? '') ? '⌘' : 'Ctrl'
+    /** Files listed by name in the confirmation; the rest are counted. */
+    const ATTENTION_SHOWN = 6
 
-    function Editor({ initialText, time, t, media, hasImages, dropsFiles, onCancel, onSend, onSent }) {
+    /** A Host path with the Host home directory shortened to `~`. */
+    function displayPath(path, home) {
+      if (typeof home !== 'string' || home === '') return path
+      if (path === home) return '~'
+      return path.startsWith(`${home}/`) || path.startsWith(`${home}\\`) ? `~${path.slice(home.length)}` : path
+    }
+
+    /** Files the file rewind needs confirmed, each with why. */
+    function AttentionList({ files, t, home }) {
+      const shown = files.slice(0, ATTENTION_SHOWN)
+      return h('div', { role: 'status' },
+        h('span', null, t('attention.title')),
+        h('ul', { className: `${PREFIX}-attention` },
+          shown.map(file => h('li', { key: file.path },
+            h('span', { className: `${PREFIX}-path` }, displayPath(file.path, home)),
+            ` — ${t(`attention.${file.reason}`)}`)),
+          files.length > shown.length ? h('li', null, t('attention.more', { count: files.length - shown.length })) : null))
+    }
+
+    function Editor({ initialText, time, t, media, hasImages, dropsFiles, home, onCancel, onSend, onSent }) {
       const day = useCalendarDay()
       const [draft, setDraft] = useState(initialText)
       const [sending, setSending] = useState(false)
       const [error, setError] = useState(null)
+      /** Files the last send asked to confirm; the next send confirms them. */
+      const [attention, setAttention] = useState(null)
       const input = useRef(null)
       const mounted = useRef(true)
       useEffect(() => () => { mounted.current = false }, [])
@@ -300,14 +343,15 @@ window.__ModuleLoader__.load({
         if (!canSend) return
         setSending(true)
         setError(null)
-        void onSend(draft).then((result) => {
+        void onSend(draft, attention !== null).then((result) => {
           if (!mounted.current) return
           if (result.ok) {
             onSent()
             return
           }
           setSending(false)
-          setError(result.code === 'noBoundary' ? t('error.noBoundary') : t('error.failed', { message: result.detail }))
+          if (result.code === 'attention') setAttention(result.files)
+          else setError(result.code === 'noBoundary' ? t('error.noBoundary') : t('error.failed', { message: result.detail }))
         })
       }
       const onKeyDown = (event) => {
@@ -343,18 +387,19 @@ window.__ModuleLoader__.load({
           h('div', { className: `${PREFIX}-footer` },
             h('div', { className: `${PREFIX}-notes` },
               dropsFiles ? h('span', null, t('editor.dropsFiles')) : null,
-              error === null
-                ? h('span', null, t('editor.shortcut', { mod: MOD_KEY }))
-                : h('span', { className: `${PREFIX}-error`, role: 'alert' }, error)),
+              attention === null ? null : h(AttentionList, { files: attention, t, home }),
+              error !== null
+                ? h('span', { className: `${PREFIX}-error`, role: 'alert' }, error)
+                : attention === null ? h('span', null, t('editor.shortcut', { mod: MOD_KEY })) : null),
             h('div', { className: `${PREFIX}-buttons` },
               h('button', { type: 'button', className: `${PREFIX}-button ${PREFIX}-cancel`, disabled: sending, onClick: onCancel }, t('editor.cancel')),
               h('button', { type: 'button', className: `${PREFIX}-button ${PREFIX}-send`, disabled: !canSend, onClick: send },
-                sending ? t('editor.sending') : t('editor.send'))))))
+                sending ? t('editor.sending') : attention === null ? t('editor.send') : t('editor.sendAnyway'))))))
     }
 
     /** Keyed `user` Chat renderer: ui-chat's user bubble with an edit action. */
     const EditableUserMessage = React.memo(function EditableUserMessage(props) {
-      const { node, t, renderFactorySlot, loadImage, useAccess, resendEdited } = props
+      const { node, t, renderFactorySlot, loadImage, useAccess, resendEdited, hostHome } = props
       const data = node.data
       const parts = useMemo(() => contentParts(data.content), [data.content])
       const prepared = useMemo(() => ({
@@ -382,8 +427,9 @@ window.__ModuleLoader__.load({
               : renderFactorySlot('conversation.chat.user.content', { content: mediaContent, loadImage, facts: EMPTY_FACTS, interactive: false }),
             hasImages: parts.attachments.some(attachment => attachment.type === 'image'),
             dropsFiles: parts.attachments.some(attachment => attachment.type === 'file') || parts.rest.length > 0,
+            home: hostHome,
             onCancel: () => { setEditing(false) },
-            onSend: text => resendEdited({ seq: data.seq, location: node.location, content: data.content, text }),
+            onSend: (text, force) => resendEdited({ seq: data.seq, location: node.location, content: data.content, text, force }),
             onSent: () => { setEditing(false) },
           }))
       }
@@ -431,8 +477,12 @@ window.__ModuleLoader__.load({
       return String(error)
     }
 
+    /** Connection RPC channel and endpoint prefix of the Host half's routes (`/api/pcmid/edit-prompt/<operation>`). */
+    const HOST_CHANNEL = '/api'
+    const HOST_API = 'pcmid/edit-prompt'
+
     return {
-      inject: ['slots', 'locale', 'sessions', 'uiWorkspace', 'remote', 'remote.session', 'configForms'],
+      inject: ['slots', 'locale', 'sessions', 'uiWorkspace', 'remote', 'remote.session', 'configForms', 'connection'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'edit-prompt: dictionaries')
         ctx.effect(() => {
@@ -445,6 +495,11 @@ window.__ModuleLoader__.load({
 
         const settingsForm = ctx.configForms.get(ENTRY)
         const archiveSource = () => settingsForm.getSnapshot().value?.archiveSource !== false
+
+        /** Call one operation of the Host half; a refusal throws it. */
+        async function callHost(operation, payload) {
+          return expectOk(await ctx.connection.rpc.call(HOST_CHANNEL, `${HOST_API}/${operation}`, payload))
+        }
 
         /** Locate the edited message's Turn start from the Host log when the loaded window lacks it. */
         async function fetchTurnStart(sessionId, seq) {
@@ -523,7 +578,9 @@ window.__ModuleLoader__.load({
 
         /**
          * Restart a conversation from an edited user message.
-         * @returns `{ ok: true }` once the fork received the prompt and opened, or the failure for the editor to show.
+         * `request.force` confirms the files an earlier attempt listed.
+         * @returns `{ ok: true }` once the fork received the prompt and opened, `{ ok: false, code: 'attention', files }`
+         *   when files need confirming (nothing was rewound or forked), or the failure for the editor to show.
          */
         async function resendEdited(sessionId, request) {
           try {
@@ -557,17 +614,29 @@ window.__ModuleLoader__.load({
             if (text !== '') content.push({ type: 'text', text })
 
             const wantedModel = await nextModel(sessionId)
+            // Stops the original conversation, then puts the files its dropped Turns changed back.
+            const rewound = await callHost('rewind', { sessionId, fromSeq: turnStart, force: request.force === true })
+            if (rewound.status === 'attention') return { ok: false, code: 'attention', files: rewound.files }
             const archive = archiveSource()
-            const childId = await ctx.sessions.fork({ sessionId, atSeq: turnStart - 1, increaseTitle: !archive })
+            let childId
             try {
+              childId = await ctx.sessions.fork({ sessionId, atSeq: turnStart - 1, increaseTitle: !archive })
               const childValues = await clearInheritedInbox(childId)
               await carryModel(childId, wantedModel, childValues)
               await submitTo(childId, content, text, echoImages)
             } catch (error) {
               // The fork never received the prompt: archive it instead of leaving a stray copy.
-              void ctx.uiWorkspace.archiveSession(childId).catch((archiveError) => {
-                console.warn('[edit-prompt] could not archive the unused fork', childId, archiveError)
-              })
+              if (childId !== undefined) {
+                void ctx.uiWorkspace.archiveSession(childId).catch((archiveError) => {
+                  console.warn('[edit-prompt] could not archive the unused fork', childId, archiveError)
+                })
+              }
+              // The conversation did not restart, so its files go back to where it stopped.
+              if (rewound.restoreId !== undefined) {
+                await callHost('undo', { restoreId: rewound.restoreId }).catch((undoError) => {
+                  console.warn('[edit-prompt] could not undo the file rewind', rewound.restoreId, undoError)
+                })
+              }
               throw error
             }
             if (archive) {
@@ -588,6 +657,7 @@ window.__ModuleLoader__.load({
           locale: NS,
           inject: sessionId => ({
             resendEdited: request => resendEdited(sessionId, request),
+            hostHome: ctx.remote.$host?.home,
           }),
         }, EditableUserMessage))
       },

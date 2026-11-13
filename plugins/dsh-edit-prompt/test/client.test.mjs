@@ -37,7 +37,7 @@ function fakeForm(archiveSource) {
 }
 
 /** Apply the module to stand-in services and capture its registration. */
-function mount({ archiveSource = true, remote = {}, fork, prompt } = {}) {
+function mount({ archiveSource = true, remote = {}, fork, prompt, rewind } = {}) {
   const calls = []
   const record = (name, value) => { calls.push([name, value]); return value }
   const registrations = []
@@ -56,6 +56,17 @@ function mount({ archiveSource = true, remote = {}, fork, prompt } = {}) {
     effect: (callback) => { callback(); return () => {} },
     locale: { register: () => () => {} },
     configForms: { get: () => fakeForm(archiveSource) },
+    connection: {
+      rpc: {
+        call: async (channel, endpoint, payload) => {
+          assert.equal(channel, '/api')
+          const operation = endpoint.replace(/^pcmid\/edit-prompt\//, '')
+          record(operation, payload)
+          if (operation === 'undo') return ok({ files: 1, skipped: [] })
+          return rewind === undefined ? ok({ status: 'restored', restoreId: 'restore-1', files: 1, skipped: [] }) : rewind(payload)
+        },
+      },
+    },
     sessions: {
       fork: fork ?? (async (options) => { record('fork', options); return 'session-child' }),
       retain: (id, options) => {
@@ -68,6 +79,7 @@ function mount({ archiveSource = true, remote = {}, fork, prompt } = {}) {
       archiveSession: async (id, options) => { record('archive', { id, ...options }) },
     },
     remote: {
+      $host: { home: '/Users/me', isLoopback: true },
       session: {
         events: async (request) => { record('events', request); return ok({ records: [], hasMore: false }) },
         attachment: async (request) => {
@@ -118,12 +130,12 @@ describe('registration', () => {
     assert.equal(options.key, 'user')
     assert.ok(options.priority < 0)
     assert.equal(options.locale, 'editPrompt')
-    assert.deepEqual(plugin.inject.slice().sort(), ['configForms', 'locale', 'remote', 'remote.session', 'sessions', 'slots', 'uiWorkspace'])
+    assert.deepEqual(plugin.inject.slice().sort(), ['configForms', 'connection', 'locale', 'remote', 'remote.session', 'sessions', 'slots', 'uiWorkspace'])
   })
 })
 
 describe('resend', () => {
-  it('forks before the Turn, clears inherited input, prompts the edit with images through an echo, and archives the original', async () => {
+  it('rewinds files, forks before the Turn, clears inherited input, prompts the edit with images through an echo, and archives the original', async () => {
     const { calls, face } = mount()
     const result = await face.resendEdited({
       seq: 11,
@@ -133,20 +145,21 @@ describe('resend', () => {
     })
     assert.deepEqual(result, { ok: true })
     const names = calls.map(([name]) => name)
-    assert.deepEqual(names, ['attachment', 'projections', 'fork', 'projections', 'updateQueue', 'selectModel', 'retain', 'submission', 'prompt', 'open', 'release', 'archive'])
+    assert.deepEqual(names, ['attachment', 'projections', 'rewind', 'fork', 'projections', 'updateQueue', 'selectModel', 'retain', 'submission', 'prompt', 'open', 'release', 'archive'])
     assert.deepEqual(calls[1][1], { sessionId: 'session-source' })
-    assert.deepEqual(calls[2][1], { sessionId: 'session-source', atSeq: 6, increaseTitle: false })
-    assert.deepEqual(calls[3][1], { sessionId: 'session-child' })
-    assert.deepEqual(calls[4][1], { sessionId: 'session-child', itemId: 'm-old', action: { kind: 'remove' } })
-    assert.deepEqual(calls[5][1], { sessionId: 'session-child', provider: 'p', model: 'm2', reasoningEffort: 'high' })
-    assert.deepEqual(calls[6][1], { id: 'session-child', source: 'editPrompt' })
+    assert.deepEqual(calls[2][1], { sessionId: 'session-source', fromSeq: 7, force: false })
+    assert.deepEqual(calls[3][1], { sessionId: 'session-source', atSeq: 6, increaseTitle: false })
+    assert.deepEqual(calls[4][1], { sessionId: 'session-child' })
+    assert.deepEqual(calls[5][1], { sessionId: 'session-child', itemId: 'm-old', action: { kind: 'remove' } })
+    assert.deepEqual(calls[6][1], { sessionId: 'session-child', provider: 'p', model: 'm2', reasoningEffort: 'high' })
+    assert.deepEqual(calls[7][1], { id: 'session-child', source: 'editPrompt' })
     // The echo shows the edit, image included, before the Host records the message.
-    assert.deepEqual(calls[7][1], {
+    assert.deepEqual(calls[8][1], {
       mode: 'queue',
       text: 'new text',
       attachments: [{ type: 'image', value: { previewUrl: 'data:image/png;base64,aGVsbG8=', name: 'shot.png', width: 1, height: 1 } }],
     })
-    assert.deepEqual(calls[8][1], {
+    assert.deepEqual(calls[9][1], {
       sessionId: 'session-child',
       mode: 'queue',
       content: [
@@ -155,8 +168,27 @@ describe('resend', () => {
       ],
       requestId: 'req-1',
     })
-    assert.equal(calls[9][1], 'session-child')
-    assert.deepEqual(calls[11][1], { id: 'session-source', stopActivity: true })
+    assert.equal(calls[10][1], 'session-child')
+    assert.deepEqual(calls[12][1], { id: 'session-source', stopActivity: true })
+  })
+
+  it('returns the files to confirm without forking, and confirms them on the next send', async () => {
+    const files = [{ path: '/Users/me/p/a.txt', reason: 'modified' }]
+    const { calls, face } = mount({ rewind: payload => ok(payload.force ? { status: 'restored', files: 1, skipped: [] } : { status: 'attention', files }) })
+    const first = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
+    assert.deepEqual(first, { ok: false, code: 'attention', files })
+    assert.equal(calls.some(([name]) => name === 'fork'), false)
+    const second = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x', force: true })
+    assert.deepEqual(second, { ok: true })
+    assert.deepEqual(calls.filter(([name]) => name === 'rewind').map(([, value]) => value.force), [false, true])
+    assert.equal(face.hostHome, '/Users/me')
+  })
+
+  it('reports a refused rewind and creates nothing', async () => {
+    const { calls, face } = mount({ rewind: () => refused('busy', 'The conversation is still running after it was asked to stop.') })
+    const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
+    assert.deepEqual(result, { ok: false, code: 'failed', detail: 'The conversation is still running after it was asked to stop.' })
+    assert.equal(calls.some(([name]) => name === 'fork'), false)
   })
 
   it('leaves the inherited model alone when it already matches, and survives an unreadable selection', async () => {
@@ -212,12 +244,13 @@ describe('resend', () => {
     assert.equal(calls.some(([name]) => name === 'fork'), false)
   })
 
-  it('archives an unused fork and reports the refusal when the prompt fails', async () => {
+  it('archives an unused fork, undoes the file rewind, and reports the refusal when the prompt fails', async () => {
     const { calls, face } = mount({ prompt: async () => refused('session/attachment-invalid', 'image too large') })
     const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
     assert.deepEqual(result, { ok: false, code: 'failed', detail: 'image too large' })
     await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(calls.filter(([name]) => name === 'archive').map(([, value]) => value), [{ id: 'session-child' }])
+    assert.deepEqual(calls.filter(([name]) => name === 'undo').map(([, value]) => value), [{ restoreId: 'restore-1' }])
     assert.equal(calls.some(([name]) => name === 'open'), false)
     // The echo is withdrawn and the temporary reference let go.
     assert.ok(calls.some(([name]) => name === 'abandon'))
@@ -229,6 +262,7 @@ describe('resend', () => {
     const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
     assert.deepEqual(result, { ok: false, code: 'failed', detail: 'event 6 does not exist' })
     assert.equal(calls.some(([name]) => name === 'prompt' || name === 'archive'), false)
+    assert.deepEqual(calls.filter(([name]) => name === 'undo').map(([, value]) => value), [{ restoreId: 'restore-1' }])
   })
 })
 

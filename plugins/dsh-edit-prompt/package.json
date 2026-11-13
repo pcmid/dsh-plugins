@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-edit-prompt",
-  "version": "0.1.1",
-  "description": "Adds an edit button beside the copy button of each user message. Sending the edited prompt drops that turn and everything after it, and restarts the conversation from there.",
+  "version": "0.2.0",
+  "description": "Adds an edit button beside the copy button of each user message. Sending the edited prompt drops that turn and everything after it, puts back the files those turns changed, and restarts the conversation from there.",
   "author": "pcmid",
   "license": "MIT",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-edit-prompt#readme",
@@ -24,6 +24,7 @@
   },
   "files": [
     "index.js",
+    "host/",
     "client.js",
     "cordis.patch.yml",
     "locale/*.json",
@@ -31,7 +32,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/client.test.mjs"
+    "test": "node --test test/client.test.mjs test/host.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/schemastery": "^3.18.4"

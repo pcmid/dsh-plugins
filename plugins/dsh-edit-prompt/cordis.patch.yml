@@ -1,7 +1,8 @@
-# Bundle patch of @pcmid/dsh-edit-prompt: the Host row only carries the
-# `archiveSource` setting; the edit button and the resend flow live in the
-# Web client half. Override `config` by id from the profile's patch layer, or
-# use the switch on the plugin's page.
+# Bundle patch of @pcmid/dsh-edit-prompt: the Host row records the files
+# each turn changes and rewinds them when an edited prompt restarts the
+# conversation; the edit button and the restart live in the Web client half.
+# Override `config` by id from the profile's patch layer, or use the plugin's
+# page in Settings.
 - insert:
     - id: edit-prompt
       name: '@pcmid/dsh-edit-prompt'
