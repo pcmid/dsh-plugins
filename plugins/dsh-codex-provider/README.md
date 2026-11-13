@@ -6,7 +6,7 @@
 
 ## 安装与选择模型
 
-需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
+需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）和 `0.167.2` 上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
 
 ```sh
 codex login
@@ -42,13 +42,13 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 2. 每个 DSH 会话对应一个 ephemeral Codex 线程。DSH 系统提示词作为线程的 base instructions，DSH 工具按原名作为 `dynamicTools` 传入。Codex 不接受的名字（如 `exec`、`exec_command`、`mcp__*`）会改写：`mcp__a__b` 变为 `mcp_a__b`，其余加稳定的哈希后缀。
 3. 模型调用 DSH 工具时，插件把这批调用作为本次 DSH 步骤的结果交回 Harness，Codex 的这一轮停在未答复的 `item/tool/call` 请求上。DSH 照常执行工具；下一次 DSH 请求用真实结果答复这些请求，同一轮继续生成。上一轮结束后的新用户消息追加到同一线程。因此模型跨步骤保留历史、加密推理和 prompt cache 身份，不需要重放。
 4. 当前 Codex 模型使用 code mode：模型在 `exec` 脚本里调用 DSH 工具。同一脚本同时发起的调用（`Promise.all`）作为一批交给 DSH，结果返回后脚本继续执行。
-5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型/推理强度变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
+5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
 
 辅助请求（标题、摘要等带 `purpose` 的请求）使用单独的临时线程，结束后立即释放。取消、单步超时、消费方提前结束或出错时，中断这一轮并丢弃线程，下一次请求重建。
 
 ## 不让 Codex 加进请求的内容
 
-app-server 进程用配置覆盖关闭了 Codex 本会注入模型请求的内容：Codex 的权限、apps、协作模式和 skills 说明，环境上下文，AGENTS.md；原生 shell、`view_image`、sleep、多代理、goals、浏览器、computer use、图像生成和 `request_user_input` 工具；网页搜索；apps、插件、hooks 和 memories；以及用户 Codex 配置里的全部 MCP 服务器。Codex 的状态和日志写入临时目录，只有认证来自 `CODEX_HOME`。审批和交互输入请求回绝给 Codex。上下文压缩由 DSH 负责，Codex 的自动压缩关闭。
+app-server 进程用配置覆盖关闭了 Codex 本会注入模型请求的内容：Codex 的权限、apps、协作模式和 skills 说明，环境上下文，AGENTS.md；原生 shell、`view_image`、sleep、多代理、goals、浏览器、computer use、图像生成和 `request_user_input` 工具；网页搜索；apps、插件、hooks 和 memories；以及用户 Codex 配置里的全部 MCP 服务器。多代理用 `agents.enabled=false` 关闭：模型元数据（如 `multi_agent_version: "v2"`）会绕过 `features.multi_agent`，否则模型仍会收到 `collaboration` 工具（`spawn_agent` 等）和 `<multi_agent_role>` 说明。Codex 的状态和日志写入临时目录，只有认证来自 `CODEX_HOME`。审批和交互输入请求回绝给 Codex。上下文压缩由 DSH 负责，Codex 的自动压缩关闭。
 
 模型看到的是：DSH 系统提示词、DSH 历史、DSH 工具，以及 code mode 模型调用 DSH 工具所需的 Codex `exec`/`wait` 工具及其说明。
 
@@ -56,9 +56,9 @@ app-server 进程用配置覆盖关闭了 Codex 本会注入模型请求的内�
 
 - 这是实验性 provider。`dynamicTools`、`experimentalRawEvents` 和 `rawResponseItem/completed` 是 app-server 的实验性或内部接口，可能随 Codex 版本变化。协议对不上时插件报错，不做猜测。
 - 当前只声明文本输入。图片和文件由 DSH 先转换为文本或附件提示；送到插件的其他非文本块会被拒绝。其他供应商的推理摘要不作为文本重放。
-- `reasoningEffort` 会传给 Codex。app-server 没有对应的 `temperature`、`maxTokens`、`stop` 参数，这些 DSH 参数不生效。
+- `reasoningEffort` 会传给 Codex。新线程以 DSH 的推理强度作为请求级强度启动（`thread/start` 的 `model_reasoning_effort`），不沿用用户 Codex 配置里的值。同一线程在两轮之间改变推理强度时，线程保留，Codex 只追加一条 `configuration_update`，以保住 prompt cache：调低立即生效，调高只部分生效（实测从 low 调到 xhigh，思考量约相当于 high）。app-server 没有对应的 `temperature`、`maxTokens`、`stop` 参数，这些 DSH 参数不生效。
 - code mode 下，DSH 工具运行超过脚本的让出时间（约 30 秒）时，Codex 会向模型返回 `Script running`，模型可能用 `wait` 轮询。每次轮询是一次小的模型请求，其输出出现在下一个 DSH 步骤的开头。
-- 部分模型仍会收到 Codex 加入的一段简短多代理模式说明，当前 Codex 版本没有关闭它的配置项。
+- code mode 的 `exec` 里除 DSH 工具外，仍有 Codex 自带的 `apply_patch`、MCP resource 工具和 `clock__curr_time`。
 - 重建的线程有新的 prompt cache 身份，它的第一次请求没有缓存命中。
 - 不提供网页登录界面。缺少登录时运行 `codex login`。
 

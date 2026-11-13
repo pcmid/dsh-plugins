@@ -59,8 +59,9 @@ test('a tool round trip stays in one turn: DSH results answer the waiting calls'
     assert.equal(start.baseInstructions, 'DSH prompt')
     assert.deepEqual(start.dynamicTools.map(t => t.name), ['read', 'bash'])
     assert.deepEqual(start.environments, [])
+    assert.equal(start.config, undefined, 'No DSH effort leaves the Codex default')
     const overrides = codex().args.filter((_, i) => codex().args[i - 1] === '-c')
-    for (const setting of ['include_environment_context=false', 'skills.include_instructions=false', 'features.shell_tool=false', 'features.code_mode=false']) {
+    for (const setting of ['include_environment_context=false', 'skills.include_instructions=false', 'features.shell_tool=false', 'features.code_mode=false', 'agents.enabled=false']) {
       assert.ok(overrides.includes(setting), setting)
     }
   } finally { await adapter.dispose() }
@@ -159,6 +160,8 @@ test('a request that does not continue the thread rebuilds it from DSH history, 
         assert.ok(replayed.some(item => item.type === 'reasoning' && item.encrypted_content === 'SECRET'), 'Encrypted reasoning survives a rebuild')
       }
       assert.equal(codex().calls.filter(c => c.method === 'turn/start').length, 2)
+      const starts = codex().calls.filter(c => c.method === 'thread/start').map(c => c.params.config?.model_reasoning_effort)
+      assert.deepEqual(starts, [undefined, next.reasoningEffort], 'The rebuilt thread starts at the requested effort')
     } finally { await adapter.dispose() }
   }
 })

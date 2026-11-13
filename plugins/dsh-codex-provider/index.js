@@ -47,6 +47,10 @@ const PROCESS_CONFIG = Object.freeze({
   project_doc_max_bytes: 0,
   // DSH owns compaction.
   model_auto_compact_token_limit: Number.MAX_SAFE_INTEGER,
+  // Codex sub-agents (the `collaboration` tools and `<multi_agent_*>` instructions). Model
+  // metadata such as `multi_agent_version: "v2"` turns them on regardless of
+  // `features.multi_agent`; only this setting overrides the model.
+  'agents.enabled': false,
   ...Object.fromEntries(DISABLED_FEATURES.map(feature => [`features.${feature}`, false])),
 })
 
@@ -271,6 +275,10 @@ export class CodexAdapter extends LlmAdapter {
       approvalPolicy: 'never', sandbox: 'read-only', experimentalRawEvents: true,
       baseInstructions: request.instructions || 'You are a helpful assistant.',
       dynamicTools: request.names.specs,
+      // The thread's effort is the request-level baseline. Without it the baseline comes from the
+      // user's Codex config, and `turn/start` effort only adds a `configuration_update` item on top,
+      // which lowers the effort but raises it only part of the way.
+      ...(request.effort ? { config: { model_reasoning_effort: request.effort } } : {}),
     })
     return new Conversation(connection, thread.id, request, (model, window) => this.contextWindows.set(model, window))
   }
