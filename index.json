@@ -94,8 +94,8 @@
         "zh": "默认模型"
       },
       "description": {
-        "en": "Adds new-session defaults (model, agent, permissions) to the top of the Models settings page.",
-        "zh": "在模型设置页顶部增加新会话默认值（模型、智能体、权限）。"
+        "en": "Adds new-session defaults (model, agent, permissions, agent teamwork) to the top of the Models settings page.",
+        "zh": "在模型设置页顶部增加新会话默认值（模型、智能体、权限、团队协作）。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzViNGJkYiIvPgogIDxwYXRoIGQ9Ik0yNiAxNWwzLjQgOS42TDM5IDI4bC05LjYgMy40TDI2IDQxbC0zLjQtOS42TDEzIDI4bDkuNi0zLjR6IiBmaWxsPSIjZmZmZmZmIi8+CiAgPHBhdGggZD0iTTQ1IDM2bDEuOSA1LjFMNTIgNDNsLTUuMSAxLjlMNDUgNTBsLTEuOS01LjFMMzggNDNsNS4xLTEuOXoiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
       "author": "pcmid",
@@ -112,16 +112,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.4.0"
+        "latest": "0.5.0"
       },
       "versions": [
         {
-          "version": "0.4.0",
-          "publishTimestamp": 1794383284,
+          "version": "0.5.0",
+          "publishTimestamp": 1794558357,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "688090aaad881a6f5deb039907a59fb17b83eab0",
+            "commit": "a993443be4c6395c3eacb83e65d83f78a614eb06",
             "path": "plugins/dsh-model-defaults"
           },
           "engines": {
