@@ -198,16 +198,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.5.1"
+        "latest": "0.6.0"
       },
       "versions": [
         {
-          "version": "0.5.1",
-          "publishTimestamp": 1794411029,
+          "version": "0.6.0",
+          "publishTimestamp": 1794633227,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "c7daa7982861510f213de4b8b6b632ecbcf06220",
+            "commit": "2f9a9d3f0dfa3758ddc677b8239ab05caf9c1405",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {
