@@ -499,16 +499,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.1.0"
+        "latest": "0.2.0"
       },
       "versions": [
         {
-          "version": "0.1.0",
-          "publishTimestamp": 1794624681,
+          "version": "0.2.0",
+          "publishTimestamp": 1794638916,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "f4b9ef2758e1e5c5ab9417352ac158cbb959b7da",
+            "commit": "1446c345211cb93839f7dc15b20f613d763eea49",
             "path": "plugins/dsh-folder-browser"
           },
           "engines": {

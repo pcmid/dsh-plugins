@@ -13,9 +13,10 @@
  * "Open <name>" button.
  *
  * Folders come from the Host through `ctx.uiWorkspace.listDirectory` /
- * `createDirectory`, served by the composed
- * `@deepseek-ai/dsh-host-directory-picker-browse` backend, so the dialog
- * browses the Host's disk wherever the browser runs.
+ * `createDirectory`, served by the
+ * `@deepseek-ai/dsh-host-directory-picker-browse` backend that this package's
+ * Host half mounts, so the dialog browses the Host's disk wherever the
+ * browser runs.
  */
 window.__ModuleLoader__.load({
   id: '@pcmid/dsh-folder-browser',
