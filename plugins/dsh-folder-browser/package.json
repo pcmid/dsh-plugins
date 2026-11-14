@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-folder-browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Choose workspace folders in a built-in folder browser instead of the system file manager, so opening a workspace also works from a remote browser.",
   "author": "pcmid",
   "license": "MIT",
@@ -13,10 +13,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test test/client.test.mjs"
+    "test": "node --test test/client.test.mjs test/host.test.mjs"
   },
   "engines": {
     "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-host-directory-picker-browse": ">=0.2.2-rc.3 <0.3.0-0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-host-directory-picker-browse": "0.2.2-rc.3"
   },
   "exports": {
     ".": "./index.js",

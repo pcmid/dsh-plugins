@@ -1,12 +1,11 @@
 # Bundle patch of @pcmid/dsh-folder-browser. The web-app bundle's
 # `directory-picker` row (dsh-host-directory-picker-auto) opens the system
 # folder chooser on the Host display whenever the Host binds loopback, which a
-# remote browser never sees. Pin DSH's own browse backend (it lists and
-# creates folders on the Host) and let this package's client draw the dialog.
+# remote browser never sees. Turn it off; this package's Host half runs DSH's
+# own browse backend (it lists and creates folders on the Host) once the old
+# backend has unloaded, and its client draws the dialog.
 - id: directory-picker
   disabled: true
 - insert:
-    - id: folder-browser
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
     - id: folder-browser-ui
       name: '@pcmid/dsh-folder-browser'

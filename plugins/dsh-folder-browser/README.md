@@ -26,7 +26,8 @@ DSH 自带的目录选择在启动时自动判断：Host 只监听本机地址�
 
 ## 实现
 
-- 补丁停用 web-app 自带的 `directory-picker` 行（`@deepseek-ai/dsh-host-directory-picker-auto`），加入 DSH 自带的浏览后端 `@deepseek-ai/dsh-host-directory-picker-browse`（在 Host 上列目录、建目录）和本插件的客户端。
+- 补丁停用 web-app 自带的 `directory-picker` 行（`@deepseek-ai/dsh-host-directory-picker-auto`），只加入本插件这一行（`folder-browser-ui`）。
+- `index.js` 是 Host 端：把 DSH 自带的浏览后端 `@deepseek-ai/dsh-host-directory-picker-browse`（在 Host 上列目录、建目录）作为子插件挂上，它跟着本插件一起卸载。`directoryPicker` 同一时间只能有一个提供者，而运行中安装或启用时，DSH 会同时停用 `directory-picker` 行和启动本插件，系统对话框后端可能还没卸载完；Host 端会等它放开 `directoryPicker` 再挂浏览后端，所以不用重启。
 - `client.js` 填充 `ui-workspace` 声明的三个目录选择位置（`conversation.hero.workspace.directoryFlow`、`sidebar.workspaces.directoryFlow`、`workspace.picker.directoryFlow`），通过 `ctx.uiWorkspace.listDirectory` / `createDirectory` 读写，用原生 `<dialog>` 显示，样式只用主题变量，深浅色主题都跟随 DSH。
 - 打开过的目录在本次选择期间缓存，前进后退不再请求；新建后刷新上级目录。
 
@@ -35,16 +36,17 @@ DSH 自带的目录选择在启动时自动判断：Host 只监听本机地址�
 ## 测试
 
 ```sh
+npm install --no-save --no-package-lock
 npm test
 ```
 
-在 jsdom 里用 deepseek-harness 检出中的 React 驱动选择框（需要同级或上级目录有构建过的 deepseek-harness，或用 `HARNESS_DIR` 指定），覆盖筛选、键盘导航、Tab 补全、退回上级、打开、新建（含打错字不误建）、加载中的旧列表不可操作、输入法回车、目录过大时的「进入」、常用位置、错误提示、忙碌锁定和 Esc。
+- `test/client.test.mjs`：在 jsdom 里用 deepseek-harness 检出中的 React 驱动选择框（需要同级或上级目录有构建过的 deepseek-harness，或用 `HARNESS_DIR` 指定），覆盖筛选、键盘导航、Tab 补全、退回上级、打开、新建（含打错字不误建）、加载中的旧列表不可操作、输入法回车、目录过大时的「进入」、常用位置、错误提示、忙碌锁定和 Esc。
+- `test/host.test.mjs`：用 devDependencies 里的 Cordis 和浏览后端，覆盖空闲时直接挂上（含 `maxEntries` 透传）、被占用时等待并在放开后接手、旧后端还在卸载时启动（0.1.0 的独立后端行在这里会失败）、等待中被卸载后不再挂。
 
 ## 已知限制
 
 - **本机也不再用系统对话框。** 选择方式在 Host 启动时整体确定，不能按浏览器所在设备区分。
-- **运行中切换可能需要重启。** 运行中安装或启用时，新的浏览后端可能比旧的系统对话框后端先加载，报 `service "directoryPicker" has been registered`；在插件列表里把 `folder-browser` 行停用再启用，或重启 DSH 即可。运行中停用本插件同理。
-- **只能浏览和新建目录。** 不能重命名或删除；筛选只在当前目录内、已列出的项里进行，不做跨目录搜索。单个目录最多列出 1000 项（`maxEntries`，可在 `folder-browser` 行的 `config` 里调整）。
+- **只能浏览和新建目录。** 不能重命名或删除；筛选只在当前目录内、已列出的项里进行，不做跨目录搜索。单个目录最多列出 1000 项（`maxEntries`，可在 `folder-browser-ui` 行的 `config` 里调整）。
 - **大小写**：筛选不区分大小写；判断名称是否已存在时，Windows 和 macOS（主目录在 `/Users/` 下）不区分大小写，其他系统区分。
 - **文案只有中文和英文**，其他语言显示英文。
-- 依赖 web-app 包里行 id `directory-picker` 不变；如果 DSH 以后改名，补丁会被跳过并在日志里警告，此时两套选择器会同时加载并报重复服务错误。
+- 依赖 web-app 包里行 id `directory-picker` 不变；如果 DSH 以后改名，补丁会被跳过并在日志里警告，此时系统对话框后端一直占着 `directoryPicker`，Host 端只在日志里说明在等它，选择框会报需要浏览后端。
