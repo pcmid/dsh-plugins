@@ -16,7 +16,7 @@
 ## 使用
 
 1. 部署 relay（Cloudflare Workers、Docker 或 Node，见 relay 仓库的 README），得到 `wss://relay.example.com/ws`。
-2. 在要被访问的 DSH 上打开“设置 → 远程访问”，开启远程访问，添加 relay 地址。状态变为“在线”后点“生成配对链接”。
+2. 在要被访问的 DSH 上打开“设置 → 远程访问”，打开“允许远程访问”，添加 relay。开关下方显示“在线”后，点“生成配对链接”。
 
 ### 多个 relay
 
@@ -45,7 +45,7 @@ relay 地址是一个有顺序的列表，顺序就是优先级，可以在设�
 ### 手机
 
 1. 把 `launcher/` 目录部署到一个 HTTPS 静态站点，例如 Cloudflare Pages、GitHub Pages，或在 Docker 部署的 Caddy 里加一个 `file_server`。**这个源只放启动页**：同源的其他脚本可以使用浏览器里保存的设备密钥。升级插件后重新部署整个目录；`index.html` 用 `app.js?v=<版本>` 加载脚本，所以 CDN 只要不长时间缓存 `index.html`，其他文件缓存多久都不会新旧混用。
-2. 在设置页填写手机启动页地址，生成配对链接后会显示二维码。
+2. 在设置页填写“手机启动页”，生成配对链接后会显示二维码。
 3. 用相机扫描二维码，在启动页里点“配对”。之后打开启动页会自动连接上次的 DSH；iOS 可以“添加到主屏幕”。
 
 也可以先打开启动页，在“添加 DSH”里粘贴配对链接，或点“扫描二维码”用启动页自己打开摄像头扫码。iOS 上添加到主屏幕的启动页和 Safari 不共享已配对的设备，在主屏幕版本里配对时用这种方式。浏览器有原生二维码识别（`BarcodeDetector`，如 Android 上的 Chrome）时直接使用；否则（如 Safari）按需加载 `launcher/vendor/jsQR.js`（[jsQR](https://github.com/cozmo/jsQR) 1.4.0，Apache-2.0，许可证见同目录的 `jsQR.LICENSE`）。
