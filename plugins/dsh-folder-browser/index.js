@@ -29,8 +29,7 @@ export async function apply(ctx, config) {
   let backend
   let waitingFor
   const mount = () => {
-    // A queued check can run after this plugin started unloading.
-    if (backend !== undefined || ctx.fiber.uid === null) return
+    if (backend !== undefined) return
     // Not strict: a provider that is still unloading keeps the name registered.
     const holder = ctx.get('directoryPicker', false)
     if (holder !== undefined) {
@@ -42,8 +41,18 @@ export async function apply(ctx, config) {
     backend = ctx.plugin(BrowseDirectoryPicker, config)
   }
   ctx.on('internal/service', (service) => {
+    if (service !== 'directoryPicker') return
     // Leave the releasing provider's teardown before registering the next one.
-    if (service === 'directoryPicker') queueMicrotask(mount)
+    queueMicrotask(() => {
+      try {
+        mount()
+      } catch (error) {
+        // This run started unloading (disabled, or reloaded for a config change) after the check
+        // was queued, and Cordis refuses new children then. It must not mount anything: a reload
+        // mounts the backend itself. Uncaught, the error would surface as a Host uncaught exception.
+        if (error?.code !== 'INACTIVE_EFFECT') ctx.logger.error(error)
+      }
+    })
   })
   mount()
   // A backend that cannot start fails this row, where the plugin list shows it.

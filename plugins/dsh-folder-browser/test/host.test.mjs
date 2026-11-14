@@ -120,4 +120,30 @@ describe('host half', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     assert.equal(root.get('directoryPicker', false), undefined)
   })
+
+  // The release queues a check, then this run starts unloading in the same tick, before its own
+  // cleanup has run. The queued check must not throw out of its microtask (an uncaught exception).
+  for (const [action, expected] of [['reloaded for a config change', 'browse'], ['disposed', undefined]]) {
+    it(`does not throw when ${action} in the same tick the old backend lets go`, async () => {
+      const uncaught = []
+      const record = error => uncaught.push(error)
+      process.on('uncaughtException', record)
+      try {
+        const root = new Context()
+        const native = root.plugin(NativePicker)
+        await native
+        const fiber = root.plugin(plugin, { maxEntries: 5 })
+        await fiber
+        const released = native.dispose()
+        const changed = expected === undefined ? fiber.dispose() : fiber.update({ maxEntries: 2 })
+        await Promise.all([released, changed])
+        await new Promise(resolve => setTimeout(resolve, 20))
+        assert.deepEqual(uncaught.map(String), [])
+        assert.equal(kindOf(root), expected)
+        if (expected !== undefined) await fiber.dispose()
+      } finally {
+        process.off('uncaughtException', record)
+      }
+    })
+  }
 })

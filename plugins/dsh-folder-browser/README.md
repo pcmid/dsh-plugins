@@ -31,7 +31,7 @@ DSH 自带的目录选择在启动时自动判断：Host 只监听本机地址�
 - `client.js` 填充 `ui-workspace` 声明的三个目录选择位置（`conversation.hero.workspace.directoryFlow`、`sidebar.workspaces.directoryFlow`、`workspace.picker.directoryFlow`），通过 `ctx.uiWorkspace.listDirectory` / `createDirectory` 读写，用原生 `<dialog>` 显示，样式只用主题变量，深浅色主题都跟随 DSH。
 - 打开过的目录在本次选择期间缓存，前进后退不再请求；新建后刷新上级目录。
 
-停用或卸载本插件即恢复自动判断。
+停用或卸载本插件后，重启 DSH 即恢复自动判断（运行中停用见「已知限制」）。
 
 ## 测试
 
@@ -41,11 +41,12 @@ npm test
 ```
 
 - `test/client.test.mjs`：在 jsdom 里用 deepseek-harness 检出中的 React 驱动选择框（需要同级或上级目录有构建过的 deepseek-harness，或用 `HARNESS_DIR` 指定），覆盖筛选、键盘导航、Tab 补全、退回上级、打开、新建（含打错字不误建）、加载中的旧列表不可操作、输入法回车、目录过大时的「进入」、常用位置、错误提示、忙碌锁定和 Esc。
-- `test/host.test.mjs`：用 devDependencies 里的 Cordis 和浏览后端，覆盖空闲时直接挂上（含 `maxEntries` 透传）、被占用时等待并在放开后接手、旧后端还在卸载时启动（0.1.0 的独立后端行在这里会失败）、等待中被卸载后不再挂。
+- `test/host.test.mjs`：用 devDependencies 里的 Cordis 和浏览后端，覆盖空闲时直接挂上（含 `maxEntries` 透传）、被占用时等待并在放开后接手、旧后端还在卸载时启动（0.1.0 的独立后端行在这里会失败）、等待中被卸载后不再挂，以及旧后端放开的同一时刻本插件被停用或因改配置而重载时不抛出未捕获的异常。
 
 ## 已知限制
 
 - **本机也不再用系统对话框。** 选择方式在 Host 启动时整体确定，不能按浏览器所在设备区分。
+- **运行中停用或卸载后需要重启。** 这时 DSH 恢复 `directory-picker` 行和卸载本插件是同时进行的，系统对话框后端可能在浏览后端放开 `directoryPicker` 之前启动，报 `service "directoryPicker" has been registered` 后不再重试，选择框随之不可用，重启 DSH 即可恢复。要根治，需要 DSH 的 `directory-picker-auto` 也等前一个后端放开再挂，插件这边修不了。
 - **只能浏览和新建目录。** 不能重命名或删除；筛选只在当前目录内、已列出的项里进行，不做跨目录搜索。单个目录最多列出 1000 项（`maxEntries`，可在 `folder-browser-ui` 行的 `config` 里调整）。
 - **大小写**：筛选不区分大小写；判断名称是否已存在时，Windows 和 macOS（主目录在 `/Users/` 下）不区分大小写，其他系统区分。
 - **文案只有中文和英文**，其他语言显示英文。
