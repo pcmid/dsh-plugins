@@ -241,16 +241,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.1.0"
+        "latest": "0.1.1"
       },
       "versions": [
         {
-          "version": "0.1.0",
-          "publishTimestamp": 1794222777,
+          "version": "0.1.1",
+          "publishTimestamp": 1794637710,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "39d7c4c0ac0f87e18cc837017003eb648bcdad9f",
+            "commit": "0035267f2bd1226d0dce316aefdf1924e61ebca6",
             "path": "plugins/dsh-auto-restart"
           },
           "engines": {

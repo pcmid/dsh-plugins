@@ -14,7 +14,8 @@
  * continuations since the last human message must stay within `maxAttempts`.
  * A continued root Session is resumed through the Web Session controller
  * (preset, model, and permissions come from its log) and receives one
- * next-turn notice that wakes it. An active goal is rearmed when `rearmGoals`
+ * next-turn notice that wakes it; the notice runs first, and messages already
+ * queued stay queued behind it in their order. An active goal is rearmed when `rearmGoals`
  * is set; the goal round runs after the notice turn.
  *
  * @module @pcmid/dsh-auto-restart
@@ -371,6 +372,34 @@ async function pool(items, limit, work) {
 }
 
 /**
+ * Start `message` as the next turn of an idle Agent, ahead of messages already
+ * queued; those stay queued in their order behind it. `followup` appends, so the
+ * message is moved to the front while maintenance holds the wake, the same way
+ * the Session controller sends a parked queued message.
+ * @param agent - idle Agent.
+ * @param message - message to deliver now.
+ * @returns resolution after the wake was released.
+ */
+export async function sendFirst(agent, message) {
+  const deliver = () => {
+    agent.followup(message)
+    if (agent.inbox.nextTurn[0]?.id !== message.id) {
+      agent.inbox.remove(message.id)
+      agent.inbox.prepend('next-turn', message)
+    }
+  }
+  let held
+  try {
+    held = agent.runMaintenance(async () => { deliver() })
+  } catch (_maintenanceActive) {
+    // Another maintenance task owns the idle Agent and holds the wake the same way.
+    deliver()
+    return
+  }
+  await held
+}
+
+/**
  * Build the startup recovery pass.
  * @param ctx - Host context with the injected services.
  * @param config - resolved plugin config.
@@ -464,7 +493,7 @@ export function createRecovery(ctx, config, store, clock) {
     for (const message of [...agent.inbox.nextTurn, ...agent.inbox.nextStep]) {
       if (message.source?.kind === SOURCE_KIND) agent.inbox.remove(message.id)
     }
-    agent.followup(createUserMessage({
+    await sendFirst(agent, createUserMessage({
       content: [{ type: 'text', text: noticeText(decision) }],
       source: {
         kind: SOURCE_KIND,

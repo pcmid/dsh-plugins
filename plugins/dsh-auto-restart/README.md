@@ -16,7 +16,7 @@
 2. The last turn must have been cut off (`interrupted` after a crash, or `aborted` by teardown when `afterShutdown` is on) in an earlier process and less than `maxAgeHours` ago. Alternatively, with `includeSubagents`, a recorded subagent must have been cut off after the root's own last turn ended.
 3. The automatic continuations since the last message a person sent (a typed prompt or the Continue button) must stay below `maxAttempts`; this bounds restart loops.
 4. The conversation is resumed through the Web Session controller, so its preset, model, permissions, and working directory come from its log. If something else already ran a turn in it, it is left alone.
-5. One next-turn notice is queued and flushed, which wakes the agent. A notice from an earlier attempt that never started its turn is replaced, not duplicated.
+5. One next-turn notice is queued at the front and flushed, which wakes the agent. Messages already queued stay queued behind it in their order. A notice from an earlier attempt that never started its turn is replaced, not duplicated.
 6. With `rearmGoals`, an active goal that the restart disarmed is rearmed, so its rounds continue after the notice turn. A goal whose round budget is spent stays as it is.
 
 Only the list is read at startup; the logs of the listed conversations are read once to judge them, independent of how many conversations are stored.
@@ -53,7 +53,7 @@ Each continued conversation gets one short notice (about 150–250 tokens) and r
 
 ## Known limitations
 
-- An orderly quit discards messages queued behind the running turn (the log records only how many). They are not restored; after a crash they are still queued and run with the continuation.
+- An orderly quit discards messages queued behind the running turn (the log records only how many). They are not restored; after a crash they are still queued and run after the continuation turn.
 - Background jobs, terminals, and subagents are not restarted; the notice asks the agent to check and restart what it still needs.
 - Whether a cut-off tool call with side effects ran is unknown; the plugin relies on the model following the Harness's "outcome unknown" guidance.
 - A conversation stopped inside one process run (for example by reloading a plugin) is not continued; only interruptions from an earlier process count.

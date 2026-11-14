@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-auto-restart",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Continues conversations whose turn was cut off when the Harness quit, restarted, or crashed.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-auto-restart#readme",
