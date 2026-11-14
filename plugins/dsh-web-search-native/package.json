@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-web-search-native",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "Web search provider that runs the model API's built-in web search, following the conversation or on one pinned channel, and adds a search-channel section to the Web search plugin page.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-web-search-native#readme",

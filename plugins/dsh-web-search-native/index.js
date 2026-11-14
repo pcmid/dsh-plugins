@@ -2,14 +2,18 @@
  * Native web search provider for the DeepSeek Harness `ctx.web` seam.
  *
  * Every `ctx.web.search()` call becomes one model request that carries the
- * API's own search capability, on the provider the initiating Agent's
- * conversation is using. Each provider can name the model its searches run on,
- * or follow the conversation's model; the chosen route's protocol picks the
- * request form: `anthropic-messages` sends the server-side `web_search` tool,
- * `openai-responses` searches through the OpenAI search endpoints. The route
- * also supplies the endpoint, credential, and headers, so no model or endpoint
- * is configured here. A provider whose route runs neither protocol answers not
- * ready, which withdraws the built-in `web_search` tool for its model steps.
+ * API's own search capability, on the provider and model the initiating
+ * Agent's conversation is using, or on one pinned provider and model. The
+ * chosen route's protocol picks the request form: `anthropic-messages` sends
+ * the server-side `web_search` tool the way Claude Code's WebSearch tool does
+ * (same system prompt, query message, `max_uses`, streamed reply, and no
+ * `thinking`, effort, or forced `tool_choice`), `openai-responses` searches
+ * through the OpenAI search endpoints. The route also supplies the endpoint,
+ * credential, headers, and output cap. The request names no thinking or
+ * reasoning effort unless the pinned channel configures one explicitly, so the
+ * model's own defaults apply. A provider whose route runs neither protocol
+ * answers not ready, which withdraws the built-in `web_search` tool for its
+ * model steps.
  *
  * @module @pcmid/dsh-web-search-native
  */
@@ -51,6 +55,10 @@ export function catalogApi(provider) {
   return apis.size === 1 ? [...apis][0] : undefined
 }
 
+/** System prompt of one search request, verbatim from Claude Code's WebSearch tool. */
+export const SEARCH_SYSTEM_PROMPT = 'You run a web search for another Claude model, which is waiting on the result and can search '
+  + 'again. Search once, then reply with a brief summary of the results.'
+
 /** Continuations allowed when the API pauses a long server-tool turn (`stop_reason: pause_turn`). */
 const MAX_PAUSE_CONTINUATIONS = 3
 
@@ -77,14 +85,12 @@ export const Config = z.object({
     .description('Search provider id. Pin it as web.searchProvider when several search providers are registered.'),
   toolType: z.string().default('web_search_20250305')
     .description('Server tool type sent to Anthropic Messages routes.'),
-  maxUses: z.natural().min(1).default(3)
-    .description('Maximum native searches the model may run for one query.'),
-  maxTokens: z.natural().min(256).default(4096)
-    .description('max_tokens of each request; thinking output counts toward it.'),
-  thinkingEffort: z.string().default('low')
-    .description('Effort used when a search model names none. Anthropic routes send output_config.effort for models the route marks compat.forceAdaptiveThinking; OpenAI routes send it as reasoning.effort.'),
+  maxUses: z.natural().min(1).default(8)
+    .description('Maximum native searches the model may run for one query (Claude Code uses 8).'),
+  maxTokens: z.natural().min(256)
+    .description('Output cap of each request. Empty uses the route\'s output cap for the model, as the conversation does.'),
   answer: z.boolean().default(true)
-    .description('Ask the model for a short cited answer in addition to the sources.'),
+    .description('Return the model\'s brief summary of the results in addition to the sources.'),
   allowedDomains: z.array(z.string()).default([])
     .description('Only search these domains. Sent to Anthropic Messages routes and to alpha/search; the Responses endpoint has no equivalent.'),
   blockedDomains: z.array(z.string()).default([])
@@ -101,7 +107,7 @@ export const Config = z.object({
     .description('Model every search runs on while followSession is off.')
     .volatile(),
   searchReasoningEffort: z.string().default('')
-    .description('Reasoning effort of that model; empty uses the route default, or the search provider\'s light default.')
+    .description('Reasoning effort of that model; empty sends none, so the model default applies.')
     .volatile(),
   searchTransport: z.union(['auto', 'alpha-search', 'responses']).default('auto')
     .description('OpenAI request form: auto tries alpha/search first and falls back to Responses; either name pins that endpoint.')
@@ -129,19 +135,9 @@ export function responsesEndpoint(baseURL) {
   return `${apiRoot(baseURL)}/responses`
 }
 
-/** Prompt that makes the model search for one query and answer from the results only. */
-export function buildPrompt(query, answer, now = new Date()) {
-  const today = now.toISOString().slice(0, 10)
-  if (!answer) {
-    return `Today is ${today}. Use the web_search tool to search the web for the query below. `
-      + 'After searching, reply with the single word: done.\n\n'
-      + `Query: ${query}`
-  }
-  return `Today is ${today}. Use the web_search tool to research the query below, then write a concise, `
-    + 'factual answer of at most about 200 words, grounded only in the search results and written in the '
-    + 'language of the query. Mention dates when recency matters, and say so when the results do not answer '
-    + 'the query.\n\n'
-    + `Query: ${query}`
+/** User message of one search request, verbatim from Claude Code's WebSearch tool. */
+export function buildPrompt(query) {
+  return `Perform a web search for the query: ${query}`
 }
 
 /** Request body of one `alpha/search` call. */
@@ -164,6 +160,7 @@ export function alphaBody({ model, query, reasoning, domains }) {
 export function responsesBody({ model, input, reasoning, maxTokens }) {
   return {
     model,
+    instructions: SEARCH_SYSTEM_PROMPT,
     input,
     max_output_tokens: maxTokens,
     tools: [{ type: 'web_search' }],
@@ -339,6 +336,87 @@ export function collectResponses(data) {
   return { content: content === '' ? undefined : content, sources, errors: [] }
 }
 
+/**
+ * Parse a server-sent event stream into the JSON `data` payload of each event.
+ * @param body - the response body stream.
+ */
+export async function * serverSentEvents(body) {
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const reader = body.getReader()
+  let finished = false
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      finished = done
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true })
+      let boundary
+      while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+        const frame = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary).replace(/^\r?\n\r?\n/, '')
+        const data = frame.split(/\r?\n/)
+          .filter(line => line.startsWith('data:'))
+          .map(line => line.slice(5).replace(/^ /, ''))
+          .join('\n')
+        if (data !== '' && data !== '[DONE]') yield JSON.parse(data)
+      }
+      if (done) return
+    }
+  } finally {
+    // A consumer that stops early (message_stop, an error event) leaves the connection to close here.
+    if (!finished) await reader.cancel().catch(() => {})
+    reader.releaseLock()
+  }
+}
+
+/**
+ * Accumulate Messages stream events into the message a non-streamed reply
+ * would return: complete content blocks, tool inputs parsed from their JSON
+ * deltas, text with its citations, and the final `stop_reason`.
+ */
+export function assembleMessage() {
+  const content = []
+  const partialJson = new Map()
+  let stopReason
+  return {
+    push(event) {
+      switch (event.type) {
+        case 'content_block_start': {
+          const block = { ...event.content_block }
+          if (block.type === 'text') block.text ??= ''
+          content[event.index] = block
+          break
+        }
+        case 'content_block_delta': {
+          const block = content[event.index]
+          const delta = event.delta
+          if (block === undefined || delta === undefined) break
+          if (delta.type === 'text_delta') block.text = (block.text ?? '') + delta.text
+          else if (delta.type === 'citations_delta') block.citations = [...block.citations ?? [], delta.citation]
+          else if (delta.type === 'input_json_delta') partialJson.set(event.index, (partialJson.get(event.index) ?? '') + delta.partial_json)
+          break
+        }
+        case 'content_block_stop': {
+          const json = partialJson.get(event.index)
+          if (json !== undefined && content[event.index] !== undefined) {
+            content[event.index].input = json === '' ? {} : JSON.parse(json)
+            partialJson.delete(event.index)
+          }
+          break
+        }
+        case 'message_delta':
+          if (event.delta?.stop_reason !== undefined) stopReason = event.delta.stop_reason
+          break
+        default:
+          break
+      }
+    },
+    result() {
+      return { content: content.filter(block => block !== undefined), stop_reason: stopReason }
+    },
+  }
+}
+
 /** Search provider that runs native web search on the initiating Agent's route. */
 export class NativeSearchProvider {
   constructor(ctx, config) {
@@ -485,30 +563,38 @@ export class NativeSearchProvider {
   }
 
   /**
-   * Thinking fields of one Anthropic Messages search turn, keeping it as light
-   * as the model allows. Models the route marks `compat.forceAdaptiveThinking`
-   * reject `thinking: { type: disabled }`, so they get adaptive thinking at the
-   * requested effort, translated through the route's effort table, or else at
-   * the configured effort.
+   * Effort of an explicitly configured channel in the route's wire vocabulary.
+   * Following the conversation, and a pinned channel without an effort, send
+   * none, so the model's own default applies.
+   * @returns the wire effort, or undefined when none is configured or the route maps it to nothing.
    */
-  thinkingFields(route, model, effort) {
+  wireEffort(route, model, effort) {
+    if (effort === undefined) return undefined
     const declared = route.profile.models?.find(entry => entry.id === model) ?? route.profile.modelOverrides?.[model]
-    if (declared?.compat?.forceAdaptiveThinking !== true) return { thinking: { type: 'disabled' } }
-    const requested = effort === undefined ? undefined : declared.reasoningEfforts?.[effort] ?? effort
-    return { thinking: { type: 'adaptive' }, output_config: { effort: requested ?? this.config.thinkingEffort } }
+    const table = declared?.reasoningEfforts
+    const wire = table === undefined ? effort : table[effort]
+    return wire === undefined || wire === null || wire === 'none' || wire === 'off' ? undefined : wire
   }
 
   /**
-   * OpenAI `reasoning` object of one search turn.
-   * @returns `{ effort }` in the route's wire vocabulary, or undefined when the
-   * model takes no reasoning field at all.
+   * Output cap of one search: the configured `maxTokens`, else the cap the
+   * route resolves for the model's own calls, else the built-in catalog's
+   * output limit, which is what the route's adapter falls back to.
+   * @throws when none of them names a cap.
    */
-  reasoningOf(route, model, effort) {
-    const declared = route.profile.models?.find(entry => entry.id === model) ?? route.profile.modelOverrides?.[model]
-    const table = declared?.reasoningEfforts
-    const requested = effort ?? this.config.thinkingEffort
-    const wire = table === undefined ? (requested === 'off' ? 'none' : requested) : table[requested]
-    return wire === undefined || wire === 'none' ? undefined : { effort: wire }
+  async maxTokensFor(target) {
+    if (this.config.maxTokens !== undefined) return this.config.maxTokens
+    const resolved = await this.ctx.llm.resolveCallConfig({ provider: target.provider, model: target.model })
+    if (resolved.maxTokens !== undefined) return resolved.maxTokens
+    const builtin = getBuiltinModels(target.provider).find(model => model.id === target.model)?.maxTokens
+    if (builtin !== undefined) return builtin
+    throw new Error(`${this.id}: ${target.provider}/${target.model} names no output cap; set maxTokens on the model or on this plugin`)
+  }
+
+  /** OpenAI `reasoning` object of an explicitly configured effort, or undefined. */
+  reasoningOf(target) {
+    const effort = this.wireEffort(target.route, target.model, target.effort)
+    return effort === undefined ? undefined : { effort }
   }
 
   /** Key of one provider's alpha/search health, scoped to the route and model it was tried on. */
@@ -568,6 +654,42 @@ export class NativeSearchProvider {
     return data
   }
 
+  /**
+   * POST one streamed Messages request and assemble its events into the final
+   * message: `content` blocks as the non-streamed reply would list them, and
+   * `stop_reason`.
+   * @throws on an HTTP failure, an `error` event, or a stream that ends before `message_stop`.
+   */
+  async postStream(endpoint, headers, body, signal) {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { ...headers, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+      signal,
+    })
+    const host = new URL(endpoint).host
+    if (!response.ok) {
+      const raw = await response.text()
+      let detail
+      try {
+        detail = JSON.parse(raw)?.error?.message
+      } catch {
+        detail = undefined
+      }
+      throw new Error(`${this.id}: HTTP ${response.status} from ${host} for model ${body.model}: ${typeof detail === 'string' ? detail : clip(raw, 300)}`)
+    }
+    if (response.body === null) throw new Error(`${this.id}: empty response from ${host}`)
+    const message = assembleMessage()
+    for await (const event of serverSentEvents(response.body)) {
+      if (event.type === 'error') {
+        throw new Error(`${this.id}: stream error from ${host} for model ${body.model}: ${event.error?.message ?? clip(JSON.stringify(event), 300)}`)
+      }
+      message.push(event)
+      if (event.type === 'message_stop') return message.result()
+    }
+    throw new Error(`${this.id}: the stream from ${host} ended before message_stop`)
+  }
+
   /** Cap the seam result the way the request asked, and drop the answer when it is switched off. */
   finalize(request, collected) {
     const limit = request.maxResults
@@ -602,23 +724,22 @@ export class NativeSearchProvider {
       'anthropic-version': this.config.anthropicVersion,
       'x-api-key': target.apiKey,
     }
-    const prompt = buildPrompt(request.query, this.config.answer)
+    const effort = this.wireEffort(target.route, target.model, target.effort)
     const base = {
       model: target.model,
-      max_tokens: this.config.maxTokens,
+      max_tokens: await this.maxTokensFor(target),
+      system: SEARCH_SYSTEM_PROMPT,
       tools: [this.tool()],
-      ...this.thinkingFields(target.route, target.model, target.effort),
+      stream: true,
+      ...effort === undefined ? {} : { output_config: { effort } },
     }
     const blocks = []
     for (let round = 0; round <= MAX_PAUSE_CONTINUATIONS; round++) {
-      const messages = [{ role: 'user', content: prompt }]
+      const messages = [{ role: 'user', content: buildPrompt(request.query) }]
       if (blocks.length > 0) messages.push({ role: 'assistant', content: blocks })
-      const data = await this.post(endpoint, headers, { ...base, messages }, signal)
-      if (!Array.isArray(data.content)) {
-        throw new Error(`${this.id}: unexpected response from ${new URL(endpoint).host}`)
-      }
-      blocks.push(...data.content)
-      if (data.stop_reason !== 'pause_turn') break
+      const message = await this.postStream(endpoint, headers, { ...base, messages }, signal)
+      blocks.push(...message.content)
+      if (message.stop_reason !== 'pause_turn') break
     }
 
     const collected = collectResult(blocks)
@@ -658,7 +779,7 @@ export class NativeSearchProvider {
     const body = alphaBody({
       model: target.model,
       query: request.query,
-      reasoning: this.reasoningOf(target.route, target.model, target.effort),
+      reasoning: this.reasoningOf(target),
       domains: this.config.allowedDomains,
     })
     const data = await this.post(alphaEndpoint(target.route.baseURL), {
@@ -678,9 +799,9 @@ export class NativeSearchProvider {
     const endpoint = responsesEndpoint(target.route.baseURL)
     const body = responsesBody({
       model: target.model,
-      input: buildPrompt(request.query, this.config.answer),
-      reasoning: this.reasoningOf(target.route, target.model, target.effort),
-      maxTokens: this.config.maxTokens,
+      input: buildPrompt(request.query),
+      reasoning: this.reasoningOf(target),
+      maxTokens: await this.maxTokensFor(target),
     })
     const data = await this.post(endpoint, {
       ...target.route.headers,

@@ -14,7 +14,7 @@
 选“跟随会话”时不展开下面的模型和思考等级；选渠道后才展开，并且只显示这一个渠道的设置，不是把所有渠道列出来。
 
 - **模型**：这个渠道可选的模型。
-- **思考等级**：选定模型后出现，选项来自该模型自己的能力；不选则用该渠道的默认值。
+- **思考等级**：选定模型后出现，选项来自该模型自己的能力；不选则请求里不带等级，用模型自己的默认值。
 - **接口**：只有 OpenAI 协议（`openai-responses`）的渠道显示。`自动` 先用 `alpha/search`，失败时回退 `Responses`；手动选 `Alpha Search` 或 `Responses` 后不再回退。
 - **不支持的供应商**：协议不是 `anthropic-messages` 或 `openai-responses` 的供应商不出现在渠道列表里。
 
@@ -24,7 +24,15 @@
 
 两种协议随渠道走：
 
-- **Anthropic Messages：** 每个查询发起一次 Messages 请求，携带接口原生的 `web_search` 服务端工具（`web_search_20250305`），由接口完成搜索。接口接受了工具却没有执行搜索时会明确报错，不会返回空结果。
+- **Anthropic Messages：** 请求参数照 Claude Code 的 WebSearch 工具：
+  - `system`：`You run a web search for another Claude model, which is waiting on the result and can search again. Search once, then reply with a brief summary of the results.`
+  - 用户消息：`Perform a web search for the query: <查询>`
+  - `tools`：只有 `web_search_20250305`，`max_uses` 默认 8；
+  - 流式（`stream: true`）；
+  - 不带 `thinking`、不带 `output_config.effort`、不带 `tool_choice`，由模型按自己的默认值处理。不强制指定工具，是因为模型默认就在思考时（如 Claude 5.5），接口不允许强制工具，Claude Code 在这种情况下也会退回 auto。只有固定渠道显式选了思考等级时，才发 `output_config.effort`；
+  - `max_tokens` 用路由给该模型配置的输出上限（与会话一致），没配置时用内置目录的输出上限，显式设置 `maxTokens` 时以它为准。
+
+  由接口完成搜索。接口接受了工具却没有执行搜索时会明确报错，不会返回空结果。
 - **OpenAI Responses：** 默认先调 `alpha/search`（携带 `commands.search_query`），返回有效结果就直接使用；接口不支持或请求失败时回退到 Responses（携带 `web_search` 服务端工具和 `include: web_search_call.action.sources`）。一次失败会在内存里记住 10 分钟，这期间直接走 Responses。取消搜索不会触发回退，也不会被记成失败。
 
 `alpha/search` 的 `encrypted_output` 是不透明数据，始终忽略。返回给模型的答案会把接口私有的引用标记换成指向来源的链接。
@@ -43,19 +51,18 @@
 | `followSession` | `true` | 搜索渠道是否跟随会话 |
 | `searchProvider` | 空 | 固定渠道的供应商，`followSession` 为 `false` 时有效 |
 | `searchModel` | 空 | 固定渠道的模型 |
-| `searchReasoningEffort` | 空 | 固定渠道的思考等级，空表示用该渠道的默认值 |
+| `searchReasoningEffort` | 空 | 固定渠道的思考等级，空表示不发等级，用模型默认值 |
 | `searchTransport` | `auto` | OpenAI 接口：`auto` / `alpha-search` / `responses` |
 | `toolType` | `web_search_20250305` | Anthropic Messages 的服务端工具类型 |
-| `maxUses` | `3` | 单个查询内模型最多执行的原生搜索次数 |
-| `maxTokens` | `4096` | 每次请求的 `max_tokens`，thinking 输出也计入 |
-| `thinkingEffort` | `low` | 搜索模型没有指定等级时使用 |
-| `answer` | `true` | 是否让模型附带简短的引用式回答 |
+| `maxUses` | `8` | 单个查询内模型最多执行的原生搜索次数（与 Claude Code 相同） |
+| `maxTokens` | 空 | 每次请求的输出上限，thinking 输出也计入；空表示用路由给该模型的输出上限 |
+| `answer` | `true` | 是否在来源之外返回模型对结果的简短总结 |
 | `allowedDomains` / `blockedDomains` | `[]` | 透传为 `allowed_domains` / `blocked_domains`，两者只能设置一个；Responses 接口没有对应参数 |
 | `anthropicVersion` | `2023-06-01` | `anthropic-version` 请求头 |
 
 ## 费用
 
-每个查询都是一次按所选模型计费的请求：包括接口的搜索次数费用，以及作为输入 token 计费的搜索结果（在 `claude-haiku-5-5` 上实测约 1.4 万输入 token）。`web_search` 一次调用最多可并发 10 个查询；自动回退也可能产生额外费用。只发送查询和搜索提示，不复制整段会话。
+每个查询都是一次按所选模型计费的请求（不带 thinking 参数时，默认就会思考的模型，例如 Claude 5.5，会按它的默认等级思考）：包括接口的搜索次数费用，以及作为输入 token 计费的搜索结果（在 `claude-haiku-5-5` 上实测约 1.4 万输入 token）。`web_search` 一次调用最多可并发 10 个查询；自动回退也可能产生额外费用。只发送查询和搜索提示，不复制整段会话。
 
 ## 排查
 
