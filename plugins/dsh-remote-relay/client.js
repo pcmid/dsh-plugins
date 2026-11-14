@@ -41,8 +41,8 @@ window.__ModuleLoader__.load({
       relaysTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws，只写域名时会自动补全。可以添加多个，顺序就是优先级：设备先连第一个，1.5 秒内没连上或连接失败时再试下一个，连上后一直使用这个 relay，直到连接断开。',
       relayEmpty: '还没有 relay。',
       relayAdd: '添加',
-      relayMoveUp: '上移',
-      relayMoveDown: '下移',
+      relayDrag: '调整 {host} 的顺序',
+      relayDragTip: '拖动调整顺序，或按 ↑ ↓ 键',
       relayRemove: '移除',
       latency: '{ms} ms',
       relayDevices: '{count} 台设备经此连接',
@@ -177,8 +177,8 @@ window.__ModuleLoader__.load({
       relaysTip: 'WebSocket addresses of your relays, such as wss://relay.example.com/ws; a bare host name is completed automatically. You can add several, and their order is their priority: devices try the first relay first, the next one after 1.5 s or as soon as the first fails, and stay on the relay they connected through until the connection drops.',
       relayEmpty: 'No relays yet.',
       relayAdd: 'Add',
-      relayMoveUp: 'Move up',
-      relayMoveDown: 'Move down',
+      relayDrag: 'Reorder {host}',
+      relayDragTip: 'Drag to reorder, or press ↑ ↓',
       relayRemove: 'Remove',
       latency: '{ms} ms',
       relayDevices: '{count} device(s) connected through it',
@@ -628,6 +628,14 @@ window.__ModuleLoader__.load({
 .${PREFIX}-relay-meta .${PREFIX}-dot { width: 6px; height: 6px; margin-inline-end: -2px; }
 .${PREFIX}-relay .${PREFIX}-error { margin: 0; }
 .${PREFIX}-relay-actions { flex: none; display: flex; gap: 4px; }
+.${PREFIX}-relay-grip { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 32px; margin: 0 -8px 0 -6px; padding: 0; border: 0; border-radius: var(--dsw-radius-xs, 6px); background: transparent; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.${PREFIX}-relay-grip:hover:not(:disabled) { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); }
+.${PREFIX}-relay-grip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 0; }
+.${PREFIX}-relay-grip:disabled { cursor: default; opacity: .4; }
+.${PREFIX}-relays[data-dragging] { -webkit-user-select: none; user-select: none; }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay { transition: transform .15s ease; }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay[data-dragged] { position: relative; z-index: 1; transition: none; margin-inline: -8px; padding-inline: 8px; border-bottom-color: transparent; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-1, #fff); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); box-shadow: var(--dsw-elevation-prominent, 0 4px 16px rgba(0,0,0,.12)); }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay[data-dragged] .${PREFIX}-relay-grip { cursor: grabbing; color: var(--dsw-alias-label-secondary); }
 .${PREFIX}-relay-add { display: flex; gap: 8px; align-items: center; padding: 8px 0 4px; }
 .${PREFIX}-relay-add .${PREFIX}-input { max-width: none; }
 .${PREFIX}-latency { flex: none; font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
@@ -1937,35 +1945,145 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           : h(WriteStatus, { write, t }));
     }
 
-    function IconButton({ label, icon, disabled, onClick }) {
-      return h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-icon': true, 'aria-label': label, title: label, disabled, onClick }, h(icon, { size: 14 }));
+    function GripGlyph() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'currentColor', 'aria-hidden': true },
+        [3, 7, 11].flatMap((y) => [h('circle', { key: `a${y}`, cx: 5, cy: y, r: 1.15 }), h('circle', { key: `b${y}`, cx: 9, cy: y, r: 1.15 })]));
     }
 
-    /** Ordered relay list; its order is the priority devices try the relays in. */
+    /**
+     * Ordered relay list; its order is the priority devices try the relays in. A row moves by
+     * dragging its handle (mouse or touch), or with the arrow keys while the handle has focus.
+     */
     function RelayListSetting({ list, relays, write, disabled, onSave, t }) {
       const [draft, setDraft] = useState('');
+      // A new order shows at once and stays until the saved list matches it or a save fails.
+      const [order, setOrder] = useState(null);
+      const [drag, setDragState] = useState(null);
+      // Pointer events can arrive faster than renders, so the drag is read from a ref.
+      const dragRef = useRef(null);
+      const setDrag = (value) => { dragRef.current = value; setDragState(value); };
+      const listRef = useRef(null);
+      const focusAfter = useRef(null);
+      // Orders are saved one at a time; only the latest one waiting is saved next.
+      const saving = useRef(false);
+      const waiting = useRef(null);
       const locked = disabled || write?.saving === true;
-      // Status rows follow the saved list by position; until the Host catches up with a change, show none.
-      const statusOf = (index) => (Array.isArray(relays) && relays.length === list.length ? relays[index] : undefined);
+      const listKey = JSON.stringify(list);
+      useEffect(() => {
+        if (!saving.current) setOrder(null);
+        if (dragRef.current !== null) setDrag(null);
+      }, [listKey]);
+      const shown = order ?? list;
+      useEffect(() => {
+        if (focusAfter.current === null) return;
+        listRef.current?.children[focusAfter.current]?.querySelector(`.${PREFIX}-relay-grip`)?.focus();
+        focusAfter.current = null;
+      });
+      // Status entries carry the text they were configured with, so they follow a row that moves.
+      const statusOf = (url) => (Array.isArray(relays) ? relays.find((relay) => relay.text === String(url).trim()) : undefined);
       const text = draft.trim();
-      const known = text === '' || list.includes(text) || (relays ?? []).some((relay) => relay.url === text);
+      const known = text === '' || shown.includes(text) || (relays ?? []).some((relay) => relay.url === text);
       const add = async () => {
-        if (known || locked) return;
-        if (await onSave([...list, text])) setDraft('');
+        if (known || locked || saving.current) return;
+        if (await onSave([...shown, text])) setDraft('');
       };
-      const move = (index, delta) => {
-        const next = [...list];
-        next.splice(index + delta, 0, ...next.splice(index, 1));
-        void onSave(next);
+      const persist = async (next) => {
+        waiting.current = next;
+        if (saving.current) return;
+        saving.current = true;
+        try {
+          while (waiting.current !== null) {
+            const target = waiting.current;
+            waiting.current = null;
+            if (!await onSave(target)) {
+              waiting.current = null;
+              setOrder(null);
+            }
+          }
+        } finally {
+          saving.current = false;
+        }
+      };
+      const reorder = (from, to) => {
+        if (disabled || from === to || to < 0 || to >= shown.length) return;
+        const next = [...shown];
+        next.splice(to, 0, ...next.splice(from, 1));
+        setOrder(next);
+        void persist(next);
+      };
+      const startDrag = (event, index) => {
+        if (disabled || event.button !== 0 || shown.length < 2) return;
+        const rows = [...(listRef.current?.children ?? [])].map((row) => row.getBoundingClientRect());
+        if (rows.length !== shown.length) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        setDrag({ from: index, to: index, dy: 0, startY: event.clientY, rows, pointerId: event.pointerId });
+      };
+      const moveDrag = (event) => {
+        const current = dragRef.current;
+        if (current === null || event.pointerId !== current.pointerId) return;
+        const { rows, from } = current;
+        const box = rows[from];
+        // The row stays within the list. It passes a neighbour once it covers half of that neighbour.
+        const dy = Math.min(Math.max(event.clientY - current.startY, rows[0].top - box.top), rows[rows.length - 1].bottom - box.bottom);
+        const middle = (row) => row.top + row.height / 2;
+        const to = rows.filter((row, i) => (i < from ? middle(row) < box.top + dy : i > from && middle(row) < box.bottom + dy)).length;
+        setDrag({ ...current, dy, to });
+      };
+      const endDrag = (event) => {
+        // Touch moves can be coalesced, so the release point counts as the last move.
+        if (event.type === 'pointerup') moveDrag(event);
+        const current = dragRef.current;
+        if (current === null || event.pointerId !== current.pointerId) return;
+        setDrag(null);
+        if (event.type === 'pointerup') reorder(current.from, current.to);
+      };
+      // While dragging, the rows between the old and the new place step aside by one row.
+      const offsetOf = (index) => {
+        if (drag === null) return 0;
+        if (index === drag.from) return drag.dy;
+        const step = drag.rows[drag.from].height;
+        if (drag.to > drag.from && index > drag.from && index <= drag.to) return -step;
+        if (drag.to < drag.from && index >= drag.to && index < drag.from) return step;
+        return 0;
       };
       return h('div', null,
         h(Row, { title: t('relays'), desc: t('relaysTip') }, h(WriteStatus, { write, t })),
-        list.length === 0
+        shown.length === 0
           ? h('div', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, t('relayEmpty'))
-          : h('ol', { className: `${PREFIX}-relays` }, list.map((url, index) => {
-            const relay = statusOf(index);
-            return h('li', { key: `${index}:${url}`, className: `${PREFIX}-relay` },
-              h('span', { className: `${PREFIX}-relay-index` }, index + 1),
+          : h('ol', { ref: listRef, className: `${PREFIX}-relays`, 'data-dragging': drag !== null || undefined }, shown.map((url, index) => {
+            const relay = statusOf(url);
+            const offset = offsetOf(index);
+            // While dragging, numbers show the places the rows would take.
+            const place = drag === null ? index : index === drag.from ? drag.to : index + Math.sign(offset);
+            return h('li', {
+              key: shown.indexOf(url) === index ? url : `${index}:${url}`,
+              className: `${PREFIX}-relay`,
+              'data-dragged': drag?.from === index || undefined,
+              style: drag === null ? undefined : { transform: offset === 0 ? undefined : `translateY(${offset}px)` },
+            },
+              h('button', {
+                type: 'button',
+                className: `${PREFIX}-relay-grip`,
+                'aria-label': fill(t('relayDrag'), { host: url }),
+                'aria-keyshortcuts': 'ArrowUp ArrowDown',
+                title: t('relayDragTip'),
+                disabled: disabled || shown.length < 2,
+                onPointerDown: (event) => { startDrag(event, index); },
+                onPointerMove: moveDrag,
+                onPointerUp: endDrag,
+                onPointerCancel: endDrag,
+                onLostPointerCapture: endDrag,
+                onKeyDown: (event) => {
+                  const to = event.key === 'ArrowUp' ? index - 1 : event.key === 'ArrowDown' ? index + 1 : null;
+                  if (to === null) return;
+                  event.preventDefault();
+                  if (to < 0 || to >= shown.length) return;
+                  focusAfter.current = to;
+                  reorder(index, to);
+                },
+              }, h(GripGlyph)),
+              h('span', { className: `${PREFIX}-relay-index` }, place + 1),
               h('div', { className: `${PREFIX}-relay-main` },
                 h('span', { className: `${PREFIX}-relay-url ${PREFIX}-mono` }, url),
                 relay ? h('span', { className: `${PREFIX}-relay-meta` },
@@ -1974,9 +2092,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
                   relay.devices > 0 ? h('span', null, fill(t('relayDevices'), { count: relay.devices })) : null) : null,
                 relay?.error ? h('span', { className: `${PREFIX}-error` }, relay.error) : null),
               h('div', { className: `${PREFIX}-relay-actions` },
-                h(IconButton, { label: t('relayMoveUp'), icon: UI.IconChevronUpOutlineRegular, disabled: locked || index === 0, onClick: () => { move(index, -1); } }),
-                h(IconButton, { label: t('relayMoveDown'), icon: UI.IconChevronDownOutlineRegular, disabled: locked || index === list.length - 1, onClick: () => { move(index, 1); } }),
-                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-danger': true, disabled: locked, onClick: () => { void onSave(list.filter((_, i) => i !== index)); } }, t('relayRemove'))));
+                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-danger': true, disabled: locked, onClick: () => { if (!saving.current) void onSave(shown.filter((_, i) => i !== index)); } }, t('relayRemove'))));
           })),
         h('div', { className: `${PREFIX}-relay-add` },
           h('input', {
