@@ -49,7 +49,7 @@ export const Config = z.object({
 /** Exact `/api` routes this plugin answers; only owner Peers reach exact routes. */
 const API_PREFIX = '/api/pcmid/remote-relay'
 const OPERATIONS = [
-  'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close', 'remote-probe',
+  'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close', 'remote-probe', 'remote-relay-pin',
   'last-session', 'session-opened',
 ]
 const OWNER = { principal: { kind: 'owner' } }
@@ -788,6 +788,11 @@ class RemoteRelayHost {
           return ok(await this.remotes.open(String(payload?.id ?? '')))
         case 'remote-probe': {
           const id = String(payload?.id ?? '')
+          return ok({ id, results: await this.remotes.probe(id) })
+        }
+        case 'remote-relay-pin': {
+          const id = String(payload?.id ?? '')
+          await this.remotes.prefer(id, typeof payload?.relayUrl === 'string' ? payload.relayUrl : null)
           return ok({ id, results: await this.remotes.probe(id) })
         }
         case 'remote-close':

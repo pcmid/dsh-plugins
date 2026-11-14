@@ -173,6 +173,21 @@ function saveRelays(serverId, relayUrls) {
   })
 }
 
+/** Store the relay this browser prefers for a host, or none. */
+function savePreferredRelay(serverId, relayUrl) {
+  return store('readwrite', (hosts) => {
+    const request = hosts.get(serverId)
+    request.onsuccess = () => {
+      if (request.result === undefined) return
+      const next = { ...request.result }
+      if (relayUrl === null) delete next.preferredRelay
+      else next.preferredRelay = relayUrl
+      hosts.put(next)
+    }
+    return request
+  })
+}
+
 /** Host name of a relay URL, for display. */
 function relayHost(relayUrl) {
   try {
@@ -669,6 +684,7 @@ async function openSession(host) {
     serverId: host.serverId,
     device: { privateKey: host.privateKey, publicJwk: host.publicJwk },
     deviceName: host.deviceName,
+    preferredRelay: host.preferredRelay,
     onrelays: (relayUrls) => {
       host.relayUrls = relayUrls
       void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this visit only */ })
@@ -867,6 +883,13 @@ async function onBridgeMessage(event) {
       reply = { error: t('relaysOpenOnly') }
     } else {
       try {
+        // `pin` (a relay, or null) chooses the relay this browser uses first, then measures again.
+        if (Object.hasOwn(data, 'pin') && (data.pin === null || session.remote.relayUrls.includes(data.pin))) {
+          await savePreferredRelay(session.host.serverId, data.pin)
+          if (data.pin === null) delete session.host.preferredRelay
+          else session.host.preferredRelay = data.pin
+          await session.remote.prefer(data.pin)
+        }
         const results = await session.remote.probe()
         reply = { results: results.map((result) => ({ ...result, host: relayHost(result.relayUrl) })) }
       } catch (error) {

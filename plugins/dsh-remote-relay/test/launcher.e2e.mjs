@@ -101,6 +101,11 @@ try {
   }), [BRIDGE, secondId])
   assert.equal(measured.id, secondId)
   assert.deepEqual(measured.results.map((result) => [result.host, result.current, typeof result.ms]), [[new URL(relayUrl).host, true, 'number']])
+  const pinned = await onSecond.evaluate(([bridge, id, pin]) => new Promise((resolve) => {
+    addEventListener('message', (event) => { if (event.data?.channel === bridge.channel && event.data.type === 'relays-result') resolve(event.data) })
+    parent.postMessage({ ...bridge, type: 'relays', id, pin }, '*')
+  }), [BRIDGE, secondId, relayUrl])
+  assert.deepEqual(pinned.results.map((result) => [result.current, result.preferred]), [[true, true]])
   await page.waitForSelector('#chip', { state: 'hidden' })
   await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])
   const backOnFirst = await probedFrame(page, 'switched frame', onSecond)

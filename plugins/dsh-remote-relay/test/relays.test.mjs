@@ -56,6 +56,22 @@ test('the host serves every relay and devices fall over to the next one', async 
     assert.deepEqual(probe.results.map((result) => [result.host, result.current]), [[new URL(relayA).host, true], [new URL(relayB).host, false]])
     for (const result of probe.results) assert.equal(typeof result.ms, 'number', JSON.stringify(result))
 
+    // Choosing a relay moves the open tunnel onto it and keeps the choice for later connections.
+    const pinned = (await viewer.call('remote-relay-pin', { id: added.added, relayUrl: relayB })).value
+    assert.deepEqual(pinned.results.map((result) => [result.host, result.current, result.preferred]), [[new URL(relayA).host, false, false], [new URL(relayB).host, true, true]])
+    assert.equal(remoteRecord().preferredRelay, relayB)
+    remote = (await viewer.call('remotes')).value.remotes[0]
+    assert.deepEqual([remote.via, remote.preferred], [new URL(relayB).host, new URL(relayB).host])
+    await viewer.call('remote-close', { id: added.added })
+    await viewer.call('remote-open', { id: added.added })
+    remote = await until(async () => { const value = (await viewer.call('remotes')).value.remotes[0]; return value.state === 'connected' && value }, 'reconnected through the pinned relay')
+    assert.equal(remote.via, new URL(relayB).host)
+    assert.equal((await viewer.call('remote-relay-pin', { id: added.added, relayUrl: 'wss://elsewhere.example/ws' })).error.code, 'remote-relay/not-found')
+    // Unpinning keeps the open tunnel where it is.
+    await viewer.call('remote-relay-pin', { id: added.added, relayUrl: null })
+    assert.equal(remoteRecord().preferredRelay, undefined)
+    assert.equal((await viewer.call('remotes')).value.remotes[0].via, new URL(relayB).host)
+
     // The host moves its first relay to one that is down; the device learns the new list on its
     // next handshake and connects through the relay that still answers.
     settings.relays = [deadRelay, relayB]

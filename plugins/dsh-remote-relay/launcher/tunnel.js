@@ -1449,7 +1449,8 @@ export async function pairDevice({ pairing, device, deviceName }) {
  * Keeps one authenticated tunnel to a paired host, reconnecting with backoff, and exposes request
  * and WebSocket operations that wait for the tunnel. Each connection picks a relay with
  * {@link connectAny}; an open tunnel stays on its relay until it drops, even when a relay with a
- * higher priority recovers.
+ * higher priority recovers. A preferred relay, chosen by the user, is tried first; the other relays
+ * still follow it in priority order, so a preferred relay that is down does not cut the device off.
  */
 export class RemoteHost {
   /**
@@ -1460,10 +1461,13 @@ export class RemoteHost {
    * @param {string} options.deviceName - name reported to the host.
    * @param {(status: { state: string, error?: string, code?: string, hostName?: string, relayUrl?: string }) => void} [options.onstatus] - status observer.
    * @param {(relayUrls: string[]) => void} [options.onrelays] - the host offers a different relay list; store it.
+   * @param {string} [options.preferredRelay] - relay to try first while the host still offers it.
    */
   constructor(options) {
     this.options = options
     this.relayUrls = normalizeRelayList(options.relayUrls ?? options.relayUrl)
+    this.preferred = normalizeRelayList(options.preferredRelay ?? [])[0]
+    this.switching = false
     /** Relay carrying the open tunnel. */
     this.relayUrl = undefined
     this.running = false
@@ -1495,6 +1499,34 @@ export class RemoteHost {
     for (const waiter of this.waiters.splice(0)) waiter.reject(error)
   }
 
+  /** Relays in the order the next connection tries them. */
+  order() {
+    const preferred = this.preferred
+    return preferred !== undefined && this.relayUrls.includes(preferred)
+      ? [preferred, ...this.relayUrls.filter((relayUrl) => relayUrl !== preferred)]
+      : this.relayUrls
+  }
+
+  /**
+   * Prefer one relay, or none, from now on. When the open tunnel uses another relay, it is closed
+   * and the next connection tries the preferred relay first; requests and sockets in flight fail
+   * and their pages reconnect.
+   * @param {string | null} relayUrl - relay to prefer, or null to follow the host's priority again.
+   * @param {number} [timeoutMs] - how long to wait for the tunnel to come back.
+   * @returns {Promise<void>} settles once a tunnel is open again.
+   */
+  async prefer(relayUrl, timeoutMs = 30_000) {
+    this.preferred = relayUrl === null ? undefined : normalizeRelayList(relayUrl)[0]
+    if (!this.running) return
+    const mux = this.mux
+    if (this.preferred !== undefined && mux !== undefined && !mux.closed && this.relayUrl !== this.preferred) {
+      this.switching = true
+      this.mux = undefined
+      mux.close()
+    }
+    await this.ready(timeoutMs)
+  }
+
   /** Skip the current backoff delay, for example when the network returns. */
   retryNow() {
     this.wake?.abort()
@@ -1506,7 +1538,7 @@ export class RemoteHost {
       this.setStatus({ state: 'connecting', ...failures > 0 ? { error: this.status.error } : {} })
       try {
         this.attempt = new AbortController()
-        const { channel, hostName, relays, relayUrl } = await connectAny({ ...this.options, relayUrls: this.relayUrls, mode: 'auth', signal: this.attempt.signal })
+        const { channel, hostName, relays, relayUrl } = await connectAny({ ...this.options, relayUrls: this.order(), mode: 'auth', signal: this.attempt.signal })
         this.attempt = undefined
         if (!this.running) {
           channel.close(1000, 'stopped')
@@ -1524,10 +1556,13 @@ export class RemoteHost {
         this.setStatus({ state: 'connected', hostName, relayUrl })
         for (const waiter of this.waiters.splice(0)) waiter.resolve(mux)
         const { code, reason } = await closed
-        this.mux = undefined
+        if (this.mux === mux) this.mux = undefined
         this.relayUrl = undefined
         if (!this.running) return
-        this.setStatus({ state: 'connecting', error: `Connection lost (${code}${reason ? `: ${reason}` : ''})` })
+        // A switch the user asked for is not a lost connection.
+        if (this.switching) this.setStatus({ state: 'connecting' })
+        else this.setStatus({ state: 'connecting', error: `Connection lost (${code}${reason ? `: ${reason}` : ''})` })
+        this.switching = false
       } catch (error) {
         if (!this.running) return
         const code = error instanceof TunnelError ? error.code : 'error'
@@ -1551,14 +1586,14 @@ export class RemoteHost {
    * Measure the round trip to the host through every known relay. The open tunnel is measured in
    * place; every other relay gets a short-lived probe connection. Nothing switches relays.
    * @param {number} [timeoutMs] - deadline per relay.
-   * @returns {Promise<Array<{ relayUrl: string, current: boolean, ms: number | null, code?: string, error?: string }>>} one entry per relay, in priority order.
+   * @returns {Promise<Array<{ relayUrl: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>>} one entry per relay, in the host's priority order.
    */
   async probe(timeoutMs = PROBE_TIMEOUT_MS) {
     const relayUrls = [...this.relayUrls]
     const mux = this.mux !== undefined && !this.mux.closed ? this.mux : undefined
     const current = mux === undefined ? undefined : this.relayUrl
     return await Promise.all(relayUrls.map(async (relayUrl) => {
-      const entry = { relayUrl, current: relayUrl === current }
+      const entry = { relayUrl, current: relayUrl === current, preferred: relayUrl === this.preferred }
       const attempt = new AbortController()
       let timer
       try {

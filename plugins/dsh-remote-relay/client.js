@@ -134,7 +134,12 @@ window.__ModuleLoader__.load({
       readdHint: '已移除本机 · 点按重新添加',
       relaysAction: '线路与延迟…',
       relaysTitle: '{name} 的线路',
-      relaysIntro: '按优先级列出通往 {name} 的 relay 和往返延迟。这里只测量，不会切换连接：已建立的连接会一直使用当前 relay，断开后重连时再按优先级选择。',
+      relaysIntro: '按优先级列出通往 {name} 的 relay 和往返延迟。测量不会切换连接，也不会自动切回。选一条线路后，本机之后都先走它，它连不上时仍按顺序改用其他 relay；切换时连接会中断几秒。',
+      relayPinned: '已固定',
+      relaySwitch: '切换到此线路',
+      relayPin: '固定',
+      relayUnpin: '取消固定',
+      switchingRelay: '正在切换…',
       relayCurrent: '当前',
       probing: '正在测试…',
       probeAgain: '重新测试',
@@ -253,7 +258,12 @@ window.__ModuleLoader__.load({
       readdHint: 'Removed this DSH · choose to add it again',
       relaysAction: 'Relays and latency…',
       relaysTitle: 'Relays to {name}',
-      relaysIntro: 'The relays to {name} in priority order, with their round trip. This only measures and never switches: an open connection stays on its relay, and the priority applies again when it reconnects.',
+      relaysIntro: 'The relays to {name} in priority order, with their round trip. Measuring never switches the connection, and nothing switches back on its own. Choose a relay to use it first from now on; when it cannot be reached, the others are still tried in order. Switching interrupts the connection for a few seconds.',
+      relayPinned: 'Pinned',
+      relaySwitch: 'Switch to this relay',
+      relayPin: 'Pin',
+      relayUnpin: 'Unpin',
+      switchingRelay: 'Switching…',
       relayCurrent: 'Current',
       probing: 'Measuring…',
       probeAgain: 'Measure again',
@@ -763,7 +773,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       };
       return (Array.isArray(results) ? results : []).slice(0, 16).map((row) => ({
         host: text(row?.host) || hostOf(row?.relayUrl),
+        relayUrl: text(row?.relayUrl),
         current: row?.current === true,
+        preferred: row?.preferred === true,
         ms: Number.isFinite(row?.ms) ? Math.round(row.ms) : null,
         code: text(row?.code),
         error: text(row?.error),
@@ -1289,9 +1301,10 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       // A device's relays are measured on demand; the dialog opens in the window that shows the menu.
       let probeSeq = 0;
       let relayWaiter = null;
-      const askParent = (id) => new Promise((resolve, reject) => {
+      const askParent = (id, extra) => new Promise((resolve, reject) => {
         relayWaiter?.done({ error: 'superseded' });
-        const timer = setTimeout(() => { relayWaiter?.done({ error: t('probeNoAnswer') }); }, 15_000);
+        // Switching waits for the tunnel to come back before measuring again.
+        const timer = setTimeout(() => { relayWaiter?.done({ error: t('probeNoAnswer') }); }, extra.pin === undefined ? 15_000 : 50_000);
         const waiter = {
           id,
           done: (data) => {
@@ -1302,21 +1315,26 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           },
         };
         relayWaiter = waiter;
-        post(window.parent, { type: 'relays', id });
+        post(window.parent, { type: 'relays', id, ...extra });
       });
-      const probeRelays = async () => {
+      /** Measure the device's relays; with `pin` (a relay, or null to unpin), choose its relay first. */
+      const probeRelays = async (pin) => {
         const relays = state.relays;
         if (relays === null) return;
         const seq = ++probeSeq;
-        set({ relays: { ...relays, busy: true, error: null } });
+        set({ relays: { ...relays, busy: true, switching: pin === undefined ? undefined : pin ?? '', error: null } });
         let patch;
         try {
-          const value = state.mode === 'top' ? await call('remote-probe', { id: relays.id }) : await askParent(relays.id);
+          const extra = pin === undefined ? {} : { pin };
+          const value = state.mode === 'top'
+            ? await call(pin === undefined ? 'remote-probe' : 'remote-relay-pin', { id: relays.id, relayUrl: pin ?? null })
+            : await askParent(relays.id, extra);
           patch = { results: probeRows(value?.results) };
         } catch (error) {
           patch = { error: describeFailure(error, t) };
         }
-        if (seq === probeSeq && state.relays?.id === relays.id) set({ relays: { ...state.relays, busy: false, ...patch } });
+        if (seq === probeSeq && state.relays?.id === relays.id) set({ relays: { ...state.relays, busy: false, switching: undefined, ...patch } });
+        if (pin !== undefined && state.mode === 'top') void refresh();
       };
       const openRelays = (id) => {
         const name = state.mode === 'top' ? nameOf(id) : state.embed?.rows.remotes.find((row) => row.id === id)?.name ?? '';
@@ -1437,7 +1455,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
               source.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-result', id: data.id, ...message }, origin);
             } catch { /* the view is gone */ }
           };
-          call('remote-probe', { id: data.id }).then(
+          // `pin` (a relay, or null) chooses the device's relay before measuring.
+          const pinning = Object.hasOwn(data, 'pin') && (data.pin === null || typeof data.pin === 'string');
+          (pinning ? call('remote-relay-pin', { id: data.id, relayUrl: data.pin }) : call('remote-probe', { id: data.id })).then(
             (value) => { reply({ results: value.results }); },
             (error) => { reply({ error: describeFailure(error, t) }); });
           return;
@@ -1571,6 +1591,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           openRelays,
           closeRelays,
           probeRelays: () => { void probeRelays(); },
+          pinRelay: (relayUrl) => { void probeRelays(relayUrl); },
           registerFrame: (id, element) => {
             if (element === null) frames.delete(id);
             else frames.set(id, element);
@@ -2015,7 +2036,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             t,
           })
           : null,
-        state.mode === 'frame' && state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, close: props.closeRelays, t }) : null);
+        state.mode === 'frame' && state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, pin: props.pinRelay, close: props.closeRelays, t }) : null);
     }
 
     function MenuRowContent({ name, meta, metaTone, current, busy }) {
@@ -2238,7 +2259,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       removal.error ? h('p', { className: `${PREFIX}-error`, role: 'alert', style: { margin: 0 } }, fill(t('removeFailed'), { error: removal.error })) : undefined);
     }
 
-    function RelaysDialog({ relays, probe, close, t }) {
+    function RelaysDialog({ relays, probe, pin, close, t }) {
       const rows = relays.results ?? [];
       let body;
       if (relays.error) body = h('p', { className: `${PREFIX}-error`, role: 'alert', style: { margin: 0 } }, relays.error);
@@ -2252,11 +2273,21 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             h('span', { className: `${PREFIX}-relay-index` }, index + 1),
             h('div', { className: `${PREFIX}-relay-main` },
               h('span', { className: `${PREFIX}-relay-url` }, h('span', { className: `${PREFIX}-mono` }, row.host),
-                row.current ? h('span', { className: `${PREFIX}-badge` }, t('relayCurrent')) : null),
+                row.current ? h('span', { className: `${PREFIX}-badge` }, t('relayCurrent')) : null,
+                row.preferred ? h('span', { className: `${PREFIX}-badge`, 'data-tone': 'neutral' }, t('relayPinned')) : null),
               failed && row.code !== 'timeout' && row.error && !relays.busy ? h('span', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, row.error) : null),
             relays.busy
               ? h(Spinner, { size: 14 })
-              : h('span', { className: `${PREFIX}-latency`, 'data-tone': failed ? 'error' : undefined }, result));
+              : h('span', { className: `${PREFIX}-latency`, 'data-tone': failed ? 'error' : undefined }, result),
+            row.relayUrl
+              ? h('button', {
+                type: 'button',
+                className: `${PREFIX}-button`,
+                'data-size': 'small',
+                disabled: relays.busy,
+                onClick: () => { pin(row.preferred ? null : row.relayUrl); },
+              }, t(row.preferred ? 'relayUnpin' : row.current ? 'relayPin' : 'relaySwitch'))
+              : null);
         }));
       }
       return h(UI.Modal, {
@@ -2267,7 +2298,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         description: fill(t('relaysIntro'), { name: relays.name }),
         onClose: close,
         footer: h(React.Fragment, null,
-          h(UI.Button, { variant: 'outline', size: 'sm', onClick: probe, disabled: relays.busy }, relays.busy ? t('probing') : t('probeAgain')),
+          h(UI.Button, { variant: 'outline', size: 'sm', onClick: probe, disabled: relays.busy }, relays.busy ? t(relays.switching !== undefined ? 'switchingRelay' : 'probing') : t('probeAgain')),
           h(UI.Button, { variant: 'primary', size: 'sm', 'data-modal-autofocus': true, onClick: close }, t('close'))),
       }, body);
     }
@@ -2338,7 +2369,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, openRemove: props.openRemove, openRelays: props.openRelays, t }),
         state.add !== null ? h(AddDeviceDialog, { add: state.add, local: state.local, addDevice: props.add, closeAdd: props.closeAdd, t }) : null,
         state.removal !== null ? h(RemoveDeviceDialog, { removal: state.removal, remove: props.remove, closeRemove: props.closeRemove, t }) : null,
-        state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, close: props.closeRelays, t }) : null),
+        state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, pin: props.pinRelay, close: props.closeRelays, t }) : null),
       document.body);
     }
 

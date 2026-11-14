@@ -118,6 +118,7 @@ export class RemoteDevices {
         const session = this.sessions.get(remote.serverId)
         const relays = remote.relayUrls.map(relayHost)
         const via = session?.status.state === 'connected' && session.status.relayUrl ? relayHost(session.status.relayUrl) : null
+        const preferred = remote.preferredRelay !== undefined && remote.relayUrls.includes(remote.preferredRelay) ? relayHost(remote.preferredRelay) : null
         return {
           id: remote.serverId,
           name: remote.hostName || remote.serverId.slice(0, 8),
@@ -125,6 +126,7 @@ export class RemoteDevices {
           relay: via ?? relays[0] ?? '',
           relays,
           via,
+          preferred,
           pairedAt: remote.pairedAt,
           lastOpenedAt: remote.lastOpenedAt ?? null,
           state: session?.status.state ?? 'idle',
@@ -274,6 +276,7 @@ export class RemoteDevices {
       serverId: remote.serverId,
       device: this.keys.get(remote.serverId),
       deviceName: remote.deviceName,
+      preferredRelay: remote.preferredRelay,
       ...observers,
     })
   }
@@ -292,6 +295,24 @@ export class RemoteDevices {
     const client = open !== undefined && open.status.state !== 'rejected' ? open.remote : this.client(remote, {})
     const results = await client.probe()
     return results.map((result) => ({ ...result, host: relayHost(result.relayUrl) }))
+  }
+
+  /**
+   * Prefer one of a paired host's relays, or none, and move an open tunnel onto it. The choice is
+   * stored: later connections try that relay first while the host still offers it.
+   * @param {string} id - host id.
+   * @param {string | null} relayUrl - one of the host's relays, or null to follow its priority.
+   * @returns {Promise<void>} settles once an open tunnel is back.
+   */
+  async prefer(id, relayUrl) {
+    await this.loaded()
+    const remote = this.find(id)
+    if (relayUrl !== null && !remote.relayUrls.includes(relayUrl)) throw new TunnelError('not-found', 'This DSH does not offer that relay')
+    if (relayUrl === null) delete remote.preferredRelay
+    else remote.preferredRelay = relayUrl
+    await this.save()
+    const open = this.sessions.get(id)
+    if (open !== undefined && open.status.state !== 'rejected') await open.remote.prefer(relayUrl)
   }
 
   stop(id) {
