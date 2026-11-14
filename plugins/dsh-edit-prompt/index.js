@@ -56,7 +56,7 @@ const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000
 
 export const Config = z.object({
   archiveSource: z.boolean().default(true).volatile()
-    .description('Archive the original conversation after an edited prompt is resent, so the conversation appears to restart in place. When off, the original stays in the list next to the new conversation.'),
+    .description('On a DSH without in-place revert, where resending forks the conversation: archive the original after an edited prompt is resent, so the conversation appears to restart in place. When off, the original stays in the list next to the new conversation. A DSH with revert keeps the conversation and always archives the dropped history.'),
   maxFileBytes: z.natural().min(1).default(16 * 1024 * 1024)
     .description('Largest file, in bytes, whose earlier content is kept. A larger file changed by a dropped turn cannot be rewound.'),
   retentionDays: z.natural().min(1).default(30)
