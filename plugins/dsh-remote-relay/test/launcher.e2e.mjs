@@ -93,6 +93,28 @@ try {
   assert.equal(context.state, 'connected')
   assert.equal(context.rows.local, null)
   assert.deepEqual(context.rows.remotes.map((row) => [row.id, row.current, row.action]).sort(), [[hostId, false, 'switch'], [secondId, true, 'switch']].sort())
+  assert.equal(context.rows.relays, true)
+  // The launcher measures the open DSH's relays for the page's device menu.
+  // The launcher answers the page's relays dialog with snapshots: the list at once, then each round trip.
+  const measured = await onSecond.evaluate(([bridge, id]) => new Promise((resolve) => {
+    const seen = []
+    addEventListener('message', (event) => {
+      if (event.data?.channel !== bridge.channel || event.data.type !== 'relays-state') return
+      seen.push(event.data)
+      if (event.data.rows.every((row) => !row.pending)) resolve(seen)
+    })
+    parent.postMessage({ ...bridge, type: 'relays', id }, '*')
+  }), [BRIDGE, secondId])
+  assert.ok(measured[0].rows.every((row) => row.pending), 'the first snapshot lists the relays before any result')
+  const last = measured.at(-1)
+  assert.equal(last.id, secondId)
+  assert.deepEqual(last.rows.map((row) => [row.host, typeof row.ms]), [[new URL(relayUrl).host, 'number']])
+  assert.equal(last.current, last.rows[0].relayUrl)
+  const pinned = await onSecond.evaluate(([bridge, id, pin]) => new Promise((resolve) => {
+    addEventListener('message', (event) => { if (event.data?.channel === bridge.channel && event.data.type === 'relays-state' && event.data.preferred === pin) resolve(event.data) })
+    parent.postMessage({ ...bridge, type: 'relays', id, pin }, '*')
+  }), [BRIDGE, secondId, relayUrl])
+  assert.equal(pinned.switching, null)
   await page.waitForSelector('#chip', { state: 'hidden' })
   await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])
   const backOnFirst = await probedFrame(page, 'switched frame', onSecond)

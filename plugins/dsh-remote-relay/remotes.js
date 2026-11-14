@@ -15,7 +15,7 @@
 
 import { randomBytes } from 'node:crypto'
 import http from 'node:http'
-import { RemoteHost, TunnelError, createIdentity, decodePairing, importIdentity, pairDevice } from './launcher/tunnel.js'
+import { RemoteHost, TunnelError, createIdentity, decodePairing, importIdentity, normalizeRelayList, pairDevice } from './launcher/tunnel.js'
 import { forwardRequest, forwardUpgrade } from './loopback.js'
 
 const REMOTES_KEY = 'remote-relay/remotes'
@@ -33,6 +33,14 @@ function newLabel() {
 
 function errorText(error) {
   return error instanceof Error ? error.message : String(error)
+}
+
+function relayHost(relayUrl) {
+  try {
+    return new URL(relayUrl).host
+  } catch (_invalid) {
+    return relayUrl
+  }
 }
 
 function plain(res, status, text) {
@@ -81,6 +89,8 @@ export class RemoteDevices {
     this.port = Number.isInteger(payload.port) ? payload.port : null
     this.remotes = payload.remotes.filter((remote) => typeof remote?.serverId === 'string' && typeof remote.label === 'string')
     for (const remote of this.remotes) {
+      // Records before relay lists hold one `relayUrl`; it stays written as the first relay.
+      remote.relayUrls = normalizeRelayList(remote.relayUrls ?? remote.relayUrl)
       try {
         this.keys.set(remote.serverId, await importIdentity(remote.privateJwk))
       } catch (error) {
@@ -106,13 +116,25 @@ export class RemoteDevices {
     return this.remotes
       .map((remote) => {
         const session = this.sessions.get(remote.serverId)
-        let relay = remote.relayUrl
-        try { relay = new URL(remote.relayUrl).host } catch (_invalid) { /* stored URLs are normalized; keep the text */ }
+        const relays = remote.relayUrls.map(relayHost)
+        const via = session?.status.state === 'connected' && session.status.relayUrl ? relayHost(session.status.relayUrl) : null
+        const preferred = remote.preferredRelay !== undefined && remote.relayUrls.includes(remote.preferredRelay) ? relayHost(remote.preferredRelay) : null
         return {
           id: remote.serverId,
           name: remote.hostName || remote.serverId.slice(0, 8),
           deviceName: remote.deviceName,
-          relay,
+          relay: via ?? relays[0] ?? '',
+          relays,
+          via,
+          preferred,
+          // End-to-end round trip of the open tunnel (this DSH -> relay -> that DSH and back).
+          latencyMs: via === null ? null : session.remote.mux?.rtt ?? null,
+          // Full relay addresses, for measuring and choosing a relay.
+          relayUrls: [...remote.relayUrls],
+          currentRelay: via === null ? null : session.status.relayUrl,
+          // Numbers each opened tunnel, so a dialog can tell that a switch produced a new connection.
+          connection: via === null ? null : session.status.generation,
+          preferredRelay: preferred === null ? null : remote.preferredRelay,
           pairedAt: remote.pairedAt,
           lastOpenedAt: remote.lastOpenedAt ?? null,
           state: session?.status.state ?? 'idle',
@@ -145,7 +167,8 @@ export class RemoteDevices {
     if (previous !== undefined) this.stop(previous.serverId)
     const entry = {
       serverId: pairing.serverId,
-      relayUrl: pairing.relayUrl,
+      relayUrls: result.relayUrls,
+      relayUrl: result.relayUrls[0],
       hostName: result.hostName || pairing.hostName,
       deviceId: device.id,
       deviceName: result.device.name || name,
@@ -232,16 +255,13 @@ export class RemoteDevices {
     const existing = this.sessions.get(remote.serverId)
     if (existing !== undefined && existing.status.state !== 'rejected') return existing
     if (existing !== undefined) this.stop(remote.serverId)
-    const session = { status: { state: 'connecting', error: null, code: null }, active: 0, idle: undefined, remote: undefined }
-    session.remote = new RemoteHost({
-      relayUrl: remote.relayUrl,
-      serverId: remote.serverId,
-      device: this.keys.get(remote.serverId),
-      deviceName: remote.deviceName,
+    const session = { status: { state: 'connecting', error: null, code: null, relayUrl: null, generation: null }, active: 0, idle: undefined, remote: undefined }
+    session.remote = this.client(remote, {
       onstatus: (status) => {
-        session.status = { state: status.state, error: status.error ?? null, code: status.code ?? null }
+        session.status = { state: status.state, error: status.error ?? null, code: status.code ?? null, relayUrl: status.relayUrl ?? null, generation: status.generation ?? null }
         if (status.state === 'rejected') this.options.log('info', `"${remote.hostName}" refused this DSH: ${status.error}`)
       },
+      onrelays: (relayUrls) => { this.learned(remote, relayUrls) },
     })
     this.sessions.set(remote.serverId, session)
     if (session.remote.options.device === undefined) {
@@ -251,6 +271,65 @@ export class RemoteDevices {
     session.remote.start()
     this.scheduleIdle(remote.serverId, session)
     return session
+  }
+
+  client(remote, observers) {
+    return new RemoteHost({
+      relayUrls: remote.relayUrls,
+      serverId: remote.serverId,
+      device: this.keys.get(remote.serverId),
+      deviceName: remote.deviceName,
+      preferredRelay: remote.preferredRelay,
+      ...observers,
+    })
+  }
+
+  /** A handshake, the tunnel's or a measurement's, reported a different relay list: keep it. */
+  learned(remote, relayUrls) {
+    if (!this.remotes.includes(remote)) return
+    remote.relayUrls = relayUrls
+    remote.relayUrl = relayUrls[0]
+    this.options.log('info', `"${remote.hostName}" now offers relays ${relayUrls.map(relayHost).join(', ')}`)
+    void this.save().catch((error) => { this.options.log('warn', `could not save the relays of "${remote.hostName}": ${errorText(error)}`) })
+  }
+
+  /**
+   * Measure the round trip to a paired host through each of its relays. An open tunnel is measured
+   * in place; nothing switches relays. Each measurement also hears which relays the host offers
+   * now, so the device's list follows the host's settings without waiting for a reconnect.
+   * @param {string} id - host id.
+   * @param {string} [relayUrl] - measure only this relay.
+   * @returns {Promise<Array<{ relayUrl: string, host: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>>} results in priority order.
+   */
+  async probe(id, relayUrl) {
+    await this.loaded()
+    const remote = this.find(id)
+    if (!this.keys.has(id)) throw new TunnelError('storage', 'The stored device key is unusable; add this device again')
+    if (relayUrl !== undefined && !remote.relayUrls.includes(relayUrl)) throw new TunnelError('not-found', 'This DSH does not offer that relay')
+    const open = this.sessions.get(id)
+    const client = open !== undefined && open.status.state !== 'rejected'
+      ? open.remote
+      : this.client(remote, { onrelays: (relayUrls) => { this.learned(remote, relayUrls) } })
+    const results = relayUrl === undefined ? await client.probe() : [await client.probeOne(relayUrl)]
+    return results.map((result) => ({ ...result, host: relayHost(result.relayUrl) }))
+  }
+
+  /**
+   * Prefer one of a paired host's relays, or none, and move an open tunnel onto it. The choice is
+   * stored: later connections try that relay first while the host still offers it.
+   * @param {string} id - host id.
+   * @param {string | null} relayUrl - one of the host's relays, or null to follow its priority.
+   * @returns {Promise<void>} settles once the choice is stored; an open tunnel then moves in the background.
+   */
+  async prefer(id, relayUrl) {
+    await this.loaded()
+    const remote = this.find(id)
+    if (relayUrl !== null && !remote.relayUrls.includes(relayUrl)) throw new TunnelError('not-found', 'This DSH does not offer that relay')
+    if (relayUrl === null) delete remote.preferredRelay
+    else remote.preferredRelay = relayUrl
+    await this.save()
+    const open = this.sessions.get(id)
+    if (open !== undefined && open.status.state !== 'rejected') open.remote.prefer(relayUrl).catch(() => {})
   }
 
   stop(id) {

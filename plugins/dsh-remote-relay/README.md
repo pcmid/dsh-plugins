@@ -10,13 +10,27 @@
 |---|---|---|
 | Host 插件 | `index.js` | 连接 relay，验证设备，把请求转发给本机 Web GUI |
 | 设备切换（Host） | `remotes.js`、`loopback.js` | 本机作为设备连到其他 DSH，在本机回环地址上提供它们的界面 |
-| 设置页和设备切换（Client） | `client.js` | 侧边栏底部的设备按钮；“设置 → 远程访问”：开关、relay 地址、配对链接、设备列表 |
+| 设置页和设备切换（Client） | `client.js` | 侧边栏底部的设备按钮；“设置 → 远程访问”：开关、relay 列表、配对链接、设备列表 |
 | 手机启动页 | `launcher/` | 静态网页，部署到任意 HTTPS 站点；手机扫码或粘贴配对链接后在里面打开 DSH |
 
 ## 使用
 
 1. 部署 relay（Cloudflare Workers、Docker 或 Node，见 relay 仓库的 README），得到 `wss://relay.example.com/ws`。
-2. 在要被访问的 DSH 上打开“设置 → 远程访问”，开启远程访问，填写 relay 地址。状态变为“在线”后点“生成配对链接”。
+2. 在要被访问的 DSH 上打开“设置 → 远程访问”，开启远程访问，添加 relay 地址。状态变为“在线”后点“生成配对链接”。
+
+### 多个 relay
+
+relay 地址是一个有顺序的列表，顺序就是优先级，可以在设置页里添加、上下移动和删除（最多 8 个）。DSH 同时连着列表里的每个 relay，设置页逐个显示它们的状态和经它连进来的设备数；任意一个在线，远程访问就算在线。
+
+- 配对链接带上全部 relay，按优先级排列。旧版本的启动页和插件只认第一个。
+- 设备连接时先试第一个 relay，1.5 秒内没连上或者连接失败，就同时试下一个，依此类推，先完成握手的那个胜出，其余放弃。这和 OpenChamber 在直连、隧道、relay 之间挑选连接的方式一样。
+- 连上以后一直使用这个 relay，直到断线才按优先级重新挑选；排在前面的 relay 恢复了，也不会自动切回去。
+- 可以手动切换：在设备的“⋯”菜单里选“线路与延迟…”，对话框里每个 relay 是一个选项，第一项是“自动”（按优先级）。选中某个 relay，连接会在后台断开几秒，再经这个 relay 连上，对话框不用等。选择会被记住：这台设备之后每次连接都先试它，它连不上时其余 relay 仍按优先级跟上。选回“自动”恢复按对方的优先级，当前连接不动。选择记在发起访问的这一端：另一台 DSH 存在 `remote-relay/remotes` 里，手机启动页存在浏览器里。
+- 每次握手时 DSH 把当前的 relay 列表发给设备，设备保存下来，所以增删 relay 后已配对的设备不需要重新配对。只要设备记得的 relay 里还有一个能用，它就能连上来拿到新列表。测延迟用的临时连接也是一次握手，所以打开“线路与延迟…”就会拿到最新列表：没连过的设备也一样；已经连着的设备会另开一条临时连接去问，当前连接不动。新出现的 relay 直接加进对话框并测延迟。
+- 延迟都是端到端的：在加密隧道里发一个 ping，对方 DSH 回 pong，计的是“本端 → relay → 对端 → relay → 本端”一个来回，不是到 relay 的延迟。隧道的保活 ping（20～25 秒一次）顺带测量，所以不需要额外的连接：
+  - 设备菜单里，已连接的设备显示它经过哪个 relay 和当前延迟（`已连接 · relay.example.com · 45 ms`）。
+  - 被访问那台的设置页里，在线的设备显示经哪个 relay 连进来、延迟多少；打开设置页时每 5 秒重新测一次。
+  - “线路与延迟…”对话框打开时立刻列出全部 relay，再逐个测经过它们到对方 DSH 的往返时间，测完一个显示一个，所以某个 relay 卡住（最多等 10 秒后显示“超时”）不影响其他行，也不影响切换。正在使用的连接直接测，其他 relay 各开一条临时连接，握手完成后测一次 ping 就关，握手时间不计入。测量本身不切换连接。延迟旁的圆点：绿色 ≤150 ms，黄色 ≤400 ms，红色更慢或测不通。手机启动页只能测量和切换当前打开的 DSH。
 
 ### 从另一台 DSH 切换过去
 
@@ -51,17 +65,18 @@
 | 字段 | 默认值 | 说明 |
 |---|---|---|
 | `enabled` | `false` | 是否保持与 relay 的连接，让配对过的设备访问本机 |
-| `relayUrl` | 空 | relay 的 WebSocket 地址；只写域名时补全为 `wss://<域名>/ws` |
+| `relays` | `[]` | relay 的 WebSocket 地址列表，按优先级排列；只写域名时补全为 `wss://<域名>/ws` |
+| `relayUrl` | 空 | 旧版本的单个 relay 地址；`relays` 为空时才使用，设置页保存列表时会清空它 |
 | `launcherUrl` | 空 | 手机启动页地址；为空时没有二维码，配对链接用 `dsh-remote://pair#…` 形式 |
 | `hostName` | 计算机名 | 其他设备上显示的名称，也是本机配对到其他 DSH 时的默认设备名 |
 | `pairingMinutes` | `10` | 配对链接有效分钟数 |
 
-从本机切换到其他设备不需要开启 `enabled`，用的是配对链接里带的 relay 地址。
+从本机切换到其他设备不需要开启 `enabled`，用的是配对链接里带的、之后由对方更新的 relay 列表。
 
 本插件在 DSH 凭据存储里保存四条记录：
 - `remote-relay/identity`：本机身份密钥。删除后会换一个新的 `serverId`，所有设备都要重新配对。
 - `remote-relay/devices`：可以访问本机的设备。
-- `remote-relay/remotes`：本机能切换到的设备，内容包括本机在对方那里的设备密钥、每台设备的回环地址标签，以及回环端口。
+- `remote-relay/remotes`：本机能切换到的设备，内容包括本机在对方那里的设备密钥、每台设备的 relay 列表（`relayUrls`，`relayUrl` 保留为第一个，供旧版本读取）、回环地址标签，以及回环端口。
 - `remote-relay/last-session`：所有窗口最后打开的会话。
 
 ## 工作方式
@@ -70,7 +85,7 @@
 另一台 DSH / 手机启动页 ─wss─► relay（只转发）◄─wss─ DSH Host 插件 ─► 127.0.0.1 上的 Web GUI
 ```
 
-- **relay 协议**：插件实现 openchamber-relay v1 的 host 端。DSH 用一把 ECDSA P-256 密钥签名 `host-control` 和每个 `host-data` 连接；`serverId` 是公钥的 SHA-256。relay 每个 `serverId` 最多 16 个并发设备、每分钟 60 次新连接，所以每台设备的所有 HTTP 请求和 WebSocket 都复用同一条连接。
+- **relay 协议**：插件实现 openchamber-relay v1 的 host 端，在列表里的每个 relay 上各保持一条 `host-control` 连接。DSH 用一把 ECDSA P-256 密钥签名 `host-control` 和每个 `host-data` 连接；`serverId` 是公钥的 SHA-256。relay 每个 `serverId` 最多 16 个并发设备、每分钟 60 次新连接，所以每台设备的所有 HTTP 请求和 WebSocket 都复用同一条连接。
 - **端到端加密**：设备发送临时 ECDH 公钥和设备公钥；DSH 回复自己的临时公钥、身份公钥和对握手记录的签名，设备检查身份公钥的哈希等于 `serverId`，因此 relay 无法冒充 DSH。双方用 HKDF 派生每个方向各一把 AES-256-GCM 密钥，配对时再混入一次性配对密钥；设备在第一帧里用设备私钥签名握手记录。帧按方向计数，丢失、重放或乱序的帧会导致连接关闭。
 - **转发**：被访问的 DSH 用自己的浏览器 cookie 登录本机 Web GUI，再把设备的请求和 WebSocket 原样转发过去；cookie 不会发给设备，设备送来的 cookie、Origin 和 `Sec-Fetch-*` 头会被丢弃。
 - **设备切换**：发起访问的 DSH 在 Host 进程里为每台已添加的设备保持一条隧道，并在回环端口上以 `http://<随机标签>.localhost:<端口>/` 提供它的界面。标签有 130 位随机数，是唯一的准入凭据：只有 Host 头是已知标签加本端口的请求才会进入隧道，带了其他 Origin 的请求、跨站的非导航请求都会被拒绝。每台设备的界面因此是独立的源，和本机 DSH、和其他设备都不共享 cookie 和存储。本机界面把它放进一个铺满窗口的 iframe（不允许导航顶层窗口）；两边的插件用 `postMessage` 交换设备列表、当前状态和窗口属性（macOS 桌面版的标题栏布局），菜单由当前显示的那台按自己的主题渲染。粘贴配对链接的对话框始终由本机渲染，远程页面看不到链接。没有请求和 WebSocket 的隧道 2 分钟后关闭。
@@ -79,8 +94,8 @@
 ## 开发
 
 ```sh
-# 先在本地启动 relay：git clone openchamber-relay && npm install && PORT=18788 npm start
-RELAY_URL=ws://127.0.0.1:18788/ws npm test
+# 先在本地启动两个 relay：git clone openchamber-relay && npm install && PORT=18788 npm start，另开一个 PORT=18789
+RELAY_URL=ws://127.0.0.1:18788/ws RELAY_URL_2=ws://127.0.0.1:18789/ws npm test
 RELAY_URL=ws://127.0.0.1:18788/ws node --import ./test/hooks.mjs test/launcher.e2e.mjs   # 需要 Chrome 和 playwright-core
 ```
 
