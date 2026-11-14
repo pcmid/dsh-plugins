@@ -676,11 +676,11 @@ class RemoteRelayHost {
     }
     const relays = settings.relays.map((relay) => {
       if (relay.url === undefined) {
-        return { url: relay.text, host: relayHost(relay.text), state: 'invalid', error: relay.error, since: null, devices: 0 }
+        return { text: relay.text, url: relay.text, host: relayHost(relay.text), state: 'invalid', error: relay.error, since: null, devices: 0 }
       }
       const runner = this.runners.get(relay.url)
-      if (runner === undefined) return { url: relay.url, host: relayHost(relay.url), state: 'disabled', error: null, since: null, devices: 0 }
-      return { url: relay.url, host: relayHost(relay.url), state: runner.state, error: runner.error, since: runner.since, devices: perRelay.get(runner) ?? 0 }
+      if (runner === undefined) return { text: relay.text, url: relay.url, host: relayHost(relay.url), state: 'disabled', error: null, since: null, devices: 0 }
+      return { text: relay.text, url: relay.url, host: relayHost(relay.url), state: runner.state, error: runner.error, since: runner.since, devices: perRelay.get(runner) ?? 0 }
     })
     const pairing = this.pairing !== undefined && this.pairing.expiresAt > Date.now() ? this.pairing : undefined
     return {

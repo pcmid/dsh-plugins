@@ -31,18 +31,15 @@ window.__ModuleLoader__.load({
 
     const zh = {
       nav: '远程访问',
-      lead: '在几台装有本插件的 DSH 之间切换，或从手机使用这台 DSH。数据经自建的 OpenChamber relay 端到端加密，relay 只转发密文。',
-      hostHeading: '让其他设备访问本机',
-      hostIntro: '开启后，配对过的设备可以通过 relay 使用这台 DSH，本机不需要开放端口。',
-      enable: '开启远程访问',
-      enableTip: '开启后，DSH 会保持与 relay 的连接，已配对的设备可以随时连进来。',
-      status: '状态',
-      relays: 'Relay 地址',
-      relaysTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws，只写域名时会自动补全。可以添加多个，顺序就是优先级：设备先连第一个，1.5 秒内没连上或连接失败时再试下一个，连上后一直使用这个 relay，直到连接断开。',
+      lead: '在装有本插件的 DSH 之间切换，或用手机访问这台 DSH。连接经自建的 OpenChamber relay 端到端加密，relay 只转发密文。',
+      hostHeading: '访问本机',
+      enable: '允许远程访问',
+      enableOff: '开启后，配对的设备可以经 relay 访问本机，无需开放端口。',
+      relays: 'Relay',
       relayEmpty: '还没有 relay。',
       relayAdd: '添加',
-      relayMoveUp: '上移',
-      relayMoveDown: '下移',
+      relayDrag: '调整 {host} 的顺序',
+      relayDragTip: '拖动调整顺序，或按 ↑ ↓ 键',
       relayRemove: '移除',
       latency: '{ms} ms',
       relayDevices: '{count} 台设备经此连接',
@@ -56,27 +53,27 @@ window.__ModuleLoader__.load({
       relayState_invalid: '地址无效',
       relayState_disabled: '未启用',
       relayPlaceholder: 'wss://relay.example.com/ws',
-      launcher: '手机启动页地址',
-      launcherTip: '部署了本插件 launcher 目录的 HTTPS 地址，手机扫码后打开它。只用另一台 DSH 访问时不用填。',
+      launcher: '手机启动页',
+      launcherTip: '部署 launcher 目录的 HTTPS 地址，只在手机访问时需要。',
       launcherPlaceholder: 'https://remote.example.com/',
       hostName: '本机名称',
-      hostNameTip: '其他设备切换列表里显示的名称。',
+      hostNameTip: '显示在其他设备的列表里。',
       save: '保存',
       saved: '已保存',
       saveFailed: '保存失败',
       pairHeading: '配对新设备',
-      pairIntro: '生成一次性配对链接，发到要访问本机的设备上。链接只能使用一次。',
+      pairIntro: '生成一次性链接，在另一台 DSH 或手机上添加本机。',
       pairAction: '生成配对链接',
-      pairNeedsOnline: '开启访问并连上 relay 后才能配对。',
+      pairNeedsOnline: '先开启远程访问并连上 relay。',
       pairLink: '配对链接',
-      pairLinkTip: '在另一台装有本插件的 DSH 上，点侧边栏底部的设备按钮 →「添加设备」，粘贴此链接。',
-      scan: '手机扫码打开',
+      pairLinkTip: '在另一台 DSH 上点设备按钮 →「添加设备」粘贴，或用手机扫码。',
+      scan: '手机扫码',
       copy: '复制',
       copied: '已复制',
       expiresIn: '{time} 后失效',
       cancel: '取消',
-      risk: '配对后的设备拥有与你在本机相同的全部权限，包括执行命令和读写文件。只配对你自己的设备；不再使用时请移除。',
-      devices: '可以访问本机的设备',
+      risk: '配对的设备拥有和你相同的权限，可以执行命令、读写文件。只配对自己的设备。',
+      devices: '设备',
       noDevices: '还没有配对的设备。',
       online: '已连接',
       pairedAt: '配对于 {date}',
@@ -94,7 +91,7 @@ window.__ModuleLoader__.load({
       state_offline: '离线',
       state_replaced: '已被另一个 DSH 接管',
       state_error: '出错',
-      onlineDetail: '已连接 {relays} 个 relay，{count} 台设备在线',
+      onlineDetail: '{relays} 个 relay 已连接 · {count} 台设备在线',
       removing: '正在移除…',
       removeDevice: '移除设备',
       deviceActions: '{name} 的更多操作',
@@ -167,18 +164,15 @@ window.__ModuleLoader__.load({
     };
     const en = {
       nav: 'Remote access',
-      lead: 'Switch between DSH hosts that have this plugin, or use this DSH from a phone. Traffic is end-to-end encrypted through your self-hosted OpenChamber relay, which only forwards ciphertext.',
-      hostHeading: 'Let other devices reach this DSH',
-      hostIntro: 'While on, paired devices can use this DSH through the relay; no port is opened on this computer.',
-      enable: 'Turn on remote access',
-      enableTip: 'While on, DSH stays connected to the relay so paired devices can reach it at any time.',
-      status: 'Status',
-      relays: 'Relay addresses',
-      relaysTip: 'WebSocket addresses of your relays, such as wss://relay.example.com/ws; a bare host name is completed automatically. You can add several, and their order is their priority: devices try the first relay first, the next one after 1.5 s or as soon as the first fails, and stay on the relay they connected through until the connection drops.',
+      lead: 'Switch between DSH hosts that have this plugin, or use this DSH from a phone. Traffic is end-to-end encrypted through your own OpenChamber relay, which only forwards ciphertext.',
+      hostHeading: 'This DSH',
+      enable: 'Allow remote access',
+      enableOff: 'Paired devices reach this DSH through the relay; no port is opened.',
+      relays: 'Relays',
       relayEmpty: 'No relays yet.',
       relayAdd: 'Add',
-      relayMoveUp: 'Move up',
-      relayMoveDown: 'Move down',
+      relayDrag: 'Reorder {host}',
+      relayDragTip: 'Drag to reorder, or press ↑ ↓',
       relayRemove: 'Remove',
       latency: '{ms} ms',
       relayDevices: '{count} device(s) connected through it',
@@ -192,27 +186,27 @@ window.__ModuleLoader__.load({
       relayState_invalid: 'Invalid address',
       relayState_disabled: 'Not in use',
       relayPlaceholder: 'wss://relay.example.com/ws',
-      launcher: 'Phone launcher address',
-      launcherTip: 'HTTPS address where this plugin\'s launcher folder is deployed; phones open it from the QR code. Not needed when only another DSH connects.',
+      launcher: 'Phone launcher',
+      launcherTip: 'HTTPS address of the deployed launcher folder. Only phones need it.',
       launcherPlaceholder: 'https://remote.example.com/',
-      hostName: 'Name of this DSH',
-      hostNameTip: 'Shown in the device list of other devices.',
+      hostName: 'Name',
+      hostNameTip: 'Shown in other devices\' lists.',
       save: 'Save',
       saved: 'Saved',
       saveFailed: 'Could not save',
       pairHeading: 'Pair a device',
-      pairIntro: 'Create a one-time pairing link and send it to the device that should reach this DSH. A link works once.',
+      pairIntro: 'Create a one-time link to add this DSH on another DSH or a phone.',
       pairAction: 'Create pairing link',
-      pairNeedsOnline: 'Turn on access and connect to the relay before pairing.',
+      pairNeedsOnline: 'Turn on remote access and connect to a relay first.',
       pairLink: 'Pairing link',
-      pairLinkTip: 'On another DSH with this plugin, choose the device button at the bottom of the sidebar → Add device, and paste this link.',
-      scan: 'Scan with your phone',
+      pairLinkTip: 'On another DSH, choose the device button → Add device and paste it, or scan the code with a phone.',
+      scan: 'Scan with a phone',
       copy: 'Copy',
       copied: 'Copied',
       expiresIn: 'Expires in {time}',
       cancel: 'Cancel',
-      risk: 'A paired device has the same full authority you have on this computer, including running commands and changing files. Pair only devices you own, and remove them when unused.',
-      devices: 'Devices that can reach this DSH',
+      risk: 'A paired device has the same authority you have here, including running commands and changing files. Pair only your own devices.',
+      devices: 'Devices',
       noDevices: 'No devices are paired yet.',
       online: 'Connected',
       pairedAt: 'Paired {date}',
@@ -230,7 +224,7 @@ window.__ModuleLoader__.load({
       state_offline: 'Offline',
       state_replaced: 'Taken over by another DSH',
       state_error: 'Error',
-      onlineDetail: 'Connected to {relays} relay(s), {count} device(s) online',
+      onlineDetail: '{relays} relay(s) connected · {count} device(s) online',
       removing: 'Removing…',
       removeDevice: 'Remove device',
       deviceActions: 'More actions for {name}',
@@ -563,15 +557,22 @@ window.__ModuleLoader__.load({
 
     const CSS = `
 .${PREFIX}-root { display: flex; flex-direction: column; width: 100%; color: var(--dsw-alias-label-primary); }
-.${PREFIX}-lead { margin: 0 0 4px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
-.${PREFIX}-group { display: flex; flex-direction: column; padding: 8px 0 12px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }
-.${PREFIX}-group:last-of-type { border-bottom: none; }
-.${PREFIX}-heading { margin: 12px 0 4px; font-size: 14px; font-weight: 500; line-height: 20px; }
+.${PREFIX}-page-title { margin: 0 0 4px; font-size: 15px; font-weight: 500; line-height: 22px; }
+.${PREFIX}-lead { margin: 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-group { display: flex; flex-direction: column; margin-top: 20px; }
+.${PREFIX}-heading { margin: 0 0 2px; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+/* Rows of a group are divided by hairlines, as on DSH's own settings pages. */
+.${PREFIX}-list > * + * { border-top: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2)); }
+.${PREFIX}-empty { padding: 12px 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-risk { margin: 0 0 12px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-link { padding: 0; border: 0; background: none; font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-brand-primary); cursor: pointer; }
+.${PREFIX}-link:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 2px; border-radius: 4px; }
 .${PREFIX}-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding: 12px 0; }
 .${PREFIX}-label { flex: 1 1 220px; min-width: 0; }
+.${PREFIX}-control .${PREFIX}-input { width: 260px; }
 .${PREFIX}-title { font-size: 14px; line-height: 20px; }
 .${PREFIX}-desc { margin-top: 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
-.${PREFIX}-control { flex: 1 1 280px; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.${PREFIX}-control { flex: 0 1 auto; max-width: 100%; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .${PREFIX}-switch { box-sizing: border-box; position: relative; flex: 0 0 auto; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; corner-shape: round; background: var(--dsw-alias-border-l3, var(--dsw-alias-border-l2)); cursor: pointer; }
 .${PREFIX}-switch[aria-checked="true"] { background: var(--dsw-alias-brand-primary); }
 .${PREFIX}-switch:disabled { cursor: default; opacity: 0.5; }
@@ -600,7 +601,7 @@ window.__ModuleLoader__.load({
 .${PREFIX}-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 .${PREFIX}-error { margin: 4px 0 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
 .${PREFIX}-note { margin: 8px 0 4px; padding: 8px 12px; border-radius: var(--dsw-radius-md, 8px); background: var(--dsw-alias-bg-layer-2); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
-.${PREFIX}-pairing { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: flex-start; padding: 8px 0; }
+.${PREFIX}-pairing { display: flex; flex-wrap: wrap; gap: 16px 24px; align-items: center; margin: 0 0 12px; padding: 14px 16px; border-radius: var(--dsw-radius-lg, 16px); background: var(--dsw-alias-bg-module-platform, var(--dsw-alias-bg-layer-2)); }
 .${PREFIX}-qr-box { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .${PREFIX}-qr { width: 152px; height: 152px; border-radius: var(--dsw-radius-md, 8px); }
 .${PREFIX}-fields { flex: 1 1 280px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
@@ -609,8 +610,7 @@ window.__ModuleLoader__.load({
 .${PREFIX}-copy-row { display: flex; gap: 8px; align-items: center; }
 .${PREFIX}-countdown { font-variant-numeric: tabular-nums; }
 .${PREFIX}-copy-row .${PREFIX}-input { max-width: none; }
-.${PREFIX}-device { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2)); }
-.${PREFIX}-device:last-child { border-bottom: none; }
+.${PREFIX}-device { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
 .${PREFIX}-device-main { flex: 1; min-width: 0; }
 .${PREFIX}-device-name { display: flex; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .${PREFIX}-badge { flex: none; padding: 0 6px; border-radius: 999px; corner-shape: round; font-size: 11px; line-height: 18px; color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); }
@@ -628,7 +628,15 @@ window.__ModuleLoader__.load({
 .${PREFIX}-relay-meta .${PREFIX}-dot { width: 6px; height: 6px; margin-inline-end: -2px; }
 .${PREFIX}-relay .${PREFIX}-error { margin: 0; }
 .${PREFIX}-relay-actions { flex: none; display: flex; gap: 4px; }
-.${PREFIX}-relay-add { display: flex; gap: 8px; align-items: center; padding: 8px 0 4px; }
+.${PREFIX}-relay-grip { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 32px; margin: 0 -8px 0 -6px; padding: 0; border: 0; border-radius: var(--dsw-radius-xs, 6px); background: transparent; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); cursor: grab; touch-action: none; -webkit-user-select: none; user-select: none; }
+.${PREFIX}-relay-grip:hover:not(:disabled) { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-interactive-bg-hover); }
+.${PREFIX}-relay-grip:focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-brand-primary)); outline-offset: 0; }
+.${PREFIX}-relay-grip:disabled { cursor: default; opacity: .4; }
+.${PREFIX}-relays[data-dragging] { -webkit-user-select: none; user-select: none; }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay { transition: transform .15s ease; }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay[data-dragged] { position: relative; z-index: 1; transition: none; margin-inline: -8px; padding-inline: 8px; border-bottom-color: transparent; border-radius: var(--dsw-radius-md, 12px); background: var(--dsw-alias-bg-layer-1, #fff); --dsw-elevation-stroke-color: var(--dsw-alias-border-l1); box-shadow: var(--dsw-elevation-prominent, 0 4px 16px rgba(0,0,0,.12)); }
+.${PREFIX}-relays[data-dragging] .${PREFIX}-relay[data-dragged] .${PREFIX}-relay-grip { cursor: grabbing; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-relay-add { display: flex; gap: 8px; align-items: center; padding: 4px 0 12px; }
 .${PREFIX}-relay-add .${PREFIX}-input { max-width: none; }
 .${PREFIX}-latency { flex: none; font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
 .${PREFIX}-relay-meta .${PREFIX}-latency { font-size: inherit; line-height: inherit; }
@@ -1894,11 +1902,13 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     // -----------------------------------------------------------------------
 
     function Row({ title, desc, children }) {
+      // A row without controls lets its description use the full width.
+      const controls = React.Children.toArray(children);
       return h('div', { className: `${PREFIX}-row` },
         h('div', { className: `${PREFIX}-label` },
           h('div', { className: `${PREFIX}-title` }, title),
           desc ? h('div', { className: `${PREFIX}-desc` }, desc) : null),
-        h('div', { className: `${PREFIX}-control` }, children));
+        controls.length > 0 ? h('div', { className: `${PREFIX}-control` }, controls) : null);
     }
 
     function WriteStatus({ write, t }) {
@@ -1937,35 +1947,145 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           : h(WriteStatus, { write, t }));
     }
 
-    function IconButton({ label, icon, disabled, onClick }) {
-      return h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-icon': true, 'aria-label': label, title: label, disabled, onClick }, h(icon, { size: 14 }));
+    function GripGlyph() {
+      return h('svg', { width: 14, height: 14, viewBox: '0 0 14 14', fill: 'currentColor', 'aria-hidden': true },
+        [3, 7, 11].flatMap((y) => [h('circle', { key: `a${y}`, cx: 5, cy: y, r: 1.15 }), h('circle', { key: `b${y}`, cx: 9, cy: y, r: 1.15 })]));
     }
 
-    /** Ordered relay list; its order is the priority devices try the relays in. */
+    /**
+     * Ordered relay list; its order is the priority devices try the relays in. A row moves by
+     * dragging its handle (mouse or touch), or with the arrow keys while the handle has focus.
+     */
     function RelayListSetting({ list, relays, write, disabled, onSave, t }) {
       const [draft, setDraft] = useState('');
+      // A new order shows at once and stays until the saved list matches it or a save fails.
+      const [order, setOrder] = useState(null);
+      const [drag, setDragState] = useState(null);
+      // Pointer events can arrive faster than renders, so the drag is read from a ref.
+      const dragRef = useRef(null);
+      const setDrag = (value) => { dragRef.current = value; setDragState(value); };
+      const listRef = useRef(null);
+      const focusAfter = useRef(null);
+      // Orders are saved one at a time; only the latest one waiting is saved next.
+      const saving = useRef(false);
+      const waiting = useRef(null);
       const locked = disabled || write?.saving === true;
-      // Status rows follow the saved list by position; until the Host catches up with a change, show none.
-      const statusOf = (index) => (Array.isArray(relays) && relays.length === list.length ? relays[index] : undefined);
+      const listKey = JSON.stringify(list);
+      useEffect(() => {
+        if (!saving.current) setOrder(null);
+        if (dragRef.current !== null) setDrag(null);
+      }, [listKey]);
+      const shown = order ?? list;
+      useEffect(() => {
+        if (focusAfter.current === null) return;
+        listRef.current?.children[focusAfter.current]?.querySelector(`.${PREFIX}-relay-grip`)?.focus();
+        focusAfter.current = null;
+      });
+      // Status entries carry the text they were configured with, so they follow a row that moves.
+      const statusOf = (url) => (Array.isArray(relays) ? relays.find((relay) => relay.text === String(url).trim()) : undefined);
       const text = draft.trim();
-      const known = text === '' || list.includes(text) || (relays ?? []).some((relay) => relay.url === text);
+      const known = text === '' || shown.includes(text) || (relays ?? []).some((relay) => relay.url === text);
       const add = async () => {
-        if (known || locked) return;
-        if (await onSave([...list, text])) setDraft('');
+        if (known || locked || saving.current) return;
+        if (await onSave([...shown, text])) setDraft('');
       };
-      const move = (index, delta) => {
-        const next = [...list];
-        next.splice(index + delta, 0, ...next.splice(index, 1));
-        void onSave(next);
+      const persist = async (next) => {
+        waiting.current = next;
+        if (saving.current) return;
+        saving.current = true;
+        try {
+          while (waiting.current !== null) {
+            const target = waiting.current;
+            waiting.current = null;
+            if (!await onSave(target)) {
+              waiting.current = null;
+              setOrder(null);
+            }
+          }
+        } finally {
+          saving.current = false;
+        }
+      };
+      const reorder = (from, to) => {
+        if (disabled || from === to || to < 0 || to >= shown.length) return;
+        const next = [...shown];
+        next.splice(to, 0, ...next.splice(from, 1));
+        setOrder(next);
+        void persist(next);
+      };
+      const startDrag = (event, index) => {
+        if (disabled || event.button !== 0 || shown.length < 2) return;
+        const rows = [...(listRef.current?.children ?? [])].map((row) => row.getBoundingClientRect());
+        if (rows.length !== shown.length) return;
+        event.preventDefault();
+        event.currentTarget.setPointerCapture?.(event.pointerId);
+        setDrag({ from: index, to: index, dy: 0, startY: event.clientY, rows, pointerId: event.pointerId });
+      };
+      const moveDrag = (event) => {
+        const current = dragRef.current;
+        if (current === null || event.pointerId !== current.pointerId) return;
+        const { rows, from } = current;
+        const box = rows[from];
+        // The row stays within the list. It passes a neighbour once it covers half of that neighbour.
+        const dy = Math.min(Math.max(event.clientY - current.startY, rows[0].top - box.top), rows[rows.length - 1].bottom - box.bottom);
+        const middle = (row) => row.top + row.height / 2;
+        const to = rows.filter((row, i) => (i < from ? middle(row) < box.top + dy : i > from && middle(row) < box.bottom + dy)).length;
+        setDrag({ ...current, dy, to });
+      };
+      const endDrag = (event) => {
+        // Touch moves can be coalesced, so the release point counts as the last move.
+        if (event.type === 'pointerup') moveDrag(event);
+        const current = dragRef.current;
+        if (current === null || event.pointerId !== current.pointerId) return;
+        setDrag(null);
+        if (event.type === 'pointerup') reorder(current.from, current.to);
+      };
+      // While dragging, the rows between the old and the new place step aside by one row.
+      const offsetOf = (index) => {
+        if (drag === null) return 0;
+        if (index === drag.from) return drag.dy;
+        const step = drag.rows[drag.from].height;
+        if (drag.to > drag.from && index > drag.from && index <= drag.to) return -step;
+        if (drag.to < drag.from && index >= drag.to && index < drag.from) return step;
+        return 0;
       };
       return h('div', null,
-        h(Row, { title: t('relays'), desc: t('relaysTip') }, h(WriteStatus, { write, t })),
-        list.length === 0
+        h(Row, { title: t('relays') }, h(WriteStatus, { write, t })),
+        shown.length === 0
           ? h('div', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, t('relayEmpty'))
-          : h('ol', { className: `${PREFIX}-relays` }, list.map((url, index) => {
-            const relay = statusOf(index);
-            return h('li', { key: `${index}:${url}`, className: `${PREFIX}-relay` },
-              h('span', { className: `${PREFIX}-relay-index` }, index + 1),
+          : h('ol', { ref: listRef, className: `${PREFIX}-relays`, 'data-dragging': drag !== null || undefined }, shown.map((url, index) => {
+            const relay = statusOf(url);
+            const offset = offsetOf(index);
+            // While dragging, numbers show the places the rows would take.
+            const place = drag === null ? index : index === drag.from ? drag.to : index + Math.sign(offset);
+            return h('li', {
+              key: shown.indexOf(url) === index ? url : `${index}:${url}`,
+              className: `${PREFIX}-relay`,
+              'data-dragged': drag?.from === index || undefined,
+              style: drag === null ? undefined : { transform: offset === 0 ? undefined : `translateY(${offset}px)` },
+            },
+              h('button', {
+                type: 'button',
+                className: `${PREFIX}-relay-grip`,
+                'aria-label': fill(t('relayDrag'), { host: url }),
+                'aria-keyshortcuts': 'ArrowUp ArrowDown',
+                title: t('relayDragTip'),
+                disabled: disabled || shown.length < 2,
+                onPointerDown: (event) => { startDrag(event, index); },
+                onPointerMove: moveDrag,
+                onPointerUp: endDrag,
+                onPointerCancel: endDrag,
+                onLostPointerCapture: endDrag,
+                onKeyDown: (event) => {
+                  const to = event.key === 'ArrowUp' ? index - 1 : event.key === 'ArrowDown' ? index + 1 : null;
+                  if (to === null) return;
+                  event.preventDefault();
+                  if (to < 0 || to >= shown.length) return;
+                  focusAfter.current = to;
+                  reorder(index, to);
+                },
+              }, h(GripGlyph)),
+              h('span', { className: `${PREFIX}-relay-index` }, place + 1),
               h('div', { className: `${PREFIX}-relay-main` },
                 h('span', { className: `${PREFIX}-relay-url ${PREFIX}-mono` }, url),
                 relay ? h('span', { className: `${PREFIX}-relay-meta` },
@@ -1974,9 +2094,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
                   relay.devices > 0 ? h('span', null, fill(t('relayDevices'), { count: relay.devices })) : null) : null,
                 relay?.error ? h('span', { className: `${PREFIX}-error` }, relay.error) : null),
               h('div', { className: `${PREFIX}-relay-actions` },
-                h(IconButton, { label: t('relayMoveUp'), icon: UI.IconChevronUpOutlineRegular, disabled: locked || index === 0, onClick: () => { move(index, -1); } }),
-                h(IconButton, { label: t('relayMoveDown'), icon: UI.IconChevronDownOutlineRegular, disabled: locked || index === list.length - 1, onClick: () => { move(index, 1); } }),
-                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-danger': true, disabled: locked, onClick: () => { void onSave(list.filter((_, i) => i !== index)); } }, t('relayRemove'))));
+                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-danger': true, disabled: locked, onClick: () => { if (!saving.current) void onSave(shown.filter((_, i) => i !== index)); } }, t('relayRemove'))));
           })),
         h('div', { className: `${PREFIX}-relay-add` },
           h('input', {
@@ -2094,63 +2212,65 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       let launcherValid = true;
       try { if (launcherBase) new URL(launcherBase); } catch { launcherValid = false; }
 
+      // The switch row says what the switch does while it is off, and how access is doing while it is on.
+      const accessLine = state.loadFailed && status === null
+        ? h('span', { className: `${PREFIX}-state` },
+          h('span', { className: `${PREFIX}-status`, 'data-tone': 'error', role: 'alert' }, t('loadFailed')),
+          h('button', { type: 'button', className: `${PREFIX}-link`, onClick: props.retry }, t('retry')))
+        : !enabled
+          ? t('enableOff')
+          : h('span', { className: `${PREFIX}-state`, role: 'status' },
+            h('span', { className: `${PREFIX}-dot`, 'data-tone': stateTone(control) }),
+            [t(`state_${control}`), stateDetail].filter(Boolean).join(' · '));
+      const devices = status?.devices ?? [];
+
       return h('div', { className: `${PREFIX}-root` },
         h('style', null, CSS),
+        h('h2', { className: `${PREFIX}-page-title` }, t('nav')),
         h('p', { className: `${PREFIX}-lead` }, t('lead')),
         h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-host` },
           h('h3', { id: `${PREFIX}-host`, className: `${PREFIX}-heading` }, t('hostHeading')),
-          h('div', { className: `${PREFIX}-desc` }, t('hostIntro')),
-          h(Row, { title: t('enable'), desc: t('enableTip') },
-            h(WriteStatus, { write: state.writes.enabled, t }),
-            h('button', {
-              type: 'button',
-              role: 'switch',
-              className: `${PREFIX}-switch`,
-              'aria-checked': enabled,
-              'aria-label': t('enable'),
-              disabled: !editable || state.writes.enabled?.saving,
-              onClick: () => { void props.setField('enabled', !enabled); },
-            }, h('span', { className: `${PREFIX}-thumb` }))),
-          h(Row, { title: t('status'), desc: stateDetail },
-            state.loadFailed && status === null
-              ? h(React.Fragment, null,
-                h('span', { className: `${PREFIX}-status`, 'data-tone': 'error', role: 'alert' }, t('loadFailed')),
-                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', onClick: props.retry }, t('retry')))
-              : h('span', { className: `${PREFIX}-state`, role: 'status' },
-                h('span', { className: `${PREFIX}-dot`, 'data-tone': stateTone(control) }),
-                t(`state_${control}`))),
-          h(RelayListSetting, { list: relayList, relays: status?.relays, write: state.writes.relays, disabled: !editable, onSave: saveRelays, t }),
-          h(TextSetting, { field: 'hostName', title: t('hostName'), desc: t('hostNameTip'), placeholder: status?.hostName ?? '', value: config.hostName ?? '', write: state.writes.hostName, disabled: !editable, onSave: props.setField, t }),
-          h(TextSetting, { field: 'launcherUrl', title: t('launcher'), desc: t('launcherTip'), placeholder: t('launcherPlaceholder'), value: config.launcherUrl ?? '', write: state.writes.launcherUrl, disabled: !editable, onSave: props.setField, t })),
-        h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-pair` },
-          h('h3', { id: `${PREFIX}-pair`, className: `${PREFIX}-heading` }, t('pairHeading')),
-          h('div', { className: `${PREFIX}-desc` }, t('pairIntro')),
-          pairing
-            ? h('div', { className: `${PREFIX}-pairing` },
-              h('div', { className: `${PREFIX}-fields` },
-                h(CopyField, { label: t('pairLink'), value: pairLink, mono: true, copy: props.copy, t }),
-                h('div', { className: `${PREFIX}-desc`, style: { marginTop: -4 } }, t('pairLinkTip')),
-                h('div', { className: `${PREFIX}-copy-row` },
-                  h(Countdown, { expiresAt: pairing.expiresAt, offset, t }),
-                  h('span', { style: { flex: 1 } }),
-                  h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', disabled: state.busy !== null, onClick: props.cancelPairing }, t('cancel')))),
-              pairing.link
-                ? h('div', { className: `${PREFIX}-qr-box` },
-                  h(QrCode, { text: pairing.link, label: t('scan') }),
-                  h('span', { className: `${PREFIX}-status` }, t('scan')))
-                : null)
-            : h('div', { className: `${PREFIX}-row` },
-              h('div', { className: `${PREFIX}-label` },
-                control === 'online' ? null : h('div', { className: `${PREFIX}-status` }, t('pairNeedsOnline'))),
-              h('div', { className: `${PREFIX}-control` },
-                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-primary': true, disabled: control !== 'online' || state.busy !== null || !launcherValid, onClick: props.pair }, t('pairAction')))),
-          state.actionError ? h('p', { className: `${PREFIX}-error`, role: 'alert' }, state.actionError) : null,
-          h('p', { className: `${PREFIX}-note` }, t('risk'))),
+          h('div', { className: `${PREFIX}-list` },
+            h(Row, { title: t('enable'), desc: accessLine },
+              h(WriteStatus, { write: state.writes.enabled, t }),
+              h('button', {
+                type: 'button',
+                role: 'switch',
+                className: `${PREFIX}-switch`,
+                'aria-checked': enabled,
+                'aria-label': t('enable'),
+                disabled: !editable || state.writes.enabled?.saving,
+                onClick: () => { void props.setField('enabled', !enabled); },
+              }, h('span', { className: `${PREFIX}-thumb` }))),
+            h(RelayListSetting, { list: relayList, relays: status?.relays, write: state.writes.relays, disabled: !editable, onSave: saveRelays, t }),
+            h(TextSetting, { field: 'hostName', title: t('hostName'), desc: t('hostNameTip'), placeholder: status?.hostName ?? '', value: config.hostName ?? '', write: state.writes.hostName, disabled: !editable, onSave: props.setField, t }),
+            h(TextSetting, { field: 'launcherUrl', title: t('launcher'), desc: t('launcherTip'), placeholder: t('launcherPlaceholder'), value: config.launcherUrl ?? '', write: state.writes.launcherUrl, disabled: !editable, onSave: props.setField, t }))),
         h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-devices` },
           h('h3', { id: `${PREFIX}-devices`, className: `${PREFIX}-heading` }, t('devices')),
-          (status?.devices ?? []).length === 0
-            ? h('div', { className: `${PREFIX}-desc`, style: { padding: '8px 0' } }, t('noDevices'))
-            : h('div', null, status.devices.map((device) => h(DeviceRow, { key: device.id, device, now: Date.now() - offset, busy: state.busy, onRevoke: props.revoke, t })))),
+          h('div', { className: `${PREFIX}-list` },
+            devices.length === 0
+              ? h('div', { className: `${PREFIX}-empty` }, t('noDevices'))
+              : devices.map((device) => h(DeviceRow, { key: device.id, device, now: Date.now() - offset, busy: state.busy, onRevoke: props.revoke, t })),
+            h('div', null,
+              h(Row, { title: t('pairHeading'), desc: control === 'online' || pairing ? t('pairIntro') : t('pairNeedsOnline') },
+                pairing ? null : h('button', { type: 'button', className: `${PREFIX}-button`, 'data-primary': true, disabled: control !== 'online' || state.busy !== null || !launcherValid, onClick: props.pair }, t('pairAction'))),
+              pairing
+                ? h('div', { className: `${PREFIX}-pairing` },
+                  h('div', { className: `${PREFIX}-fields` },
+                    h(CopyField, { label: t('pairLink'), value: pairLink, mono: true, copy: props.copy, t }),
+                    h('div', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, t('pairLinkTip')),
+                    h('div', { className: `${PREFIX}-copy-row` },
+                      h(Countdown, { expiresAt: pairing.expiresAt, offset, t }),
+                      h('span', { style: { flex: 1 } }),
+                      h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', disabled: state.busy !== null, onClick: props.cancelPairing }, t('cancel')))),
+                  pairing.link
+                    ? h('div', { className: `${PREFIX}-qr-box` },
+                      h(QrCode, { text: pairing.link, label: t('scan') }),
+                      h('span', { className: `${PREFIX}-status` }, t('scan')))
+                    : null)
+                : null,
+              state.actionError ? h('p', { className: `${PREFIX}-error`, role: 'alert' }, state.actionError) : null,
+              h('p', { className: `${PREFIX}-risk` }, t('risk'))))),
         status?.serverId
           ? h('div', { className: `${PREFIX}-footer` }, `${t('hostId')}: `, h('span', { className: `${PREFIX}-mono` }, status.serverId))
           : null);

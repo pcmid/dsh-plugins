@@ -115,6 +115,32 @@ try {
     parent.postMessage({ ...bridge, type: 'relays', id, pin }, '*')
   }), [BRIDGE, secondId, relayUrl])
   assert.equal(pinned.switching, null)
+  // Another paired DSH has no tunnel; its dialog still measures each relay through a probe
+  // connection, and a chosen relay is only stored for its next visit.
+  const other = await onSecond.evaluate(([bridge, id]) => new Promise((resolve) => {
+    addEventListener('message', (event) => {
+      if (event.data?.channel !== bridge.channel || event.data.type !== 'relays-state' || event.data.id !== id) return
+      if (event.data.error || event.data.rows.every((row) => !row.pending)) resolve(event.data)
+    })
+    parent.postMessage({ ...bridge, type: 'relays', id }, '*')
+  }), [BRIDGE, hostId])
+  assert.equal(other.error, undefined)
+  assert.deepEqual(other.rows.map((row) => [row.host, typeof row.ms]), [[new URL(relayUrl).host, 'number']])
+  assert.equal(other.current, null)
+  const otherPinned = await onSecond.evaluate(([bridge, id, pin]) => new Promise((resolve) => {
+    addEventListener('message', (event) => { if (event.data?.channel === bridge.channel && event.data.type === 'relays-state' && event.data.id === id && event.data.preferred === pin) resolve(event.data) })
+    parent.postMessage({ ...bridge, type: 'relays', id, pin }, '*')
+  }), [BRIDGE, hostId, relayUrl])
+  assert.deepEqual([otherPinned.switching, otherPinned.current], [null, null])
+  const storedPreference = await page.evaluate((id) => new Promise((resolve, reject) => {
+    const open = indexedDB.open('dsh-remote')
+    open.onerror = () => { reject(open.error) }
+    open.onsuccess = () => {
+      const request = open.result.transaction('hosts').objectStore('hosts').get(id)
+      request.onsuccess = () => { resolve(request.result?.preferredRelay ?? null) }
+    }
+  }), hostId)
+  assert.equal(storedPreference, relayUrl)
   await page.waitForSelector('#chip', { state: 'hidden' })
   await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])
   const backOnFirst = await probedFrame(page, 'switched frame', onSecond)

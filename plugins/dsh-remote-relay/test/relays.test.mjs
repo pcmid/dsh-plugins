@@ -38,6 +38,8 @@ test('the host serves every relay and devices fall over to the next one', async 
     }, 'both relays online')
     assert.equal(status.control.state, 'online')
     assert.deepEqual(status.relays.map((relay) => relay.state), ['online', 'online', 'invalid'])
+    // The settings page matches each status to its row by the text as configured, so a moved row keeps its status.
+    assert.deepEqual(status.relays.map((relay) => relay.text), [relayA, relayB, 'ftp://not-a-relay'])
     assert.match(status.relayError, /Unsupported relay scheme/)
 
     const pairing = (await host.call('pair')).value.pairing
