@@ -10,24 +10,27 @@
  * it and the shipped renderer comes back.
  *
  * Edit opens an inline editor (Cancel / Send). Send restarts the
- * conversation from the edited prompt. Session logs are append-only, so the
- * restart is a fork:
+ * conversation from the edited prompt:
  *   1. find the `turn/start` of the edited message's Turn;
- *   2. ask the Host half to rewind files: it stops the original conversation
- *      and restores every file the dropped Turns changed. Files changed since,
- *      or whose earlier content was not kept, come back as a list the editor
+ *   2. ask the Host half to rewind files: it stops the conversation and
+ *      restores every file the dropped Turns changed. Files changed since, or
+ *      whose earlier content was not kept, come back as a list the editor
  *      shows; sending again confirms them;
- *   3. fork at the event just before that Turn (the fork inherits nothing of it);
- *   4. remove the input the fork inherited as still pending (the edited
+ *   3. revert the conversation in place to the event just before that Turn
+ *      (`ctx.sessions.revert`): it keeps its id, and the Host keeps the
+ *      complete previous history as an archived copy. A DSH without revert
+ *      forks at that event instead;
+ *   4. remove the input the kept history still holds as pending (the edited
  *      message itself when it was queued, or any other queued message), and
- *      keep the original's current model when the fork recorded another;
- *   5. prompt the fork with the edited text plus the original images, through
- *      the Session's local echo like the composer, so the message shows at
- *      once even while the Host is still preparing the Turn;
- *   6. open the fork and, unless the `archiveSource` setting is off, archive
- *      the original conversation.
- * When a step after the file rewind fails, the rewind is undone. The original
- * conversation's log is never modified.
+ *      keep the model the conversation used before the edit;
+ *   5. prompt the conversation with the edited text plus the original images,
+ *      through the Session's local echo like the composer, so the message
+ *      shows at once even while the Host is still preparing the Turn;
+ *   6. on the fork fallback only: open the fork and, unless the
+ *      `archiveSource` setting is off, archive the original conversation.
+ * When the revert or the fork fails, the file rewind is undone. After a
+ * successful revert the files match the kept history, so a later failure
+ * leaves them rewound.
  *
  * Steering messages (sent while a Turn was running) keep the shipped
  * renderer: they sit inside a Turn, so there is no clean restart point.
@@ -399,7 +402,7 @@ window.__ModuleLoader__.load({
 
     /** Keyed `user` Chat renderer: ui-chat's user bubble with an edit action. */
     const EditableUserMessage = React.memo(function EditableUserMessage(props) {
-      const { node, t, renderFactorySlot, loadImage, useAccess, resendEdited, hostHome } = props
+      const { node, t, renderFactorySlot, loadImage, useAccess, resendEdited, hostHome, restartEndpoint } = props
       const data = node.data
       const parts = useMemo(() => contentParts(data.content), [data.content])
       const prepared = useMemo(() => ({
@@ -413,7 +416,7 @@ window.__ModuleLoader__.load({
         ...(data.skillNames === undefined ? {} : { skillNames: data.skillNames }),
       }), [data.referenceLabels, data.skillNames])
       const mediaContent = useMemo(() => ({ text: '', attachments: parts.attachments, extraBlocks: EMPTY_BLOCKS }), [parts])
-      const forkAllowed = useAccess('session/fork')
+      const restartAllowed = useAccess(restartEndpoint)
       const [editing, setEditing] = useState(false)
 
       if (editing) {
@@ -439,7 +442,7 @@ window.__ModuleLoader__.load({
           text: prepared.text,
           time: data.time,
           t,
-          onEdit: forkAllowed && typeof data.seq === 'number' ? () => { setEditing(true) } : undefined,
+          onEdit: restartAllowed && typeof data.seq === 'number' ? () => { setEditing(true) } : undefined,
         }))
     })
 
@@ -472,7 +475,7 @@ window.__ModuleLoader__.load({
     }
 
     function describeError(error) {
-      const remote = error?.error ?? error
+      const remote = error?.error ?? error?.rpcError ?? error
       if (typeof remote?.message === 'string' && remote.message !== '') return remote.message
       return String(error)
     }
@@ -528,39 +531,42 @@ window.__ModuleLoader__.load({
           }
         }
 
+        /** Whether this DSH reverts a conversation in place; older releases only fork. */
+        const canRevert = typeof ctx.sessions.revert === 'function'
+
         /**
-         * Remove every input the fork inherited as pending, so the new Turn sees only the edited prompt.
-         * @returns the fork's projection values read for the purpose.
+         * Remove every input the restarted conversation still holds as pending, so the new Turn sees only the edited prompt.
+         * @returns the conversation's projection values read for the purpose.
          */
-        async function clearInheritedInbox(childId) {
-          const projections = expectOk(await ctx.remote.session.projections({ sessionId: childId }))
+        async function clearInheritedInbox(targetId) {
+          const projections = expectOk(await ctx.remote.session.projections({ sessionId: targetId }))
           const inbox = projections?.values?.inbox
           const pending = [...(inbox?.['next-step'] ?? []), ...(inbox?.['next-turn'] ?? [])]
           for (const message of pending) {
-            const removed = await ctx.remote.session.updateQueue({ sessionId: childId, itemId: message.id, action: { kind: 'remove' } })
+            const removed = await ctx.remote.session.updateQueue({ sessionId: targetId, itemId: message.id, action: { kind: 'remove' } })
             if (!removed.ok && removed.error?.code !== 'session/queue-item-not-found') throw removed.error
           }
           return projections?.values
         }
 
         /**
-         * The fork records the model selected at the cut; keep the original's current choice instead.
-         * A refusal only leaves the inherited model in place.
+         * The kept history records the model selected at the cut; keep the choice from before the edit instead.
+         * A refusal only leaves the recorded model in place.
          */
-        async function carryModel(childId, wanted, childValues) {
-          if (wanted === undefined || sameModel(wanted, modelOf(childValues?.modelSelection))) return
-          const selected = await ctx.remote.session.selectModel({ sessionId: childId, ...wanted })
-          if (!selected.ok) console.warn('[edit-prompt] could not keep the original model on the fork', selected.error)
+        async function carryModel(targetId, wanted, targetValues) {
+          if (wanted === undefined || sameModel(wanted, modelOf(targetValues?.modelSelection))) return
+          const selected = await ctx.remote.session.selectModel({ sessionId: targetId, ...wanted })
+          if (!selected.ok) console.warn('[edit-prompt] could not keep the original model', selected.error)
         }
 
         /**
          * Send the edited prompt the way the composer does: register a local echo first, so the
-         * message shows in the fork right away instead of only when the Host records it (which can
+         * message shows right away instead of only when the Host records it (which can
          * wait for slow pre-step hooks, such as a memory lookup on a Session's first prompt).
-         * Opens the fork once the Host accepts the prompt; the main view then holds the Session.
+         * Opens the conversation once the Host accepts the prompt; the main view then holds the Session.
          */
-        async function submitTo(childId, content, text, echoImages) {
-          const reference = ctx.sessions.retain(childId, { source: 'editPrompt' })
+        async function submitTo(targetId, content, text, echoImages) {
+          const reference = ctx.sessions.retain(targetId, { source: 'editPrompt' })
           try {
             const { session } = await reference.ready
             const submission = session.beginSubmission({ mode: 'queue', text, attachments: echoImages })
@@ -570,17 +576,25 @@ window.__ModuleLoader__.load({
               submission.abandon()
               throw error
             }
-            ctx.uiWorkspace.openSession(childId)
+            ctx.uiWorkspace.openSession(targetId)
           } finally {
             reference.release()
           }
         }
 
+        /** The conversation did not restart: put its files back where it stopped. */
+        async function undoRewind(rewound) {
+          if (rewound.restoreId === undefined) return
+          await callHost('undo', { restoreId: rewound.restoreId }).catch((undoError) => {
+            console.warn('[edit-prompt] could not undo the file rewind', rewound.restoreId, undoError)
+          })
+        }
+
         /**
          * Restart a conversation from an edited user message.
          * `request.force` confirms the files an earlier attempt listed.
-         * @returns `{ ok: true }` once the fork received the prompt and opened, `{ ok: false, code: 'attention', files }`
-         *   when files need confirming (nothing was rewound or forked), or the failure for the editor to show.
+         * @returns `{ ok: true }` once the conversation received the prompt and opened, `{ ok: false, code: 'attention', files }`
+         *   when files need confirming (nothing was rewound, reverted, or forked), or the failure for the editor to show.
          */
         async function resendEdited(sessionId, request) {
           try {
@@ -617,6 +631,18 @@ window.__ModuleLoader__.load({
             // Stops the original conversation, then puts the files its dropped Turns changed back.
             const rewound = await callHost('rewind', { sessionId, fromSeq: turnStart, force: request.force === true })
             if (rewound.status === 'attention') return { ok: false, code: 'attention', files: rewound.files }
+            if (canRevert) {
+              try {
+                await ctx.sessions.revert({ sessionId, atSeq: turnStart - 1 })
+              } catch (error) {
+                await undoRewind(rewound)
+                throw error
+              }
+              const values = await clearInheritedInbox(sessionId)
+              await carryModel(sessionId, wantedModel, values)
+              await submitTo(sessionId, content, text, echoImages)
+              return { ok: true }
+            }
             const archive = archiveSource()
             let childId
             try {
@@ -631,12 +657,7 @@ window.__ModuleLoader__.load({
                   console.warn('[edit-prompt] could not archive the unused fork', childId, archiveError)
                 })
               }
-              // The conversation did not restart, so its files go back to where it stopped.
-              if (rewound.restoreId !== undefined) {
-                await callHost('undo', { restoreId: rewound.restoreId }).catch((undoError) => {
-                  console.warn('[edit-prompt] could not undo the file rewind', rewound.restoreId, undoError)
-                })
-              }
+              await undoRewind(rewound)
               throw error
             }
             if (archive) {
@@ -658,6 +679,7 @@ window.__ModuleLoader__.load({
           inject: sessionId => ({
             resendEdited: request => resendEdited(sessionId, request),
             hostHome: ctx.remote.$host?.home,
+            restartEndpoint: canRevert ? 'session/revert' : 'session/fork',
           }),
         }, EditableUserMessage))
       },
