@@ -43,6 +43,7 @@ const TEXT = {
     connected: 'Connected to {host}',
     connectedVia: 'Connected to {host} via {relay}',
     relaysOpenOnly: 'Relay latency is only available for the DSH that is open.',
+    switchSlow: 'Not switched yet; the chosen relay is tried first when the connection comes back.',
     rejected: 'This device is no longer paired with {host}.',
     failed: '{error}',
     loading: 'Loading…',
@@ -88,7 +89,8 @@ const TEXT = {
     retrying: '无法连接 {host}：{error}',
     connected: '已连接 {host}',
     connectedVia: '已连接 {host}（经 {relay}）',
-    relaysOpenOnly: '只能查看当前打开的 DSH 的中转延迟。',
+    relaysOpenOnly: '只能查看当前打开的 DSH 的线路。',
+    switchSlow: '还没切换过去；连接恢复时会先走所选线路。',
     rejected: '此设备已不再与 {host} 配对。',
     failed: '{error}',
     loading: '正在加载…',
@@ -693,6 +695,7 @@ async function openSession(host) {
       if (current?.remote !== remote) return
       session.state = ['connected', 'rejected', 'retrying'].includes(status.state) ? status.state : 'connecting'
       void sendContext(session)
+      session.relayWatch?.emit()
       if (status.state === 'connected') {
         clearTimeout(session.quietTimer)
         session.quietTimer = undefined
@@ -782,6 +785,91 @@ function hostLabel(host) {
   return host.hostName || host.serverId.slice(0, 8)
 }
 
+/**
+ * Answer the open DSH page's relays dialog: the relay list at once, then each round trip as it
+ * arrives, so a relay that does not answer holds up nothing else. Choosing a relay stores it and
+ * moves the tunnel in the background; the dialog sees the switch through later snapshots.
+ * @param {object} session - the open session.
+ * @returns {{ emit: () => void, measureAll: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
+ */
+function watchRelays(session) {
+  const remote = session.remote
+  const rows = new Map()
+  let switching = null
+  // A switch that ended on another relay because the chosen one did not answer in time.
+  let missed = null
+  let notice = null
+  // Only the latest choice settles the dialog's switch state.
+  let turn = 0
+  const live = () => remote.mux !== undefined && !remote.mux.closed
+  const emit = () => {
+    const target = session.frame.contentWindow
+    if (current !== session || target === null || session.relayWatch !== watch) return
+    target.postMessage({
+      channel: BRIDGE,
+      v: BRIDGE_VERSION,
+      type: 'relays-state',
+      id: session.host.serverId,
+      rows: remote.relayUrls.map((relayUrl) => {
+        const row = rows.get(relayUrl)
+        return { relayUrl, host: relayHost(relayUrl), ms: row?.ms ?? null, code: row?.code ?? '', error: row?.error ?? '', pending: row?.pending === true }
+      }),
+      current: live() ? remote.relayUrl ?? null : null,
+      preferred: remote.preferred ?? null,
+      switching,
+      missed,
+      notice,
+    }, location.origin)
+  }
+  // A row being measured again keeps its last result until the new one arrives.
+  const measure = (relayUrl) => {
+    const row = rows.get(relayUrl) ?? { token: 0 }
+    rows.set(relayUrl, row)
+    const token = ++row.token
+    row.pending = true
+    void remote.probeOne(relayUrl).then((result) => {
+      if (row.token !== token) return
+      Object.assign(row, { pending: false, ms: result.ms, code: result.code ?? '', error: result.error ?? '' })
+      emit()
+    })
+  }
+  const watch = {
+    emit,
+    measureAll() {
+      for (const relayUrl of remote.relayUrls) measure(relayUrl)
+      emit()
+    },
+    async pin(relayUrl) {
+      if (relayUrl !== null && !remote.relayUrls.includes(relayUrl)) return
+      const mine = ++turn
+      notice = null
+      missed = null
+      switching = relayUrl !== null && live() && remote.relayUrl !== relayUrl ? relayUrl : null
+      const moving = remote.prefer(relayUrl)
+      emit()
+      if (relayUrl === null) delete session.host.preferredRelay
+      else session.host.preferredRelay = relayUrl
+      await savePreferredRelay(session.host.serverId, relayUrl).catch(() => { /* kept for this visit only */ })
+      try {
+        await moving
+        if (mine !== turn || switching === null) return
+        // The new tunnel runs through the chosen relay, or through the next one in order when the
+        // chosen relay did not answer in time.
+        if (remote.relayUrl !== switching) missed = switching
+        switching = null
+        if (remote.relayUrl !== undefined) measure(remote.relayUrl)
+        emit()
+      } catch {
+        if (mine !== turn) return
+        switching = null
+        notice = t('switchSlow')
+        emit()
+      }
+    },
+  }
+  return watch
+}
+
 /** Chip text of a connected session, naming the relay that carries it. */
 function connectedText(session) {
   const relay = session.remote.relayUrl
@@ -815,7 +903,8 @@ async function sendContext(session) {
     return {
       id: host.serverId,
       name: hostLabel(host),
-      meta: !shown ? '' : relay === undefined ? t(`state_${state}`) : `${t(`state_${state}`)} · ${relayHost(relay)}`,
+      // The open DSH shows its relay and the end-to-end round trip of the tunnel through it.
+      meta: !shown ? '' : [t(`state_${state}`), relay === undefined ? null : relayHost(relay), relay !== undefined && typeof session.remote.mux?.rtt === 'number' ? `${session.remote.mux.rtt} ms` : null].filter(Boolean).join(' · '),
       metaTone: shown && tone === 'error' ? 'error' : undefined,
       tone: shown ? tone : undefined,
       current: shown,
@@ -878,27 +967,16 @@ async function onBridgeMessage(event) {
     if (host !== undefined && current === session) await openSession(host)
   } else if (data.type === 'relays' && typeof data.id === 'string') {
     // Only the open DSH has a tunnel to measure; another paired DSH would need one of its own.
-    let reply
     if (data.id !== session.host.serverId) {
-      reply = { error: t('relaysOpenOnly') }
-    } else {
-      try {
-        // `pin` (a relay, or null) chooses the relay this browser uses first, then measures again.
-        if (Object.hasOwn(data, 'pin') && (data.pin === null || session.remote.relayUrls.includes(data.pin))) {
-          await savePreferredRelay(session.host.serverId, data.pin)
-          if (data.pin === null) delete session.host.preferredRelay
-          else session.host.preferredRelay = data.pin
-          await session.remote.prefer(data.pin)
-        }
-        const results = await session.remote.probe()
-        reply = { results: results.map((result) => ({ ...result, host: relayHost(result.relayUrl) })) }
-      } catch (error) {
-        reply = { error: error?.message ?? String(error) }
-      }
+      session.frame.contentWindow?.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-state', id: data.id, error: t('relaysOpenOnly') }, location.origin)
+      return
     }
-    const target = session.frame.contentWindow
-    if (current !== session || target === null) return
-    target.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-result', id: data.id, ...reply }, location.origin)
+    session.relayWatch ??= watchRelays(session)
+    // `pin` (a relay, or null) chooses the relay this browser uses first; otherwise measure again.
+    if (Object.hasOwn(data, 'pin') && (data.pin === null || typeof data.pin === 'string')) void session.relayWatch.pin(data.pin)
+    else session.relayWatch.measureAll()
+  } else if (data.type === 'relays-close') {
+    session.relayWatch = undefined
   }
 }
 

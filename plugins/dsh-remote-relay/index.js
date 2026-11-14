@@ -63,8 +63,8 @@ const RECORD_VERSION = 1
 const CONTROL_PING_MS = 30_000
 const REPLACED_RETRY_MS = 60_000
 const LAST_SEEN_FLUSH_MS = 60_000
-/** How long a relay's measured latency is shown before the next status read measures it again. */
-const LATENCY_MAX_AGE_MS = 60_000
+/** Shortest interval between device latency measurements while the settings page reads the status. */
+const DEVICE_PING_MS = 5000
 
 const DROP_REQUEST_HEADERS = new Set([
   'host', 'connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding',
@@ -280,7 +280,7 @@ class RemoteRelayHost {
     for (const relayUrl of wanted) {
       let runner = this.runners.get(relayUrl)
       if (runner === undefined) {
-        runner = { relayUrl, abort: new AbortController(), control: undefined, state: 'connecting', error: null, since: Date.now(), latencyMs: null, latencyAt: 0 }
+        runner = { relayUrl, abort: new AbortController(), control: undefined, state: 'connecting', error: null, since: Date.now() }
         void this.controlLoop(runner)
       }
       runners.set(relayUrl, runner)
@@ -327,25 +327,6 @@ class RemoteRelayHost {
     }
   }
 
-  /** Measure the HTTP round trip to a relay, at most once per {@link LATENCY_MAX_AGE_MS}. */
-  async measure(runner) {
-    const now = Date.now()
-    if (runner.measuring || now - runner.latencyAt < LATENCY_MAX_AGE_MS) return
-    runner.measuring = true
-    try {
-      const started = performance.now()
-      const response = await fetch(relayHealthUrl(runner.relayUrl), { signal: AbortSignal.timeout(5000) })
-      await response.arrayBuffer()
-      runner.latencyMs = response.ok ? Math.round(performance.now() - started) : null
-    } catch (_unreachable) {
-      // An unreachable relay shows no latency; its connection state already says why.
-      runner.latencyMs = null
-    } finally {
-      runner.latencyAt = Date.now()
-      runner.measuring = false
-    }
-  }
-
   async diagnose(relayUrl, outcome) {
     try {
       const response = await fetch(relayHealthUrl(relayUrl), { signal: AbortSignal.timeout(5000) })
@@ -384,8 +365,6 @@ class RemoteRelayHost {
         ws.addEventListener('open', () => {
           opened = true
           this.setRelayState(runner, 'online')
-          runner.latencyAt = 0
-          void this.measure(runner)
           ping = setInterval(() => { if (ws.readyState === 1) ws.send('{"type":"ping"}') }, CONTROL_PING_MS)
         })
         ws.addEventListener('message', (event) => {
@@ -437,6 +416,7 @@ class RemoteRelayHost {
         relays: settings.relayUrls,
       })
       session.device = device
+      session.probe = probe
       session.mux = new Mux(channel, {
         request: (exchange) => this.proxyRequest(exchange),
         websocket: (socket) => this.proxyWebSocket(socket),
@@ -491,6 +471,17 @@ class RemoteRelayHost {
     device.lastSeenAt = now
     this.scheduleLastSeenFlush()
     return { ok: true, device: { id: device.id, name: device.name } }
+  }
+
+  /** Ping every open device connection whose last measurement is older than {@link DEVICE_PING_MS}. */
+  measureDevices() {
+    const now = Date.now()
+    for (const session of this.sessions.values()) {
+      const mux = session.mux
+      if (mux === undefined || mux.closed || session.probe || now - (session.measuredAt ?? 0) < DEVICE_PING_MS) continue
+      session.measuredAt = now
+      mux.ping().catch(() => {})
+    }
   }
 
   touch(deviceId) {
@@ -672,19 +663,24 @@ class RemoteRelayHost {
 
   snapshot() {
     const settings = this.settings()
-    const online = new Map()
+    // Each open device connection, with the relay it came through and its end-to-end round trip
+    // (this DSH -> relay -> device -> relay -> this DSH), measured by the tunnel's own pings.
+    const links = new Map()
+    const perRelay = new Map()
     for (const session of this.sessions.values()) {
-      if (session.device !== undefined && session.mux !== undefined && !session.mux.closed) {
-        online.set(session.device.id, (online.get(session.device.id) ?? 0) + 1)
-      }
+      if (session.device === undefined || session.mux === undefined || session.mux.closed || session.probe) continue
+      const list = links.get(session.device.id) ?? []
+      list.push({ relay: relayHost(session.runner.relayUrl), latencyMs: session.mux.rtt })
+      links.set(session.device.id, list)
+      perRelay.set(session.runner, (perRelay.get(session.runner) ?? 0) + 1)
     }
     const relays = settings.relays.map((relay) => {
       if (relay.url === undefined) {
-        return { url: relay.text, host: relayHost(relay.text), state: 'invalid', error: relay.error, since: null, latencyMs: null }
+        return { url: relay.text, host: relayHost(relay.text), state: 'invalid', error: relay.error, since: null, devices: 0 }
       }
       const runner = this.runners.get(relay.url)
-      if (runner === undefined) return { url: relay.url, host: relayHost(relay.url), state: 'disabled', error: null, since: null, latencyMs: null }
-      return { url: relay.url, host: relayHost(relay.url), state: runner.state, error: runner.error, since: runner.since, latencyMs: runner.state === 'online' ? runner.latencyMs : null }
+      if (runner === undefined) return { url: relay.url, host: relayHost(relay.url), state: 'disabled', error: null, since: null, devices: 0 }
+      return { url: relay.url, host: relayHost(relay.url), state: runner.state, error: runner.error, since: runner.since, devices: perRelay.get(runner) ?? 0 }
     })
     const pairing = this.pairing !== undefined && this.pairing.expiresAt > Date.now() ? this.pairing : undefined
     return {
@@ -696,7 +692,10 @@ class RemoteRelayHost {
       relays,
       control: this.aggregateControl(),
       devices: this.devices
-        .map((device) => ({ id: device.id, name: device.name, pairedAt: device.pairedAt, lastSeenAt: device.lastSeenAt ?? null, connections: online.get(device.id) ?? 0 }))
+        .map((device) => {
+          const open = links.get(device.id) ?? []
+          return { id: device.id, name: device.name, pairedAt: device.pairedAt, lastSeenAt: device.lastSeenAt ?? null, connections: open.length, links: open }
+        })
         .sort((a, b) => b.pairedAt - a.pairedAt),
       pairing: pairing === undefined ? null : {
         code: pairing.code,
@@ -761,8 +760,8 @@ class RemoteRelayHost {
       switch (endpoint) {
         case 'status':
           await this.ready
-          // Latency is refreshed while someone reads the status, and shows up on the next read.
-          for (const runner of this.runners.values()) if (runner.state === 'online') void this.measure(runner)
+          // While someone reads the status, device latency is measured again; it shows on the next read.
+          this.measureDevices()
           return ok(this.snapshot())
         case 'pair':
           return ok(await this.createPairing())
@@ -787,13 +786,15 @@ class RemoteRelayHost {
         case 'remote-open':
           return ok(await this.remotes.open(String(payload?.id ?? '')))
         case 'remote-probe': {
+          // With `relayUrl`, one relay; callers measure relays one by one so a slow relay holds up nothing else.
           const id = String(payload?.id ?? '')
-          return ok({ id, results: await this.remotes.probe(id) })
+          return ok({ id, results: await this.remotes.probe(id, typeof payload?.relayUrl === 'string' ? payload.relayUrl : undefined) })
         }
         case 'remote-relay-pin': {
+          // Stores the choice and starts moving an open tunnel; answers without waiting for the new tunnel.
           const id = String(payload?.id ?? '')
           await this.remotes.prefer(id, typeof payload?.relayUrl === 'string' ? payload.relayUrl : null)
-          return ok({ id, results: await this.remotes.probe(id) })
+          return ok({ ...await this.remotesSnapshot(), id })
         }
         case 'remote-close':
           this.remotes.close(String(payload?.id ?? ''))

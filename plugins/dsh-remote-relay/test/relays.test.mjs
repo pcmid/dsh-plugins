@@ -39,7 +39,6 @@ test('the host serves every relay and devices fall over to the next one', async 
     assert.equal(status.control.state, 'online')
     assert.deepEqual(status.relays.map((relay) => relay.state), ['online', 'online', 'invalid'])
     assert.match(status.relayError, /Unsupported relay scheme/)
-    await until(async () => (await host.call('status')).value.relays[0].latencyMs !== null, 'relay latency')
 
     const pairing = (await host.call('pair')).value.pairing
     assert.deepEqual(decodePairing(pairing.code).relayUrls, [relayA, relayB])
@@ -51,16 +50,30 @@ test('the host serves every relay and devices fall over to the next one', async 
     let remote = await until(async () => { const value = (await viewer.call('remotes')).value.remotes[0]; return value.state === 'connected' && value }, 'tunnel connected')
     assert.equal(remote.via, new URL(relayA).host)
     assert.deepEqual(remote.relays, [new URL(relayA).host, new URL(relayB).host])
+    // Latency is end to end, measured by the tunnel's pings on both sides, not a relay round trip.
+    remote = await until(async () => { const value = (await viewer.call('remotes')).value.remotes[0]; return typeof value.latencyMs === 'number' && value }, 'device-side latency')
+    const hostSide = await until(async () => {
+      const value = (await host.call('status')).value
+      return typeof value.devices[0].links[0]?.latencyMs === 'number' && value
+    }, 'host-side latency')
+    assert.deepEqual(hostSide.devices[0].links.map((link) => link.relay), [new URL(relayA).host])
+    assert.deepEqual(hostSide.relays.map((relay) => relay.devices), [1, 0, 0])
 
     const probe = (await viewer.call('remote-probe', { id: added.added })).value
     assert.deepEqual(probe.results.map((result) => [result.host, result.current]), [[new URL(relayA).host, true], [new URL(relayB).host, false]])
     for (const result of probe.results) assert.equal(typeof result.ms, 'number', JSON.stringify(result))
+    // One relay at a time, so the dialog fills in each row as it arrives.
+    const single = (await viewer.call('remote-probe', { id: added.added, relayUrl: relayB })).value.results
+    assert.deepEqual(single.map((result) => [result.host, result.current, typeof result.ms]), [[new URL(relayB).host, false, 'number']])
+    assert.equal((await viewer.call('remote-probe', { id: added.added, relayUrl: 'wss://elsewhere.example/ws' })).error.code, 'remote-relay/not-found')
+    assert.deepEqual([remote.relayUrls, remote.currentRelay, remote.preferredRelay], [[relayA, relayB], relayA, null])
 
-    // Choosing a relay moves the open tunnel onto it and keeps the choice for later connections.
+    // Choosing a relay answers at once with the stored choice; the open tunnel moves in the background
+    // and later connections keep using that relay first.
     const pinned = (await viewer.call('remote-relay-pin', { id: added.added, relayUrl: relayB })).value
-    assert.deepEqual(pinned.results.map((result) => [result.host, result.current, result.preferred]), [[new URL(relayA).host, false, false], [new URL(relayB).host, true, true]])
+    assert.equal(pinned.remotes[0].preferredRelay, relayB)
     assert.equal(remoteRecord().preferredRelay, relayB)
-    remote = (await viewer.call('remotes')).value.remotes[0]
+    remote = await until(async () => { const value = (await viewer.call('remotes')).value.remotes[0]; return value.currentRelay === relayB && value }, 'tunnel moved to the chosen relay')
     assert.deepEqual([remote.via, remote.preferred], [new URL(relayB).host, new URL(relayB).host])
     await viewer.call('remote-close', { id: added.added })
     await viewer.call('remote-open', { id: added.added })

@@ -127,6 +127,14 @@ export class RemoteDevices {
           relays,
           via,
           preferred,
+          // End-to-end round trip of the open tunnel (this DSH -> relay -> that DSH and back).
+          latencyMs: via === null ? null : session.remote.mux?.rtt ?? null,
+          // Full relay addresses, for measuring and choosing a relay.
+          relayUrls: [...remote.relayUrls],
+          currentRelay: via === null ? null : session.status.relayUrl,
+          // Numbers each opened tunnel, so a dialog can tell that a switch produced a new connection.
+          connection: via === null ? null : session.status.generation,
+          preferredRelay: preferred === null ? null : remote.preferredRelay,
           pairedAt: remote.pairedAt,
           lastOpenedAt: remote.lastOpenedAt ?? null,
           state: session?.status.state ?? 'idle',
@@ -247,10 +255,10 @@ export class RemoteDevices {
     const existing = this.sessions.get(remote.serverId)
     if (existing !== undefined && existing.status.state !== 'rejected') return existing
     if (existing !== undefined) this.stop(remote.serverId)
-    const session = { status: { state: 'connecting', error: null, code: null, relayUrl: null }, active: 0, idle: undefined, remote: undefined }
+    const session = { status: { state: 'connecting', error: null, code: null, relayUrl: null, generation: null }, active: 0, idle: undefined, remote: undefined }
     session.remote = this.client(remote, {
       onstatus: (status) => {
-        session.status = { state: status.state, error: status.error ?? null, code: status.code ?? null, relayUrl: status.relayUrl ?? null }
+        session.status = { state: status.state, error: status.error ?? null, code: status.code ?? null, relayUrl: status.relayUrl ?? null, generation: status.generation ?? null }
         if (status.state === 'rejected') this.options.log('info', `"${remote.hostName}" refused this DSH: ${status.error}`)
       },
       onrelays: (relayUrls) => {
@@ -285,15 +293,17 @@ export class RemoteDevices {
    * Measure the round trip to a paired host through each of its relays. An open tunnel is measured
    * in place; nothing switches relays.
    * @param {string} id - host id.
-   * @returns {Promise<Array<{ relayUrl: string, host: string, current: boolean, ms: number | null, code?: string, error?: string }>>} results in priority order.
+   * @param {string} [relayUrl] - measure only this relay.
+   * @returns {Promise<Array<{ relayUrl: string, host: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>>} results in priority order.
    */
-  async probe(id) {
+  async probe(id, relayUrl) {
     await this.loaded()
     const remote = this.find(id)
     if (!this.keys.has(id)) throw new TunnelError('storage', 'The stored device key is unusable; add this device again')
+    if (relayUrl !== undefined && !remote.relayUrls.includes(relayUrl)) throw new TunnelError('not-found', 'This DSH does not offer that relay')
     const open = this.sessions.get(id)
     const client = open !== undefined && open.status.state !== 'rejected' ? open.remote : this.client(remote, {})
-    const results = await client.probe()
+    const results = relayUrl === undefined ? await client.probe() : [await client.probeOne(relayUrl)]
     return results.map((result) => ({ ...result, host: relayHost(result.relayUrl) }))
   }
 
@@ -302,7 +312,7 @@ export class RemoteDevices {
    * stored: later connections try that relay first while the host still offers it.
    * @param {string} id - host id.
    * @param {string | null} relayUrl - one of the host's relays, or null to follow its priority.
-   * @returns {Promise<void>} settles once an open tunnel is back.
+   * @returns {Promise<void>} settles once the choice is stored; an open tunnel then moves in the background.
    */
   async prefer(id, relayUrl) {
     await this.loaded()
@@ -312,7 +322,7 @@ export class RemoteDevices {
     else remote.preferredRelay = relayUrl
     await this.save()
     const open = this.sessions.get(id)
-    if (open !== undefined && open.status.state !== 'rejected') await open.remote.prefer(relayUrl)
+    if (open !== undefined && open.status.state !== 'rejected') open.remote.prefer(relayUrl).catch(() => {})
   }
 
   stop(id) {

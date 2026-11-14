@@ -965,6 +965,7 @@ export class Mux {
    * @param {(exchange: object) => void | Promise<void>} [options.request] - host handler for HTTP exchanges.
    * @param {(session: object) => void | Promise<void>} [options.websocket] - host handler for WebSocket sessions.
    * @param {number} [options.keepAliveMs] - ping interval; three silent intervals close the channel.
+   *   Every keep-alive ping also measures the round trip, see {@link Mux#rtt}.
    */
   constructor(channel, options = {}) {
     this.channel = channel
@@ -977,16 +978,21 @@ export class Mux {
     this.onclose = undefined
     this.pings = []
     this.nextPing = 1
+    /** Latest end-to-end round trip in milliseconds, through the relay to the other end; null until measured. */
+    this.rtt = null
     channel.onclose = (code, reason) => { this.shutdown(code, reason) }
     channel.setHandler((bytes) => { this.receive(bytes) })
     const keepAliveMs = options.keepAliveMs ?? 25_000
+    const measure = () => { this.ping(keepAliveMs).catch(() => {}) }
     this.keepAlive = setInterval(() => {
       if (Date.now() - this.lastSeen > keepAliveMs * 3) {
         channel.close(4408, 'keep-alive timeout')
         return
       }
-      this.send(FRAME.PING, 0)
+      measure()
     }, keepAliveMs)
+    // A first measurement right away, so a new tunnel reports its latency without waiting an interval.
+    setTimeout(measure, 0)
   }
 
   /** Close the channel and fail every open stream. */
@@ -1010,8 +1016,12 @@ export class Mux {
         done: (error) => {
           clearTimeout(timer)
           this.pings = this.pings.filter((candidate) => candidate !== waiter)
-          if (error === undefined) resolve(Math.round(performance.now() - started))
-          else reject(error)
+          if (error !== undefined) {
+            reject(error)
+            return
+          }
+          this.rtt = Math.round(performance.now() - started)
+          resolve(this.rtt)
         },
       }
       const timer = setTimeout(() => { waiter.done(new TunnelError('timeout', 'No answer in time')) }, timeoutMs)
@@ -1459,7 +1469,7 @@ export class RemoteHost {
    * @param {string} options.serverId - host key id.
    * @param {{ privateKey: CryptoKey, publicJwk: object }} options.device - device identity.
    * @param {string} options.deviceName - name reported to the host.
-   * @param {(status: { state: string, error?: string, code?: string, hostName?: string, relayUrl?: string }) => void} [options.onstatus] - status observer.
+   * @param {(status: { state: string, error?: string, code?: string, hostName?: string, relayUrl?: string, generation?: number }) => void} [options.onstatus] - status observer; `generation` numbers each opened tunnel.
    * @param {(relayUrls: string[]) => void} [options.onrelays] - the host offers a different relay list; store it.
    * @param {string} [options.preferredRelay] - relay to try first while the host still offers it.
    */
@@ -1468,6 +1478,8 @@ export class RemoteHost {
     this.relayUrls = normalizeRelayList(options.relayUrls ?? options.relayUrl)
     this.preferred = normalizeRelayList(options.preferredRelay ?? [])[0]
     this.switching = false
+    /** Counts opened tunnels, so an observer can tell a new connection from the one it saw before. */
+    this.generation = 0
     /** Relay carrying the open tunnel. */
     this.relayUrl = undefined
     this.running = false
@@ -1553,7 +1565,8 @@ export class RemoteHost {
         this.mux = mux
         this.relayUrl = relayUrl
         failures = 0
-        this.setStatus({ state: 'connected', hostName, relayUrl })
+        this.generation += 1
+        this.setStatus({ state: 'connected', hostName, relayUrl, generation: this.generation })
         for (const waiter of this.waiters.splice(0)) waiter.resolve(mux)
         const { code, reason } = await closed
         if (this.mux === mux) this.mux = undefined
@@ -1583,43 +1596,50 @@ export class RemoteHost {
   }
 
   /**
-   * Measure the round trip to the host through every known relay. The open tunnel is measured in
-   * place; every other relay gets a short-lived probe connection. Nothing switches relays.
+   * Measure the round trip to the host through every known relay; see {@link RemoteHost#probeOne}.
    * @param {number} [timeoutMs] - deadline per relay.
-   * @returns {Promise<Array<{ relayUrl: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>>} one entry per relay, in the host's priority order.
+   * @returns {Promise<Array<Awaited<ReturnType<RemoteHost['probeOne']>>>>} one entry per relay, in the host's priority order.
    */
   async probe(timeoutMs = PROBE_TIMEOUT_MS) {
-    const relayUrls = [...this.relayUrls]
+    return await Promise.all(this.relayUrls.map((relayUrl) => this.probeOne(relayUrl, timeoutMs)))
+  }
+
+  /**
+   * Measure the end-to-end round trip to the host through one relay. The relay carrying the open
+   * tunnel is measured in place; any other relay gets a short-lived probe connection, whose
+   * handshake is not counted. Nothing switches relays.
+   * @param {string} relayUrl - one of the host's relays.
+   * @param {number} [timeoutMs] - deadline for this relay.
+   * @returns {Promise<{ relayUrl: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>} the measurement.
+   */
+  async probeOne(relayUrl, timeoutMs = PROBE_TIMEOUT_MS) {
     const mux = this.mux !== undefined && !this.mux.closed ? this.mux : undefined
-    const current = mux === undefined ? undefined : this.relayUrl
-    return await Promise.all(relayUrls.map(async (relayUrl) => {
-      const entry = { relayUrl, current: relayUrl === current, preferred: relayUrl === this.preferred }
-      const attempt = new AbortController()
-      let timer
+    const entry = { relayUrl, current: mux !== undefined && relayUrl === this.relayUrl, preferred: relayUrl === this.preferred }
+    const attempt = new AbortController()
+    let timer
+    try {
+      const deadline = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          attempt.abort()
+          reject(new TunnelError('timeout', 'No answer in time'))
+        }, timeoutMs)
+      })
+      if (entry.current) return { ...entry, ms: await Promise.race([mux.ping(timeoutMs), deadline]) }
+      const connecting = connectClient({ ...this.options, relayUrl, mode: 'auth', probe: true, signal: attempt.signal })
+      // A handshake that completes after the deadline is closed rather than left open.
+      connecting.then(({ channel }) => { if (attempt.signal.aborted) channel.close(1000, 'probe') }, () => {})
+      const { channel } = await Promise.race([connecting, deadline])
+      const probe = new Mux(channel, { keepAliveMs: timeoutMs })
       try {
-        const deadline = new Promise((_resolve, reject) => {
-          timer = setTimeout(() => {
-            attempt.abort()
-            reject(new TunnelError('timeout', 'No answer in time'))
-          }, timeoutMs)
-        })
-        if (entry.current) return { ...entry, ms: await Promise.race([mux.ping(timeoutMs), deadline]) }
-        const connecting = connectClient({ ...this.options, relayUrl, mode: 'auth', probe: true, signal: attempt.signal })
-        // A handshake that completes after the deadline is closed rather than left open.
-        connecting.then(({ channel }) => { if (attempt.signal.aborted) channel.close(1000, 'probe') }, () => {})
-        const { channel } = await Promise.race([connecting, deadline])
-        const probe = new Mux(channel, { keepAliveMs: timeoutMs })
-        try {
-          return { ...entry, ms: await Promise.race([probe.ping(timeoutMs), deadline]) }
-        } finally {
-          probe.close()
-        }
-      } catch (error) {
-        return { ...entry, ms: null, code: error instanceof TunnelError ? error.code : 'error', error: String(error?.message ?? error) }
+        return { ...entry, ms: await Promise.race([probe.ping(timeoutMs), deadline]) }
       } finally {
-        clearTimeout(timer)
+        probe.close()
       }
-    }))
+    } catch (error) {
+      return { ...entry, ms: null, code: error instanceof TunnelError ? error.code : 'error', error: String(error?.message ?? error) }
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   /**
