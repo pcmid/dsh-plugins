@@ -289,11 +289,11 @@
       "versions": [
         {
           "version": "0.4.2",
-          "publishTimestamp": 1794647270,
+          "publishTimestamp": 1794648392,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7025cc13d9b2ec547ae4cb62e97dc7081dffb520",
+            "commit": "5575bc3e9e5c2a63011e0e0ae1734f0396fb4839",
             "path": "plugins/dsh-remote-relay"
           },
           "engines": {
