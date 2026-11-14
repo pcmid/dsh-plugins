@@ -1,8 +1,9 @@
 /**
  * Host half of the DSH remote relay bundle.
  *
- * While enabled, the plugin keeps one signed `host-control` socket on a self-hosted
- * openchamber-relay. For each device that dials the relay it opens a `host-data` socket, completes
+ * While enabled, the plugin keeps one signed `host-control` socket on each configured self-hosted
+ * openchamber-relay; the relay list is ordered by priority, and pairing codes and handshakes hand
+ * that order to devices, which try the relays in turn. For each device that dials the relay it opens a `host-data` socket, completes
  * the end-to-end encrypted handshake from `launcher/tunnel.js`, admits only paired devices, and
  * then forwards the device's HTTP requests and WebSockets to this process's own Web GUI on
  * loopback. The plugin signs in to the Web GUI with its own browser cookie, so the device never
@@ -21,7 +22,7 @@ import https from 'node:https'
 import os from 'node:os'
 import z from '@deepseek-ai/schemastery'
 import {
-  TunnelError, Mux, acceptHost, createIdentity, encodePairing, fromBase64Url, hostSocketUrl, importIdentity,
+  MAX_RELAYS, TunnelError, Mux, acceptHost, createIdentity, encodePairing, fromBase64Url, hostSocketUrl, importIdentity,
   normalizeRelayUrl, openSocket, randomToken, relayHealthUrl,
 } from './launcher/tunnel.js'
 import { RemoteDevices } from './remotes.js'
@@ -33,8 +34,10 @@ export const inject = ['connection', 'webServer', 'credentials']
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile()
     .description('Keep a connection to the relay so paired devices can reach this DSH.'),
+  relays: z.array(z.string()).default([]).volatile()
+    .description('Relay WebSocket endpoints in priority order, for example wss://relay.example.com/ws.'),
   relayUrl: z.string().default('').volatile()
-    .description('Relay WebSocket endpoint, for example wss://relay.example.com/ws.'),
+    .description('Single relay endpoint of earlier versions; used only while the relay list is empty.'),
   launcherUrl: z.string().default('').volatile()
     .description('HTTPS address of the deployed launcher page; pairing QR codes open it.'),
   hostName: z.string().default('').volatile()
@@ -46,7 +49,7 @@ export const Config = z.object({
 /** Exact `/api` routes this plugin answers; only owner Peers reach exact routes. */
 const API_PREFIX = '/api/pcmid/remote-relay'
 const OPERATIONS = [
-  'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close',
+  'status', 'pair', 'cancel-pairing', 'revoke', 'rename', 'remotes', 'remote-add', 'remote-remove', 'remote-open', 'remote-close', 'remote-probe',
   'last-session', 'session-opened',
 ]
 const OWNER = { principal: { kind: 'owner' } }
@@ -60,6 +63,8 @@ const RECORD_VERSION = 1
 const CONTROL_PING_MS = 30_000
 const REPLACED_RETRY_MS = 60_000
 const LAST_SEEN_FLUSH_MS = 60_000
+/** How long a relay's measured latency is shown before the next status read measures it again. */
+const LATENCY_MAX_AGE_MS = 60_000
 
 const DROP_REQUEST_HEADERS = new Set([
   'host', 'connection', 'keep-alive', 'proxy-connection', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding',
@@ -88,6 +93,14 @@ function failure(code, message) {
   return { ok: false, error: { code: `remote-relay/${code}`, message, details: {} } }
 }
 
+function relayHost(relayUrl) {
+  try {
+    return new URL(relayUrl).host
+  } catch (_invalid) {
+    return relayUrl
+  }
+}
+
 function wait(ms, signal) {
   return new Promise((resolve) => {
     if (signal.aborted) {
@@ -106,7 +119,8 @@ function wait(ms, signal) {
 
 /** One remote device session: a host-data socket, its channel, and its multiplexer. */
 class DeviceSession {
-  constructor(connectionId) {
+  constructor(runner, connectionId) {
+    this.runner = runner
     this.connectionId = connectionId
     this.since = Date.now()
     this.device = undefined
@@ -133,7 +147,8 @@ class RemoteRelayHost {
     this.devices = []
     this.sessions = new Map()
     this.pairing = undefined
-    this.runner = undefined
+    /** One control connection per relay, keyed by normalized relay URL. */
+    this.runners = new Map()
     this.control = { state: 'starting', error: null, since: Date.now() }
     this.cookie = undefined
     this.disposed = false
@@ -163,21 +178,32 @@ class RemoteRelayHost {
       const value = typeof reference?.get === 'function' ? reference.get() : reference
       return value === undefined || value === null ? fallback : value
     }
-    let relayUrl
-    let relayError
-    const relayText = String(read('relayUrl', '')).trim()
-    if (relayText !== '') {
+    const listed = read('relays', [])
+    const texts = (Array.isArray(listed) && listed.length > 0 ? listed : [read('relayUrl', '')])
+      .map((value) => String(value ?? '').trim())
+      .filter((text) => text !== '')
+    // Entries in priority order: a valid entry has `url`, an unusable one has `error`.
+    const relays = []
+    const relayUrls = []
+    for (const text of texts) {
       try {
-        relayUrl = normalizeRelayUrl(relayText)
+        const url = normalizeRelayUrl(text)
+        if (relayUrls.includes(url)) continue
+        if (relayUrls.length >= MAX_RELAYS) {
+          relays.push({ text, error: `At most ${MAX_RELAYS} relays are used` })
+          continue
+        }
+        relayUrls.push(url)
+        relays.push({ text, url })
       } catch (error) {
-        relayError = errorText(error)
+        relays.push({ text, error: errorText(error) })
       }
     }
     return {
       enabled: read('enabled', false) === true,
-      relayText,
-      relayUrl,
-      relayError,
+      relays,
+      relayUrls,
+      relayError: relays.find((relay) => relay.error !== undefined)?.error,
       launcherUrl: String(read('launcherUrl', '')).trim(),
       hostName: String(read('hostName', '')).trim() || defaultHostName(),
       pairingMinutes: Number(read('pairingMinutes', 10)) || 10,
@@ -216,57 +242,107 @@ class RemoteRelayHost {
     await this.ctx.credentials.modifyRecord(DEVICES_KEY, async () => ({ kind: 'grant', payload: { version: RECORD_VERSION, devices } }))
   }
 
+  /** State of the plugin as a whole: identity loading, switched off, or nothing to connect to. */
   setControl(state, error = null) {
     if (this.control.state !== state || this.control.error !== error) this.control = { state, error, since: Date.now() }
   }
 
-  /** Start, restart, or stop the relay connection to match the current Config. */
+  /** State of one relay's control connection. */
+  setRelayState(runner, state, error = null) {
+    if (runner.state !== state || runner.error !== error) Object.assign(runner, { state, error, since: Date.now() })
+  }
+
+  /** Control state over all relays: online while any relay is online. */
+  aggregateControl() {
+    if (this.runners.size === 0) return this.control
+    const runners = [...this.runners.values()]
+    for (const state of ['online', 'connecting', 'replaced']) {
+      const match = runners.filter((runner) => runner.state === state)
+      if (match.length > 0) {
+        return { state, error: state === 'online' ? null : match[0].error, since: Math.min(...match.map((runner) => runner.since)) }
+      }
+    }
+    const first = runners[0]
+    return { state: first.state, error: first.error, since: first.since }
+  }
+
+  /** Start and stop relay connections to match the current Config. */
   async reconcile() {
     await this.ready
     if (this.disposed || this.identity === undefined) return
     const settings = this.settings()
-    const wanted = settings.enabled && settings.relayUrl !== undefined ? settings.relayUrl : undefined
-    if (this.runner !== undefined && this.runner.relayUrl === wanted) return
-    this.stopRunner()
+    const wanted = settings.enabled ? settings.relayUrls : []
+    for (const runner of [...this.runners.values()]) {
+      if (!wanted.includes(runner.relayUrl)) this.stopRunner(runner)
+    }
+    // Keep the map in priority order, so snapshots list relays the way devices try them.
+    const runners = new Map()
+    for (const relayUrl of wanted) {
+      let runner = this.runners.get(relayUrl)
+      if (runner === undefined) {
+        runner = { relayUrl, abort: new AbortController(), control: undefined, state: 'connecting', error: null, since: Date.now(), latencyMs: null, latencyAt: 0 }
+        void this.controlLoop(runner)
+      }
+      runners.set(relayUrl, runner)
+    }
+    this.runners = runners
     if (!settings.enabled) {
       this.pairing = undefined
       this.setControl('disabled')
-      return
-    }
-    if (settings.relayUrl === undefined) {
+    } else if (wanted.length === 0) {
       this.setControl('unconfigured', settings.relayError ?? null)
-      return
+    } else {
+      this.setControl('online')
     }
-    const runner = { relayUrl: settings.relayUrl, abort: new AbortController(), control: undefined }
-    this.runner = runner
-    void this.controlLoop(runner)
   }
 
-  stopRunner() {
-    const runner = this.runner
-    if (runner === undefined) return
-    this.runner = undefined
+  stopRunner(runner) {
+    this.runners.delete(runner.relayUrl)
     runner.abort.abort()
-    for (const session of this.sessions.values()) session.close(1001, 'remote access stopped')
-    this.sessions.clear()
+    for (const [key, session] of [...this.sessions]) {
+      if (session.runner !== runner) continue
+      session.close(1001, 'remote access stopped')
+      this.sessions.delete(key)
+    }
   }
 
   async controlLoop(runner) {
     let failures = 0
     while (!runner.abort.signal.aborted) {
-      this.setControl('connecting', failures > 0 ? this.control.error : null)
+      this.setRelayState(runner, 'connecting', failures > 0 ? runner.error : null)
       const outcome = await this.runControl(runner)
       if (runner.abort.signal.aborted) return
       let delay
       if (outcome.code === 4001) {
-        this.setControl('replaced', 'Another DSH using this identity took over the relay connection.')
+        this.setRelayState(runner, 'replaced', 'Another DSH using this identity took over the relay connection.')
         delay = REPLACED_RETRY_MS
       } else {
         failures = outcome.opened ? 0 : failures + 1
-        this.setControl('offline', outcome.opened ? `The relay closed the connection (${outcome.code})` : await this.diagnose(runner.relayUrl, outcome))
+        const reason = outcome.opened ? `The relay closed the connection (${outcome.code})` : await this.diagnose(runner.relayUrl, outcome)
+        if (runner.abort.signal.aborted) return
+        this.setRelayState(runner, 'offline', reason)
         delay = Math.min(60_000, 1000 * 2 ** Math.min(failures, 6)) * (0.75 + Math.random() * 0.5)
       }
       await wait(delay, runner.abort.signal)
+    }
+  }
+
+  /** Measure the HTTP round trip to a relay, at most once per {@link LATENCY_MAX_AGE_MS}. */
+  async measure(runner) {
+    const now = Date.now()
+    if (runner.measuring || now - runner.latencyAt < LATENCY_MAX_AGE_MS) return
+    runner.measuring = true
+    try {
+      const started = performance.now()
+      const response = await fetch(relayHealthUrl(runner.relayUrl), { signal: AbortSignal.timeout(5000) })
+      await response.arrayBuffer()
+      runner.latencyMs = response.ok ? Math.round(performance.now() - started) : null
+    } catch (_unreachable) {
+      // An unreachable relay shows no latency; its connection state already says why.
+      runner.latencyMs = null
+    } finally {
+      runner.latencyAt = Date.now()
+      runner.measuring = false
     }
   }
 
@@ -307,7 +383,9 @@ class RemoteRelayHost {
         runner.abort.signal.addEventListener('abort', abort, { once: true })
         ws.addEventListener('open', () => {
           opened = true
-          this.setControl('online')
+          this.setRelayState(runner, 'online')
+          runner.latencyAt = 0
+          void this.measure(runner)
           ping = setInterval(() => { if (ws.readyState === 1) ws.send('{"type":"ping"}') }, CONTROL_PING_MS)
         })
         ws.addEventListener('message', (event) => {
@@ -315,7 +393,7 @@ class RemoteRelayHost {
         })
         ws.addEventListener('close', (event) => { finish(event.code, event.reason) })
       }, (error) => {
-        this.setControl('error', errorText(error))
+        this.setRelayState(runner, 'error', errorText(error))
         finish(1006, errorText(error))
       })
     })
@@ -334,25 +412,29 @@ class RemoteRelayHost {
     } else if (message?.type === 'connected' && typeof message.connectionId === 'string') {
       void this.attach(runner, message.connectionId)
     } else if (message?.type === 'disconnected' && typeof message.connectionId === 'string') {
-      this.sessions.get(message.connectionId)?.close(1000, 'client disconnected')
+      this.sessions.get(`${runner.relayUrl} ${message.connectionId}`)?.close(1000, 'client disconnected')
     }
   }
 
   async attach(runner, connectionId) {
-    if (this.sessions.has(connectionId) || runner.abort.signal.aborted) return
-    const session = new DeviceSession(connectionId)
-    this.sessions.set(connectionId, session)
+    // Connection ids are only unique within one relay.
+    const key = `${runner.relayUrl} ${connectionId}`
+    if (this.sessions.has(key) || runner.abort.signal.aborted) return
+    const session = new DeviceSession(runner, connectionId)
+    this.sessions.set(key, session)
     try {
       session.ws = await openSocket(await hostSocketUrl(runner.relayUrl, this.identity, 'host-data', connectionId))
       if (runner.abort.signal.aborted || session.closed) {
         session.close(1001, 'remote access stopped')
         return
       }
-      const { channel, device } = await acceptHost(session.ws, {
+      const settings = this.settings()
+      const { channel, device, probe } = await acceptHost(session.ws, {
         identity: this.identity,
-        hostName: this.settings().hostName,
+        hostName: settings.hostName,
         pairingSecret: (pairingId) => this.pairingSecret(pairingId),
         authorize: (request) => this.authorize(request),
+        relays: settings.relayUrls,
       })
       session.device = device
       session.mux = new Mux(channel, {
@@ -361,13 +443,13 @@ class RemoteRelayHost {
         keepAliveMs: 25_000,
       })
       session.mux.onclose = () => {
-        if (this.sessions.get(connectionId) === session) this.sessions.delete(connectionId)
+        if (this.sessions.get(key) === session) this.sessions.delete(key)
         this.touch(device.id)
       }
       if (session.closed) session.close(1001, 'remote access stopped')
-      this.log('info', `device "${device.name}" connected`)
+      this.log(probe ? 'debug' : 'info', `device "${device.name}" ${probe ? 'measured latency' : 'connected'} through ${relayHost(runner.relayUrl)}`)
     } catch (error) {
-      if (this.sessions.get(connectionId) === session) this.sessions.delete(connectionId)
+      if (this.sessions.get(key) === session) this.sessions.delete(key)
       session.close(4000, 'handshake failed')
       if (!(error instanceof TunnelError) || error.code !== 'closed') this.log('debug', `rejected connection: ${errorText(error)}`)
     }
@@ -596,14 +678,23 @@ class RemoteRelayHost {
         online.set(session.device.id, (online.get(session.device.id) ?? 0) + 1)
       }
     }
+    const relays = settings.relays.map((relay) => {
+      if (relay.url === undefined) {
+        return { url: relay.text, host: relayHost(relay.text), state: 'invalid', error: relay.error, since: null, latencyMs: null }
+      }
+      const runner = this.runners.get(relay.url)
+      if (runner === undefined) return { url: relay.url, host: relayHost(relay.url), state: 'disabled', error: null, since: null, latencyMs: null }
+      return { url: relay.url, host: relayHost(relay.url), state: runner.state, error: runner.error, since: runner.since, latencyMs: runner.state === 'online' ? runner.latencyMs : null }
+    })
     const pairing = this.pairing !== undefined && this.pairing.expiresAt > Date.now() ? this.pairing : undefined
     return {
       ready: this.identity !== undefined,
       serverId: this.identity?.id ?? null,
       hostName: settings.hostName,
-      relayUrl: settings.relayUrl ?? null,
+      relayUrl: settings.relayUrls[0] ?? null,
       relayError: settings.relayError ?? null,
-      control: this.control,
+      relays,
+      control: this.aggregateControl(),
       devices: this.devices
         .map((device) => ({ id: device.id, name: device.name, pairedAt: device.pairedAt, lastSeenAt: device.lastSeenAt ?? null, connections: online.get(device.id) ?? 0 }))
         .sort((a, b) => b.pairedAt - a.pairedAt),
@@ -621,11 +712,11 @@ class RemoteRelayHost {
     if (this.identity === undefined) throw new TunnelError('unavailable', this.loadFailure ?? 'The identity is not loaded')
     const settings = this.settings()
     if (!settings.enabled) throw new TunnelError('disabled', 'Turn on remote access first')
-    if (settings.relayUrl === undefined) throw new TunnelError('unconfigured', settings.relayError ?? 'Set the relay address first')
+    if (settings.relayUrls.length === 0) throw new TunnelError('unconfigured', settings.relayError ?? 'Add a relay address first')
     const id = randomToken(8)
     const secret = randomToken(16)
     const expiresAt = Date.now() + settings.pairingMinutes * 60_000
-    const code = encodePairing({ relayUrl: settings.relayUrl, serverId: this.identity.id, pairingId: id, secret, hostName: settings.hostName, expiresAt })
+    const code = encodePairing({ relayUrls: settings.relayUrls, serverId: this.identity.id, pairingId: id, secret, hostName: settings.hostName, expiresAt })
     let link = null
     if (settings.launcherUrl !== '') {
       try {
@@ -670,6 +761,8 @@ class RemoteRelayHost {
       switch (endpoint) {
         case 'status':
           await this.ready
+          // Latency is refreshed while someone reads the status, and shows up on the next read.
+          for (const runner of this.runners.values()) if (runner.state === 'online') void this.measure(runner)
           return ok(this.snapshot())
         case 'pair':
           return ok(await this.createPairing())
@@ -693,6 +786,10 @@ class RemoteRelayHost {
         }
         case 'remote-open':
           return ok(await this.remotes.open(String(payload?.id ?? '')))
+        case 'remote-probe': {
+          const id = String(payload?.id ?? '')
+          return ok({ id, results: await this.remotes.probe(id) })
+        }
         case 'remote-close':
           this.remotes.close(String(payload?.id ?? ''))
           return ok(await this.remotesSnapshot())
@@ -762,7 +859,7 @@ class RemoteRelayHost {
     this.disposed = true
     this.remotes.dispose()
     clearTimeout(this.lastSeenTimer)
-    this.stopRunner()
+    for (const runner of [...this.runners.values()]) this.stopRunner(runner)
     if (this.lastSeenTimer !== undefined) {
       this.lastSeenTimer = undefined
       void this.saveDevices().catch(() => {})

@@ -222,6 +222,34 @@ export function normalizeRelayUrl(input) {
   return url.href
 }
 
+/** Most relays a host offers, a pairing code carries, or a device keeps. */
+export const MAX_RELAYS = 8
+
+/**
+ * Normalize an ordered relay list: invalid entries and duplicates are dropped, order is priority.
+ * @param {string | string[] | undefined} input - one address or a list, as typed or stored.
+ * @returns {string[]} normalized relay socket URLs, at most {@link MAX_RELAYS}.
+ */
+export function normalizeRelayList(input) {
+  const out = []
+  for (const item of Array.isArray(input) ? input : [input]) {
+    let url
+    try {
+      url = normalizeRelayUrl(item)
+    } catch (_invalid) {
+      // A list skips unusable entries; callers that must report them validate each entry themselves.
+      continue
+    }
+    if (!out.includes(url)) out.push(url)
+    if (out.length === MAX_RELAYS) break
+  }
+  return out
+}
+
+function sameList(a, b) {
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
 /**
  * HTTP origin of a relay socket URL, used for its `/health` probe.
  * @param {string} relayUrl - normalized relay socket URL.
@@ -277,13 +305,14 @@ function compactRelay(relayUrl) {
 }
 
 /**
- * Encode a one-time pairing offer as URL-fragment text.
- * @param {{ relayUrl: string, serverId: string, pairingId: string, secret: string, hostName: string, expiresAt: number }} offer - pairing offer.
+ * Encode a one-time pairing offer as URL-fragment text. Each relay is one `r` parameter, in priority
+ * order; decoders that predate relay lists read the first one.
+ * @param {{ relayUrls: string[], serverId: string, pairingId: string, secret: string, hostName: string, expiresAt: number }} offer - pairing offer.
  * @returns {string} code usable as a URL fragment, in a launcher link or a `dsh-remote://pair#…` link.
  */
 export function encodePairing(offer) {
   const params = new URLSearchParams()
-  params.set('r', compactRelay(offer.relayUrl))
+  for (const relayUrl of normalizeRelayList(offer.relayUrls ?? offer.relayUrl)) params.append('r', compactRelay(relayUrl))
   params.set('s', offer.serverId)
   params.set('i', offer.pairingId)
   params.set('k', offer.secret)
@@ -295,7 +324,7 @@ export function encodePairing(offer) {
 /**
  * Decode a pairing code, a launcher link, or a link fragment.
  * @param {string} input - code or link.
- * @returns {{ relayUrl: string, serverId: string, pairingId: string, secret: string, hostName: string, expiresAt: number }} the offer.
+ * @returns {{ relayUrls: string[], relayUrl: string, serverId: string, pairingId: string, secret: string, hostName: string, expiresAt: number }} the offer; `relayUrl` is the first relay.
  */
 export function decodePairing(input) {
   let text = String(input ?? '').trim()
@@ -314,8 +343,12 @@ export function decodePairing(input) {
     throw new TunnelError('pairing-invalid', 'This pairing code is malformed')
   }
   const expiresAt = Number.parseInt(field('e'), 36) * 1000
+  const relayUrls = normalizeRelayList(params.getAll('r'))
+  // With no usable entry, report why the first one is unusable.
+  if (relayUrls.length === 0) normalizeRelayUrl(field('r'))
   return {
-    relayUrl: normalizeRelayUrl(field('r')),
+    relayUrls,
+    relayUrl: relayUrls[0],
     serverId,
     pairingId,
     secret,
@@ -619,10 +652,11 @@ function isPublicJwk(value) {
  * @param {string} options.deviceName - name the host shows for this device.
  * @param {'pair' | 'auth'} options.mode - pair with a one-time code, or authenticate a paired device.
  * @param {{ pairingId: string, secret: string }} [options.pairing] - required for `pair`.
+ * @param {boolean} [options.probe] - a short-lived latency probe, which the host does not log as a visit.
  * @param {AbortSignal} [options.signal] - abandons the attempt and closes its socket.
- * @returns {Promise<{ channel: SecureChannel, hostName: string, device: { id: string, name: string } }>} the ready channel.
+ * @returns {Promise<{ channel: SecureChannel, hostName: string, device: { id: string, name: string }, relays?: string[] }>} the ready channel, and the relays the host offers now when it says so.
  */
-export async function connectClient({ relayUrl, serverId, device, deviceName, mode, pairing, signal }) {
+export async function connectClient({ relayUrl, serverId, device, deviceName, mode, pairing, probe, signal }) {
   signal?.throwIfAborted()
   const ws = await openSocket(clientSocketUrl(relayUrl, serverId, randomToken(16)))
   const inbox = new Inbox(ws)
@@ -655,7 +689,7 @@ export async function connectClient({ relayUrl, serverId, device, deviceName, mo
     const channel = new SecureChannel(ws, inbox, keys.clientToHost, keys.hostToClient)
     const proof = await signBytes(device.privateKey, transcript)
     const answer = channel.nextFrame(HANDSHAKE_TIMEOUT_MS)
-    await channel.send(encoder.encode(JSON.stringify({ t: 'auth', s: toBase64Url(proof), n: String(deviceName ?? '').slice(0, 80) })))
+    await channel.send(encoder.encode(JSON.stringify({ t: 'auth', s: toBase64Url(proof), n: String(deviceName ?? '').slice(0, 80), ...probe ? { q: 1 } : {} })))
     let reply
     try {
       reply = parseJson(decoder.decode(await answer), 'host reply')
@@ -669,7 +703,13 @@ export async function connectClient({ relayUrl, serverId, device, deviceName, mo
       channel.close(1000, 'denied')
       throw new TunnelError(String(reply.c ?? 'denied'), String(reply.r ?? 'The host refused this device'))
     }
-    return { channel, hostName: String(reply.h ?? ''), device: { id: String(reply.d?.id ?? ''), name: String(reply.d?.name ?? '') } }
+    const relays = Array.isArray(reply.r) ? normalizeRelayList(reply.r.slice(0, MAX_RELAYS)) : []
+    return {
+      channel,
+      hostName: String(reply.h ?? ''),
+      device: { id: String(reply.d?.id ?? ''), name: String(reply.d?.name ?? '') },
+      ...relays.length > 0 ? { relays } : {},
+    }
   } catch (error) {
     closeSocket(ws, 4000, 'handshake failed')
     throw error
@@ -686,9 +726,10 @@ export async function connectClient({ relayUrl, serverId, device, deviceName, mo
  * @param {string} options.hostName - name reported to the device.
  * @param {(pairingId: string) => Uint8Array | undefined} options.pairingSecret - secret of a live pairing offer.
  * @param {(request: { mode: 'pair' | 'auth', pairingId?: string, deviceId: string, deviceKey: object, deviceName: string }) => Promise<{ ok: true, device: { id: string, name: string } } | { ok: false, code: string, reason: string }>} options.authorize - admission decision after both keys are verified.
- * @returns {Promise<{ channel: SecureChannel, device: { id: string, name: string } }>} the ready channel.
+ * @param {string[]} [options.relays] - relays the host offers now, in priority order; the device keeps this list.
+ * @returns {Promise<{ channel: SecureChannel, device: { id: string, name: string }, probe: boolean }>} the ready channel, and whether the device only measures latency.
  */
-export async function acceptHost(ws, { identity, hostName, pairingSecret, authorize }) {
+export async function acceptHost(ws, { identity, hostName, pairingSecret, authorize, relays }) {
   const inbox = new Inbox(ws)
   try {
     const helloText = await inbox.next(HANDSHAKE_TIMEOUT_MS)
@@ -730,8 +771,9 @@ export async function acceptHost(ws, { identity, hostName, pairingSecret, author
       setTimeout(() => { channel.close(4403, 'denied') }, 200)
       throw new TunnelError(verdict.code, verdict.reason)
     }
-    await channel.send(encoder.encode(JSON.stringify({ t: 'ready', h: hostName, d: verdict.device })))
-    return { channel, device: verdict.device }
+    const offered = normalizeRelayList(relays ?? [])
+    await channel.send(encoder.encode(JSON.stringify({ t: 'ready', h: hostName, d: verdict.device, ...offered.length > 0 ? { r: offered } : {} })))
+    return { channel, device: verdict.device, probe: auth.q === 1 }
   } catch (error) {
     closeSocket(ws, 4000, 'handshake failed')
     throw error
@@ -933,6 +975,8 @@ export class Mux {
     this.lastSeen = Date.now()
     /** @type {((code: number, reason: string) => void) | undefined} */
     this.onclose = undefined
+    this.pings = []
+    this.nextPing = 1
     channel.onclose = (code, reason) => { this.shutdown(code, reason) }
     channel.setHandler((bytes) => { this.receive(bytes) })
     const keepAliveMs = options.keepAliveMs ?? 25_000
@@ -948,6 +992,32 @@ export class Mux {
   /** Close the channel and fail every open stream. */
   close() {
     this.channel.close(1000, 'closed')
+  }
+
+  /**
+   * Measure one round trip through the relay to the other end.
+   * @param {number} [timeoutMs] - deadline.
+   * @returns {Promise<number>} round-trip time in milliseconds.
+   */
+  ping(timeoutMs = 10_000) {
+    if (this.closed) return Promise.reject(new TunnelError('closed', 'The tunnel is closed'))
+    const id = this.nextPing
+    this.nextPing = this.nextPing >= 0x7fffffff ? 1 : this.nextPing + 1
+    return new Promise((resolve, reject) => {
+      const started = performance.now()
+      const waiter = {
+        id,
+        done: (error) => {
+          clearTimeout(timer)
+          this.pings = this.pings.filter((candidate) => candidate !== waiter)
+          if (error === undefined) resolve(Math.round(performance.now() - started))
+          else reject(error)
+        },
+      }
+      const timer = setTimeout(() => { waiter.done(new TunnelError('timeout', 'No answer in time')) }, timeoutMs)
+      this.pings.push(waiter)
+      this.send(FRAME.PING, id)
+    })
   }
 
   send(type, id, payload) {
@@ -1073,10 +1143,15 @@ export class Mux {
     const id = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(1)
     const payload = bytes.subarray(5)
     if (type === FRAME.PING) {
-      this.send(FRAME.PONG, 0)
+      this.send(FRAME.PONG, id)
       return
     }
-    if (type === FRAME.PONG) return
+    if (type === FRAME.PONG) {
+      // Hosts before relay lists answer every ping with id 0; take the oldest waiter then.
+      const waiter = id === 0 ? this.pings[0] : this.pings.find((candidate) => candidate.id === id)
+      waiter?.done()
+      return
+    }
     if (type === FRAME.REQUEST) {
       this.acceptExchange(id, payload)
       return
@@ -1260,6 +1335,7 @@ export class Mux {
     this.closed = true
     clearInterval(this.keepAlive)
     const error = new TunnelError('closed', `The tunnel closed (${code}${reason ? `: ${reason}` : ''})`)
+    for (const waiter of [...this.pings]) waiter.done(error)
     for (const [id, stream] of [...this.streams]) this.failStream(id, stream, error)
     this.streams.clear()
     this.onclose?.(code, reason)
@@ -1270,17 +1346,95 @@ export class Mux {
 // Client session manager
 // ---------------------------------------------------------------------------
 
+/** How long one relay keeps the race to itself before the next relay is tried as well. */
+export const RELAY_HEADSTART_MS = 1500
+const PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * Connect through the first relay that completes the handshake. Relays start in priority order:
+ * each one gets {@link RELAY_HEADSTART_MS} before the next starts too, and a failure starts the
+ * next at once. The first success wins and the attempts still running are abandoned. A failure
+ * that retrying cannot fix starts no further relays; when nothing succeeds, that failure is
+ * reported, otherwise the failure of the highest-priority relay.
+ * @param {Omit<Parameters<typeof connectClient>[0], 'relayUrl'> & { relayUrls: string[], headstartMs?: number }} options - {@link connectClient} options with a relay list.
+ * @returns {Promise<Awaited<ReturnType<typeof connectClient>> & { relayUrl: string }>} the ready channel and the relay that carried it.
+ */
+export function connectAny({ relayUrls, headstartMs = RELAY_HEADSTART_MS, signal, ...options }) {
+  return new Promise((resolve, reject) => {
+    const attempts = []
+    const errors = []
+    let started = 0
+    let running = 0
+    let done = false
+    let blocked = false
+    let timer
+    const settle = () => {
+      done = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', cancel)
+    }
+    const cancel = () => {
+      if (done) return
+      settle()
+      for (const attempt of attempts) attempt.abort()
+      reject(new TunnelError('stopped', 'Cancelled'))
+    }
+    const fail = () => {
+      settle()
+      const failures = errors.filter(Boolean)
+      reject(failures.find((error) => error instanceof TunnelError && FATAL_CODES.has(error.code))
+        ?? failures[0] ?? new TunnelError('unconfigured', 'No relay address is known for this DSH'))
+    }
+    const launch = () => {
+      clearTimeout(timer)
+      if (done) return
+      if (blocked || started >= relayUrls.length) {
+        if (running === 0) fail()
+        return
+      }
+      const index = started
+      started += 1
+      running += 1
+      const attempt = new AbortController()
+      attempts[index] = attempt
+      timer = setTimeout(launch, headstartMs)
+      connectClient({ ...options, relayUrl: relayUrls[index], signal: attempt.signal }).then((result) => {
+        running -= 1
+        if (done) {
+          result.channel.close(1000, 'superseded')
+          return
+        }
+        settle()
+        attempts.forEach((other, position) => { if (position !== index) other.abort() })
+        resolve({ ...result, relayUrl: relayUrls[index] })
+      }, (error) => {
+        running -= 1
+        errors[index] = error
+        if (done) return
+        if (error instanceof TunnelError && FATAL_CODES.has(error.code)) blocked = true
+        launch()
+      })
+    }
+    if (signal?.aborted) {
+      reject(new TunnelError('stopped', 'Cancelled'))
+      return
+    }
+    signal?.addEventListener('abort', cancel, { once: true })
+    launch()
+  })
+}
+
 /**
  * Pair a device with a host using a one-time code.
  * @param {{ pairing: ReturnType<typeof decodePairing>, device: { privateKey: CryptoKey, publicJwk: object }, deviceName: string }} options - offer and device.
- * @returns {Promise<{ hostName: string, device: { id: string, name: string } }>} the host's acknowledgement.
+ * @returns {Promise<{ hostName: string, device: { id: string, name: string }, relayUrls: string[] }>} the host's acknowledgement and the relays to keep.
  */
 export async function pairDevice({ pairing, device, deviceName }) {
   if (pairing.expiresAt !== 0 && pairing.expiresAt < Date.now()) {
     throw new TunnelError('pairing-invalid', 'This pairing code has expired; create a new one in DSH settings')
   }
-  const result = await connectClient({
-    relayUrl: pairing.relayUrl,
+  const result = await connectAny({
+    relayUrls: normalizeRelayList(pairing.relayUrls ?? pairing.relayUrl),
     serverId: pairing.serverId,
     device,
     deviceName,
@@ -1288,24 +1442,30 @@ export async function pairDevice({ pairing, device, deviceName }) {
     pairing,
   })
   result.channel.close(1000, 'paired')
-  return { hostName: result.hostName, device: result.device }
+  return { hostName: result.hostName, device: result.device, relayUrls: result.relays ?? normalizeRelayList(pairing.relayUrls ?? pairing.relayUrl) }
 }
 
 /**
  * Keeps one authenticated tunnel to a paired host, reconnecting with backoff, and exposes request
- * and WebSocket operations that wait for the tunnel.
+ * and WebSocket operations that wait for the tunnel. Each connection picks a relay with
+ * {@link connectAny}; an open tunnel stays on its relay until it drops, even when a relay with a
+ * higher priority recovers.
  */
 export class RemoteHost {
   /**
    * @param {object} options - host record and observers.
-   * @param {string} options.relayUrl - normalized relay socket URL.
+   * @param {string[]} options.relayUrls - relay socket URLs in priority order (`relayUrl` is read for older records).
    * @param {string} options.serverId - host key id.
    * @param {{ privateKey: CryptoKey, publicJwk: object }} options.device - device identity.
    * @param {string} options.deviceName - name reported to the host.
-   * @param {(status: { state: string, error?: string, code?: string, hostName?: string }) => void} [options.onstatus] - status observer.
+   * @param {(status: { state: string, error?: string, code?: string, hostName?: string, relayUrl?: string }) => void} [options.onstatus] - status observer.
+   * @param {(relayUrls: string[]) => void} [options.onrelays] - the host offers a different relay list; store it.
    */
   constructor(options) {
     this.options = options
+    this.relayUrls = normalizeRelayList(options.relayUrls ?? options.relayUrl)
+    /** Relay carrying the open tunnel. */
+    this.relayUrl = undefined
     this.running = false
     this.mux = undefined
     this.waiters = []
@@ -1346,20 +1506,26 @@ export class RemoteHost {
       this.setStatus({ state: 'connecting', ...failures > 0 ? { error: this.status.error } : {} })
       try {
         this.attempt = new AbortController()
-        const { channel, hostName } = await connectClient({ ...this.options, mode: 'auth', signal: this.attempt.signal })
+        const { channel, hostName, relays, relayUrl } = await connectAny({ ...this.options, relayUrls: this.relayUrls, mode: 'auth', signal: this.attempt.signal })
         this.attempt = undefined
         if (!this.running) {
           channel.close(1000, 'stopped')
           return
         }
+        if (relays !== undefined && !sameList(relays, this.relayUrls)) {
+          this.relayUrls = relays
+          this.options.onrelays?.(relays)
+        }
         const mux = new Mux(channel, { keepAliveMs: 20_000 })
         const closed = new Promise((resolve) => { mux.onclose = (code, reason) => { resolve({ code, reason }) } })
         this.mux = mux
+        this.relayUrl = relayUrl
         failures = 0
-        this.setStatus({ state: 'connected', hostName })
+        this.setStatus({ state: 'connected', hostName, relayUrl })
         for (const waiter of this.waiters.splice(0)) waiter.resolve(mux)
         const { code, reason } = await closed
         this.mux = undefined
+        this.relayUrl = undefined
         if (!this.running) return
         this.setStatus({ state: 'connecting', error: `Connection lost (${code}${reason ? `: ${reason}` : ''})` })
       } catch (error) {
@@ -1379,6 +1545,46 @@ export class RemoteHost {
       await sleep(delay, this.wake.signal)
       this.wake = undefined
     }
+  }
+
+  /**
+   * Measure the round trip to the host through every known relay. The open tunnel is measured in
+   * place; every other relay gets a short-lived probe connection. Nothing switches relays.
+   * @param {number} [timeoutMs] - deadline per relay.
+   * @returns {Promise<Array<{ relayUrl: string, current: boolean, ms: number | null, code?: string, error?: string }>>} one entry per relay, in priority order.
+   */
+  async probe(timeoutMs = PROBE_TIMEOUT_MS) {
+    const relayUrls = [...this.relayUrls]
+    const mux = this.mux !== undefined && !this.mux.closed ? this.mux : undefined
+    const current = mux === undefined ? undefined : this.relayUrl
+    return await Promise.all(relayUrls.map(async (relayUrl) => {
+      const entry = { relayUrl, current: relayUrl === current }
+      const attempt = new AbortController()
+      let timer
+      try {
+        const deadline = new Promise((_resolve, reject) => {
+          timer = setTimeout(() => {
+            attempt.abort()
+            reject(new TunnelError('timeout', 'No answer in time'))
+          }, timeoutMs)
+        })
+        if (entry.current) return { ...entry, ms: await Promise.race([mux.ping(timeoutMs), deadline]) }
+        const connecting = connectClient({ ...this.options, relayUrl, mode: 'auth', probe: true, signal: attempt.signal })
+        // A handshake that completes after the deadline is closed rather than left open.
+        connecting.then(({ channel }) => { if (attempt.signal.aborted) channel.close(1000, 'probe') }, () => {})
+        const { channel } = await Promise.race([connecting, deadline])
+        const probe = new Mux(channel, { keepAliveMs: timeoutMs })
+        try {
+          return { ...entry, ms: await Promise.race([probe.ping(timeoutMs), deadline]) }
+        } finally {
+          probe.close()
+        }
+      } catch (error) {
+        return { ...entry, ms: null, code: error instanceof TunnelError ? error.code : 'error', error: String(error?.message ?? error) }
+      } finally {
+        clearTimeout(timer)
+      }
+    }))
   }
 
   /**

@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-remote-relay",
-  "version": "0.3.7",
+  "version": "0.4.0",
   "description": "Switch between DSH hosts that have this plugin, or reach this DSH from a phone, through a self-hosted OpenChamber relay, end-to-end encrypted.",
   "author": "pcmid",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-remote-relay#readme",
@@ -33,7 +33,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --import ./test/hooks.mjs --test test/qr.test.mjs test/protocol.test.mjs test/host.test.mjs test/switcher.test.mjs"
+    "test": "node --import ./test/hooks.mjs --test test/qr.test.mjs test/protocol.test.mjs test/host.test.mjs test/switcher.test.mjs test/relays.test.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",

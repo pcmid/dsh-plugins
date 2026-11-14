@@ -93,6 +93,14 @@ try {
   assert.equal(context.state, 'connected')
   assert.equal(context.rows.local, null)
   assert.deepEqual(context.rows.remotes.map((row) => [row.id, row.current, row.action]).sort(), [[hostId, false, 'switch'], [secondId, true, 'switch']].sort())
+  assert.equal(context.rows.relays, true)
+  // The launcher measures the open DSH's relays for the page's device menu.
+  const measured = await onSecond.evaluate(([bridge, id]) => new Promise((resolve) => {
+    addEventListener('message', (event) => { if (event.data?.channel === bridge.channel && event.data.type === 'relays-result') resolve(event.data) })
+    parent.postMessage({ ...bridge, type: 'relays', id }, '*')
+  }), [BRIDGE, secondId])
+  assert.equal(measured.id, secondId)
+  assert.deepEqual(measured.results.map((result) => [result.host, result.current, typeof result.ms]), [[new URL(relayUrl).host, true, 'number']])
   await page.waitForSelector('#chip', { state: 'hidden' })
   await onSecond.evaluate(([bridge, id]) => { parent.postMessage({ ...bridge, type: 'row', id, action: 'switch' }, '*') }, [BRIDGE, hostId])
   const backOnFirst = await probedFrame(page, 'switched frame', onSecond)

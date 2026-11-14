@@ -31,8 +31,21 @@ window.__ModuleLoader__.load({
       enable: '开启远程访问',
       enableTip: '开启后，DSH 会保持与 relay 的连接，已配对的设备可以随时连进来。',
       status: '状态',
-      relay: 'Relay 地址',
-      relayTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws。只写域名时会自动补全。',
+      relays: 'Relay 地址',
+      relaysTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws，只写域名时会自动补全。可以添加多个，顺序就是优先级：设备先连第一个，1.5 秒内没连上或连接失败时再试下一个，连上后一直使用这个 relay，直到连接断开。',
+      relayEmpty: '还没有 relay。',
+      relayAdd: '添加',
+      relayMoveUp: '上移',
+      relayMoveDown: '下移',
+      relayRemove: '移除',
+      latency: '{ms} ms',
+      relayState_connecting: '正在连接',
+      relayState_online: '在线',
+      relayState_offline: '离线',
+      relayState_replaced: '已被另一个 DSH 接管',
+      relayState_error: '出错',
+      relayState_invalid: '地址无效',
+      relayState_disabled: '未启用',
       relayPlaceholder: 'wss://relay.example.com/ws',
       launcher: '手机启动页地址',
       launcherTip: '部署了本插件 launcher 目录的 HTTPS 地址，手机扫码后打开它。只用另一台 DSH 访问时不用填。',
@@ -66,13 +79,13 @@ window.__ModuleLoader__.load({
       retry: '重试',
       state_starting: '正在启动',
       state_disabled: '已关闭',
-      state_unconfigured: '需要填写 relay 地址',
+      state_unconfigured: '需要添加 relay 地址',
       state_connecting: '正在连接 relay',
       state_online: '在线',
       state_offline: '离线',
       state_replaced: '已被另一个 DSH 接管',
       state_error: '出错',
-      onlineDetail: '已连接 relay，{count} 台设备在线',
+      onlineDetail: '已连接 {relays} 个 relay，{count} 台设备在线',
       removing: '正在移除…',
       removeDevice: '移除设备',
       deviceActions: '{name} 的更多操作',
@@ -119,6 +132,16 @@ window.__ModuleLoader__.load({
       err_host_key: '对方的身份和配对时不一致，请重新添加',
       retryHint: '{reason} · 点按重试',
       readdHint: '已移除本机 · 点按重新添加',
+      relaysAction: '线路与延迟…',
+      relaysTitle: '{name} 的线路',
+      relaysIntro: '按优先级列出通往 {name} 的 relay 和往返延迟。这里只测量，不会切换连接：已建立的连接会一直使用当前 relay，断开后重连时再按优先级选择。',
+      relayCurrent: '当前',
+      probing: '正在测试…',
+      probeAgain: '重新测试',
+      probeTimeout: '超时',
+      probeFailed: '无法连接',
+      probeNoAnswer: '没有收到测试结果。',
+      probeNone: '没有可用的 relay。',
     };
     const en = {
       nav: 'Remote access',
@@ -128,8 +151,21 @@ window.__ModuleLoader__.load({
       enable: 'Turn on remote access',
       enableTip: 'While on, DSH stays connected to the relay so paired devices can reach it at any time.',
       status: 'Status',
-      relay: 'Relay address',
-      relayTip: 'WebSocket address of your relay, such as wss://relay.example.com/ws. A bare host name is completed automatically.',
+      relays: 'Relay addresses',
+      relaysTip: 'WebSocket addresses of your relays, such as wss://relay.example.com/ws; a bare host name is completed automatically. You can add several, and their order is their priority: devices try the first relay first, the next one after 1.5 s or as soon as the first fails, and stay on the relay they connected through until the connection drops.',
+      relayEmpty: 'No relays yet.',
+      relayAdd: 'Add',
+      relayMoveUp: 'Move up',
+      relayMoveDown: 'Move down',
+      relayRemove: 'Remove',
+      latency: '{ms} ms',
+      relayState_connecting: 'Connecting',
+      relayState_online: 'Online',
+      relayState_offline: 'Offline',
+      relayState_replaced: 'Taken over by another DSH',
+      relayState_error: 'Error',
+      relayState_invalid: 'Invalid address',
+      relayState_disabled: 'Not in use',
       relayPlaceholder: 'wss://relay.example.com/ws',
       launcher: 'Phone launcher address',
       launcherTip: 'HTTPS address where this plugin\'s launcher folder is deployed; phones open it from the QR code. Not needed when only another DSH connects.',
@@ -163,13 +199,13 @@ window.__ModuleLoader__.load({
       retry: 'Retry',
       state_starting: 'Starting',
       state_disabled: 'Off',
-      state_unconfigured: 'Relay address needed',
+      state_unconfigured: 'Add a relay address',
       state_connecting: 'Connecting to the relay',
       state_online: 'Online',
       state_offline: 'Offline',
       state_replaced: 'Taken over by another DSH',
       state_error: 'Error',
-      onlineDetail: 'Connected to the relay, {count} device(s) online',
+      onlineDetail: 'Connected to {relays} relay(s), {count} device(s) online',
       removing: 'Removing…',
       removeDevice: 'Remove device',
       deviceActions: 'More actions for {name}',
@@ -215,6 +251,16 @@ window.__ModuleLoader__.load({
       err_host_key: 'Its identity changed since pairing; add it again',
       retryHint: '{reason} · choose to retry',
       readdHint: 'Removed this DSH · choose to add it again',
+      relaysAction: 'Relays and latency…',
+      relaysTitle: 'Relays to {name}',
+      relaysIntro: 'The relays to {name} in priority order, with their round trip. This only measures and never switches: an open connection stays on its relay, and the priority applies again when it reconnects.',
+      relayCurrent: 'Current',
+      probing: 'Measuring…',
+      probeAgain: 'Measure again',
+      probeTimeout: 'Timed out',
+      probeFailed: 'Unreachable',
+      probeNoAnswer: 'No measurement came back.',
+      probeNone: 'No relays to measure.',
     };
 
     // -----------------------------------------------------------------------
@@ -532,6 +578,23 @@ window.__ModuleLoader__.load({
 .${PREFIX}-badge { flex: none; padding: 0 6px; border-radius: 999px; font-size: 11px; line-height: 18px; color: var(--dsw-alias-state-success-primary); background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 14%, transparent); }
 .${PREFIX}-badge[data-tone="error"] { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 12%, transparent); }
 .${PREFIX}-badge[data-tone="neutral"] { color: var(--dsw-alias-label-secondary); background: var(--dsw-alias-bg-layer-2); }
+.${PREFIX}-button[data-icon] { width: 26px; padding: 0; }
+/* Relay list (settings) and relay measurements (device dialog) */
+.${PREFIX}-relays { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.${PREFIX}-relay { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l1, var(--dsw-alias-border-l2)); }
+.${PREFIX}-relay:last-child { border-bottom: none; }
+.${PREFIX}-relay-index { flex: none; min-width: 16px; font-size: 12px; line-height: 20px; text-align: end; font-variant-numeric: tabular-nums; color: var(--dsw-alias-label-tertiary, var(--dsw-alias-label-secondary)); }
+.${PREFIX}-relay-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.${PREFIX}-relay-url { display: flex; align-items: center; gap: 8px; min-width: 0; line-height: 20px; overflow-wrap: anywhere; }
+.${PREFIX}-relay-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }
+.${PREFIX}-relay-meta .${PREFIX}-dot { width: 6px; height: 6px; margin-inline-end: -2px; }
+.${PREFIX}-relay .${PREFIX}-error { margin: 0; }
+.${PREFIX}-relay-actions { flex: none; display: flex; gap: 4px; }
+.${PREFIX}-relay-add { display: flex; gap: 8px; align-items: center; padding: 8px 0 4px; }
+.${PREFIX}-relay-add .${PREFIX}-input { max-width: none; }
+.${PREFIX}-latency { flex: none; font-size: 13px; line-height: 20px; font-variant-numeric: tabular-nums; }
+.${PREFIX}-relay-meta .${PREFIX}-latency { font-size: inherit; line-height: inherit; }
+.${PREFIX}-latency[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 .${PREFIX}-footer { padding: 12px 0 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
 @media (prefers-reduced-motion: reduce) { .${PREFIX}-thumb { transition: none; } }
 
@@ -690,6 +753,21 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       if (code === 'host-key') return t('err_host_key');
       if (code === 'relay-closed' || code === 'relay-timeout') return t('err_relay');
       return t('err_offline');
+    }
+
+    /** Relay measurements in priority order, from `remote-probe` or an embedding window. */
+    function probeRows(results) {
+      const text = (value) => String(value ?? '').slice(0, 200);
+      const hostOf = (url) => {
+        try { return new URL(url).host; } catch { return text(url); }
+      };
+      return (Array.isArray(results) ? results : []).slice(0, 16).map((row) => ({
+        host: text(row?.host) || hostOf(row?.relayUrl),
+        current: row?.current === true,
+        ms: Number.isFinite(row?.ms) ? Math.round(row.ms) : null,
+        code: text(row?.code),
+        error: text(row?.error),
+      }));
     }
 
     /** Most rectangles a device view may report for its window drag surface. */
@@ -943,6 +1021,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         menu: null,
         add: null,
         removal: null,
+        relays: null,
         embed: null,
         embedGaveUp: false,
       };
@@ -1207,6 +1286,48 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       };
       const closeRemove = () => { if (state.removal?.busy !== true) set({ removal: null }); };
 
+      // A device's relays are measured on demand; the dialog opens in the window that shows the menu.
+      let probeSeq = 0;
+      let relayWaiter = null;
+      const askParent = (id) => new Promise((resolve, reject) => {
+        relayWaiter?.done({ error: 'superseded' });
+        const timer = setTimeout(() => { relayWaiter?.done({ error: t('probeNoAnswer') }); }, 15_000);
+        const waiter = {
+          id,
+          done: (data) => {
+            clearTimeout(timer);
+            if (relayWaiter === waiter) relayWaiter = null;
+            if (typeof data.error === 'string') reject(new Error(data.error));
+            else resolve(data);
+          },
+        };
+        relayWaiter = waiter;
+        post(window.parent, { type: 'relays', id });
+      });
+      const probeRelays = async () => {
+        const relays = state.relays;
+        if (relays === null) return;
+        const seq = ++probeSeq;
+        set({ relays: { ...relays, busy: true, error: null } });
+        let patch;
+        try {
+          const value = state.mode === 'top' ? await call('remote-probe', { id: relays.id }) : await askParent(relays.id);
+          patch = { results: probeRows(value?.results) };
+        } catch (error) {
+          patch = { error: describeFailure(error, t) };
+        }
+        if (seq === probeSeq && state.relays?.id === relays.id) set({ relays: { ...state.relays, busy: false, ...patch } });
+      };
+      const openRelays = (id) => {
+        const name = state.mode === 'top' ? nameOf(id) : state.embed?.rows.remotes.find((row) => row.id === id)?.name ?? '';
+        set({ menu: null, relays: { id, name, busy: true, results: null, error: null } });
+        void probeRelays();
+      };
+      const closeRelays = () => {
+        probeSeq += 1;
+        if (state.relays !== null) set({ relays: null });
+      };
+
       // ---- Bridge between a device view and the window that shows it ---------
 
       // The embedding window's origin is unknown to a view (dsh-app:// or the Web GUI); the
@@ -1308,6 +1429,19 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           if (JSON.stringify(drag) !== JSON.stringify(state.views[id].drag ?? [])) setView(id, { drag });
           return;
         }
+        if (data.type === 'relays' && typeof data.id === 'string') {
+          const source = event.source;
+          const origin = event.origin;
+          const reply = (message) => {
+            try {
+              source.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-result', id: data.id, ...message }, origin);
+            } catch { /* the view is gone */ }
+          };
+          call('remote-probe', { id: data.id }).then(
+            (value) => { reply({ results: value.results }); },
+            (error) => { reply({ error: describeFailure(error, t) }); });
+          return;
+        }
         if (id !== state.current) return;
         if (data.type === 'menu-open') {
           acknowledge();
@@ -1326,7 +1460,12 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
 
       const onFrameMessage = (event) => {
         const data = event.data;
-        if (event.source !== window.parent || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION || data.type !== 'context') return;
+        if (event.source !== window.parent || data?.channel !== BRIDGE || data.v !== BRIDGE_VERSION) return;
+        if (data.type === 'relays-result') {
+          if (relayWaiter !== null && relayWaiter.id === data.id) relayWaiter.done(data);
+          return;
+        }
+        if (data.type !== 'context') return;
         for (const name of MIRRORED_ATTRIBUTES) {
           const value = data.attributes?.[name];
           if (typeof value === 'string') document.documentElement.setAttribute(name, value);
@@ -1341,6 +1480,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           local: data.rows?.local ? { id: text(data.rows.local.id), name: text(data.rows.local.name), current: false } : null,
           // Only a DSH window with this plugin version answers a removal request; the launcher does not.
           removable: data.rows?.removable === true,
+          // Only an embedding window that answers relay probes offers the relay measurements.
+          relays: data.rows?.relays === true,
           remotes: (Array.isArray(data.rows?.remotes) ? data.rows.remotes : []).slice(0, 50).map((row) => ({
             id: text(row?.id),
             name: text(row?.name),
@@ -1403,6 +1544,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         dispose() {
           disposed = true;
           clearTimeout(pollTimer);
+          relayWaiter?.done({ error: 'disposed' });
           for (const cleanup of cleanups) cleanup();
           document.documentElement.classList.remove(`${PREFIX}-remote`);
         },
@@ -1426,6 +1568,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           openRemove,
           closeRemove,
           remove: () => { void remove(); },
+          openRelays,
+          closeRelays,
+          probeRelays: () => { void probeRelays(); },
           registerFrame: (id, element) => {
             if (element === null) frames.delete(id);
             else frames.set(id, element);
@@ -1568,6 +1713,66 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           : h(WriteStatus, { write, t }));
     }
 
+    function IconButton({ label, icon, disabled, onClick }) {
+      return h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-icon': true, 'aria-label': label, title: label, disabled, onClick }, h(icon, { size: 14 }));
+    }
+
+    /** Ordered relay list; its order is the priority devices try the relays in. */
+    function RelayListSetting({ list, relays, write, disabled, onSave, t }) {
+      const [draft, setDraft] = useState('');
+      const locked = disabled || write?.saving === true;
+      // Status rows follow the saved list by position; until the Host catches up with a change, show none.
+      const statusOf = (index) => (Array.isArray(relays) && relays.length === list.length ? relays[index] : undefined);
+      const text = draft.trim();
+      const known = text === '' || list.includes(text) || (relays ?? []).some((relay) => relay.url === text);
+      const add = async () => {
+        if (known || locked) return;
+        if (await onSave([...list, text])) setDraft('');
+      };
+      const move = (index, delta) => {
+        const next = [...list];
+        next.splice(index + delta, 0, ...next.splice(index, 1));
+        void onSave(next);
+      };
+      return h('div', null,
+        h(Row, { title: t('relays'), desc: t('relaysTip') }, h(WriteStatus, { write, t })),
+        list.length === 0
+          ? h('div', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, t('relayEmpty'))
+          : h('ol', { className: `${PREFIX}-relays` }, list.map((url, index) => {
+            const relay = statusOf(index);
+            return h('li', { key: `${index}:${url}`, className: `${PREFIX}-relay` },
+              h('span', { className: `${PREFIX}-relay-index` }, index + 1),
+              h('div', { className: `${PREFIX}-relay-main` },
+                h('span', { className: `${PREFIX}-relay-url ${PREFIX}-mono` }, url),
+                relay ? h('span', { className: `${PREFIX}-relay-meta` },
+                  h('span', { className: `${PREFIX}-dot`, 'data-tone': stateTone(relay.state) }),
+                  h('span', null, t(`relayState_${relay.state}`)),
+                  typeof relay.latencyMs === 'number' ? h('span', { className: `${PREFIX}-latency` }, fill(t('latency'), { ms: relay.latencyMs })) : null) : null,
+                relay?.error ? h('span', { className: `${PREFIX}-error` }, relay.error) : null),
+              h('div', { className: `${PREFIX}-relay-actions` },
+                h(IconButton, { label: t('relayMoveUp'), icon: UI.IconChevronUpOutlineRegular, disabled: locked || index === 0, onClick: () => { move(index, -1); } }),
+                h(IconButton, { label: t('relayMoveDown'), icon: UI.IconChevronDownOutlineRegular, disabled: locked || index === list.length - 1, onClick: () => { move(index, 1); } }),
+                h('button', { type: 'button', className: `${PREFIX}-button`, 'data-size': 'small', 'data-danger': true, disabled: locked, onClick: () => { void onSave(list.filter((_, i) => i !== index)); } }, t('relayRemove'))));
+          })),
+        h('div', { className: `${PREFIX}-relay-add` },
+          h('input', {
+            className: `${PREFIX}-input ${PREFIX}-mono`,
+            type: 'text',
+            value: draft,
+            placeholder: t('relayPlaceholder'),
+            disabled,
+            spellCheck: false,
+            autoComplete: 'off',
+            'aria-label': t('relays'),
+            onChange: (event) => { setDraft(event.target.value); },
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') void add();
+              else if (event.key === 'Escape') setDraft('');
+            },
+          }),
+          h('button', { type: 'button', className: `${PREFIX}-button`, disabled: locked || known, onClick: () => { void add(); } }, t('relayAdd'))));
+    }
+
     function CopyField({ label, value, mono, copy, t }) {
       const [copied, setCopied] = useState(false);
       useEffect(() => {
@@ -1600,7 +1805,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
     function stateTone(state) {
       if (state === 'online') return 'ok';
       if (state === 'connecting' || state === 'starting' || state === 'unconfigured') return 'warn';
-      if (state === 'offline' || state === 'error' || state === 'replaced') return 'error';
+      if (state === 'offline' || state === 'error' || state === 'replaced' || state === 'invalid') return 'error';
       return 'idle';
     }
 
@@ -1643,7 +1848,16 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const offset = state.offset;
       const editable = state.configReady && state.writable;
       const onlineCount = (status?.devices ?? []).filter((device) => device.connections > 0).length;
-      const stateDetail = control === 'online' ? fill(t('onlineDetail'), { count: onlineCount }) : status?.control?.error ?? status?.relayError ?? '';
+      const onlineRelays = (status?.relays ?? []).filter((relay) => relay.state === 'online').length;
+      const stateDetail = control === 'online' ? fill(t('onlineDetail'), { relays: onlineRelays, count: onlineCount }) : status?.control?.error ?? status?.relayError ?? '';
+      const legacyRelay = (config.relayUrl ?? '').trim();
+      const relayList = Array.isArray(config.relays) && config.relays.length > 0 ? config.relays : legacyRelay ? [legacyRelay] : [];
+      const saveRelays = async (list) => {
+        const landed = await props.setField('relays', list);
+        // The legacy single address counts only while the list is empty; drop it once the list is saved.
+        if (landed && legacyRelay !== '') void props.setField('relayUrl', '');
+        return landed;
+      };
       const pairing = status?.pairing;
       const launcherBase = (config.launcherUrl ?? '').trim();
       const pairLink = pairing ? (pairing.link ?? `dsh-remote://pair#${pairing.code}`) : '';
@@ -1675,7 +1889,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
               : h('span', { className: `${PREFIX}-state`, role: 'status' },
                 h('span', { className: `${PREFIX}-dot`, 'data-tone': stateTone(control) }),
                 t(`state_${control}`))),
-          h(TextSetting, { field: 'relayUrl', title: t('relay'), desc: t('relayTip'), placeholder: t('relayPlaceholder'), value: config.relayUrl ?? '', write: state.writes.relayUrl, disabled: !editable, onSave: props.setField, t }),
+          h(RelayListSetting, { list: relayList, relays: status?.relays, write: state.writes.relays, disabled: !editable, onSave: saveRelays, t }),
           h(TextSetting, { field: 'hostName', title: t('hostName'), desc: t('hostNameTip'), placeholder: status?.hostName ?? '', value: config.hostName ?? '', write: state.writes.hostName, disabled: !editable, onSave: props.setField, t }),
           h(TextSetting, { field: 'launcherUrl', title: t('launcher'), desc: t('launcherTip'), placeholder: t('launcherPlaceholder'), value: config.launcherUrl ?? '', write: state.writes.launcherUrl, disabled: !editable, onSave: props.setField, t })),
         h('section', { className: `${PREFIX}-group`, 'aria-labelledby': `${PREFIX}-pair` },
@@ -1797,9 +2011,11 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             onRow: (row) => { props.runRow(row.id, row.action); },
             onAdd: () => { props.openAdd(); },
             onRemove: props.openRemove,
+            onRelays: props.openRelays,
             t,
           })
-          : null);
+          : null,
+        state.mode === 'frame' && state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, close: props.closeRelays, t }) : null);
     }
 
     function MenuRowContent({ name, meta, metaTone, current, busy }) {
@@ -1822,6 +2038,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         else if (busy) { meta = t('device_connecting_cancel'); action = 'cancel'; }
         else if (view?.phase === 'failed' || (view?.failure && remote.state !== 'connected')) { meta = fill(t('retryHint'), { reason: view.error ?? describeRemote(remote, t) }); metaTone = 'error'; action = 'retry'; }
         else if (remote.state === 'retrying') { meta = describeRemote(remote, t); metaTone = 'error'; }
+        else if (remote.state === 'connected' && remote.via) meta = `${meta} · ${remote.via}`;
         else if (remote.state === 'idle' && remote.lastOpenedAt) meta = fill(t('lastSeen'), { time: formatAgo(remote.lastOpenedAt, Date.now()) });
         return {
           id: remote.id,
@@ -1834,10 +2051,16 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           action,
         };
       });
-      return { local: { id: state.local?.serverId ?? '', name: state.local?.name ?? '', current: state.current === null }, removable: true, remotes };
+      return { local: { id: state.local?.serverId ?? '', name: state.local?.name ?? '', current: state.current === null }, removable: true, relays: true, remotes };
     }
 
-    function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, t }) {
+    function DeviceMenu({ open, anchorRef, rows, keyboard, returnFocus, onClose, onLocal, onRow, onAdd, onRemove, onRelays, t }) {
+      // A device row has a context menu when the window that owns the devices answers one of its actions.
+      const more = rows.removable || rows.relays === true;
+      const actions = [
+        rows.relays === true ? { id: 'relays', label: t('relaysAction'), icon: h(UI.IconGlobeOutlineRegular, { size: 16 }) } : null,
+        rows.removable ? { id: 'remove', label: t('removeDevice'), danger: true, icon: h(UI.IconTrashOutlineRegular, { size: 16 }) } : null,
+      ].filter(Boolean);
       // An added device's actions open from its "..." button, or from a right click on its row.
       const [context, setContext] = useState(null);
       // The device list can close from outside (its trigger, another window); drop the context menu with it.
@@ -1884,15 +2107,15 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         current: rows.local.current,
         onSelect: () => { onClose(); onLocal(); },
       }, h(MenuRowContent, { name: t('thisDevice'), meta: rows.local.name, current: rows.local.current })),
-      ...rows.remotes.map((row) => h('div', { key: row.id, className: `${PREFIX}-drow`, 'data-more': rows.removable ? '' : undefined, 'data-open': context?.id === row.id ? '' : undefined },
+      ...rows.remotes.map((row) => h('div', { key: row.id, className: `${PREFIX}-drow`, 'data-more': more ? '' : undefined, 'data-open': context?.id === row.id ? '' : undefined },
         h(UI.MenuItemButton, {
           icon: h(DeviceGlyph, { tone: row.tone, color: deviceColor(row.id) }),
           current: row.current,
           onSelect: () => { onClose(); onRow(row); },
           // MenuItemButton forwards native button handlers to its <button>.
-          onContextMenu: rows.removable ? (event) => { openContext(event, row.id); } : undefined,
+          onContextMenu: more ? (event) => { openContext(event, row.id); } : undefined,
         }, h(MenuRowContent, { name: row.name, meta: row.meta, metaTone: row.metaTone, current: row.current, busy: row.busy })),
-        rows.removable ? h('button', {
+        more ? h('button', {
           type: 'button',
           className: `${PREFIX}-dmore`,
           'aria-label': fill(t('deviceActions'), { name: row.name }),
@@ -1910,19 +2133,20 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         autoFocus: context?.keyboard === true,
         anchorPoint: context === null ? undefined : { x: context.x, y: context.y },
         listClassName: `${PREFIX}-ctx`,
-        items: [{ id: 'remove', label: t('removeDevice'), danger: true, icon: h(UI.IconTrashOutlineRegular, { size: 16 }) }],
+        items: actions,
         onClose: () => { setContext(null); },
-        onSelect: () => {
+        onSelect: (action) => {
           const id = context.id;
           setContext(null);
           onClose();
-          onRemove(id);
+          if (action === 'relays') onRelays(id);
+          else onRemove(id);
         },
       }));
     }
 
     /** The top window's menu, anchored to the trigger rectangle it was opened from. */
-    function StageMenu({ state, closeMenu, runRow, switchTo, openAdd, openRemove, t }) {
+    function StageMenu({ state, closeMenu, runRow, switchTo, openAdd, openRemove, openRelays, t }) {
       const anchorRef = useRef(null);
       const rect = state.menu?.rect ?? { left: 0, top: 0, width: 0, height: 0 };
       return h(React.Fragment, null,
@@ -1938,6 +2162,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
           onRow: (row) => { runRow(row.id, row.action); },
           onAdd: () => { openAdd(); },
           onRemove: openRemove,
+          onRelays: openRelays,
           t,
         }));
     }
@@ -2013,6 +2238,40 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       removal.error ? h('p', { className: `${PREFIX}-error`, role: 'alert', style: { margin: 0 } }, fill(t('removeFailed'), { error: removal.error })) : undefined);
     }
 
+    function RelaysDialog({ relays, probe, close, t }) {
+      const rows = relays.results ?? [];
+      let body;
+      if (relays.error) body = h('p', { className: `${PREFIX}-error`, role: 'alert', style: { margin: 0 } }, relays.error);
+      else if (relays.results === null) body = h('div', { className: `${PREFIX}-hint`, role: 'status' }, h(Spinner, { size: 14 }), t('probing'));
+      else if (rows.length === 0) body = h('div', { className: `${PREFIX}-hint` }, t('probeNone'));
+      else {
+        body = h('ol', { className: `${PREFIX}-relays`, 'aria-busy': relays.busy }, rows.map((row, index) => {
+          const failed = row.ms === null;
+          const result = failed ? t(row.code === 'timeout' ? 'probeTimeout' : 'probeFailed') : fill(t('latency'), { ms: row.ms });
+          return h('li', { key: index, className: `${PREFIX}-relay` },
+            h('span', { className: `${PREFIX}-relay-index` }, index + 1),
+            h('div', { className: `${PREFIX}-relay-main` },
+              h('span', { className: `${PREFIX}-relay-url` }, h('span', { className: `${PREFIX}-mono` }, row.host),
+                row.current ? h('span', { className: `${PREFIX}-badge` }, t('relayCurrent')) : null),
+              failed && row.code !== 'timeout' && row.error && !relays.busy ? h('span', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, row.error) : null),
+            relays.busy
+              ? h(Spinner, { size: 14 })
+              : h('span', { className: `${PREFIX}-latency`, 'data-tone': failed ? 'error' : undefined }, result));
+        }));
+      }
+      return h(UI.Modal, {
+        open: true,
+        className: `${PREFIX}-dialog`,
+        title: fill(t('relaysTitle'), { name: relays.name }),
+        closeLabel: t('close'),
+        description: fill(t('relaysIntro'), { name: relays.name }),
+        onClose: close,
+        footer: h(React.Fragment, null,
+          h(UI.Button, { variant: 'outline', size: 'sm', onClick: probe, disabled: relays.busy }, relays.busy ? t('probing') : t('probeAgain')),
+          h(UI.Button, { variant: 'primary', size: 'sm', 'data-modal-autofocus': true, onClick: close }, t('close'))),
+      }, body);
+    }
+
     /**
      * Makes the native window read the document's app-regions again. Electron recollects them only
      * when a computed app-region value changes (electron#32341), so this box, which has no area,
@@ -2041,7 +2300,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
       const current = state.current === null ? undefined : state.views[state.current];
       const showChip = current !== undefined && !current.hello;
       // A menu or dialog of this window covers the view; nothing under it may drag the window.
-      const covered = state.menu !== null || state.add !== null || state.removal !== null;
+      const covered = state.menu !== null || state.add !== null || state.removal !== null || state.relays !== null;
       const drag = current !== undefined && !covered && Array.isArray(current.drag) ? current.drag : [];
       // A device without this plugin version never reports its chrome rows; keep a narrow strip so
       // the window can still be moved.
@@ -2076,9 +2335,10 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
             props.openMenu({ left: rect.left, top: rect.top, width: rect.width, height: rect.height }, { keyboard: event.detail === 0 });
           } }, h(DeviceGlyph, { color: deviceColor(state.current) }), state.remotes.find((remote) => remote.id === state.current)?.name ?? '', h(UI.IconChevronsUpDownOutlineRegular, { size: 14 }))
           : null,
-        h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, openRemove: props.openRemove, t }),
+        h(StageMenu, { state, closeMenu: props.closeMenu, runRow: props.runRow, switchTo: props.switchTo, openAdd: props.openAdd, openRemove: props.openRemove, openRelays: props.openRelays, t }),
         state.add !== null ? h(AddDeviceDialog, { add: state.add, local: state.local, addDevice: props.add, closeAdd: props.closeAdd, t }) : null,
-        state.removal !== null ? h(RemoveDeviceDialog, { removal: state.removal, remove: props.remove, closeRemove: props.closeRemove, t }) : null),
+        state.removal !== null ? h(RemoveDeviceDialog, { removal: state.removal, remove: props.remove, closeRemove: props.closeRemove, t }) : null,
+        state.relays !== null ? h(RelaysDialog, { relays: state.relays, probe: props.probeRelays, close: props.closeRelays, t }) : null),
       document.body);
     }
 

@@ -8,7 +8,7 @@
 // index.html loads this file as `app.js?v=<version>`; the same query reaches the other scripts, so a
 // CDN that caches script files for hours cannot pair a new app.js with an old tunnel.js.
 const RELEASE = new URL(import.meta.url).search
-const { RemoteHost, TunnelError, createIdentity, decodePairing, pairDevice } = await import(`./tunnel.js${RELEASE}`)
+const { RemoteHost, TunnelError, createIdentity, decodePairing, normalizeRelayList, pairDevice } = await import(`./tunnel.js${RELEASE}`)
 
 const TEXT = {
   en: {
@@ -41,6 +41,8 @@ const TEXT = {
     connecting: 'Connecting to {host}…',
     retrying: 'Cannot reach {host}: {error}',
     connected: 'Connected to {host}',
+    connectedVia: 'Connected to {host} via {relay}',
+    relaysOpenOnly: 'Relay latency is only available for the DSH that is open.',
     rejected: 'This device is no longer paired with {host}.',
     failed: '{error}',
     loading: 'Loading…',
@@ -85,6 +87,8 @@ const TEXT = {
     connecting: '正在连接 {host}…',
     retrying: '无法连接 {host}：{error}',
     connected: '已连接 {host}',
+    connectedVia: '已连接 {host}（经 {relay}）',
+    relaysOpenOnly: '只能查看当前打开的 DSH 的中转延迟。',
     rejected: '此设备已不再与 {host} 配对。',
     failed: '{error}',
     loading: '正在加载…',
@@ -151,9 +155,32 @@ async function store(mode, operate) {
   })
 }
 
-const listHosts = () => store('readonly', (hosts) => hosts.getAll())
-const saveHost = (host) => store('readwrite', (hosts) => hosts.put(host))
+/** A stored host with `relayUrls`; records from before 0.4.0 have a single `relayUrl`. */
+const withRelays = (host) => ({ ...host, relayUrls: normalizeRelayList(host.relayUrls ?? host.relayUrl) })
+const listHosts = async () => (await store('readonly', (hosts) => hosts.getAll())).map(withRelays)
+// `relayUrl` stays the first relay so an older launcher build can still use the record.
+const saveHost = (host) => store('readwrite', (hosts) => hosts.put({ ...host, relayUrl: host.relayUrls[0] }))
 const deleteHost = (serverId) => store('readwrite', (hosts) => hosts.delete(serverId))
+
+/** Store the relay list a host offered, if this browser still keeps that host. */
+function saveRelays(serverId, relayUrls) {
+  return store('readwrite', (hosts) => {
+    const request = hosts.get(serverId)
+    request.onsuccess = () => {
+      if (request.result !== undefined && relayUrls.length > 0) hosts.put({ ...request.result, relayUrls, relayUrl: relayUrls[0] })
+    }
+    return request
+  })
+}
+
+/** Host name of a relay URL, for display. */
+function relayHost(relayUrl) {
+  try {
+    return new URL(relayUrl).host
+  } catch {
+    return String(relayUrl ?? '')
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Service worker bridge
@@ -367,7 +394,8 @@ async function renderHosts() {
     name.textContent = host.hostName || host.serverId.slice(0, 8)
     const sub = document.createElement('div')
     sub.className = 'sub'
-    sub.textContent = `${new URL(host.relayUrl).host} · ${t('pairedAt', { date: new Date(host.pairedAt).toLocaleDateString() })}`
+    const relays = host.relayUrls.length > 1 ? `${relayHost(host.relayUrls[0])} +${host.relayUrls.length - 1}` : relayHost(host.relayUrls[0])
+    sub.textContent = `${relays} · ${t('pairedAt', { date: new Date(host.pairedAt).toLocaleDateString() })}`
     info.append(name, sub)
     const forget = document.createElement('button')
     forget.type = 'button'
@@ -525,7 +553,7 @@ function watchPage(session) {
     $('veil').textContent = ''
     setTimeout(() => {
       if (current !== session || $('chip').dataset.state !== 'loading') return
-      setChip('connected', t('connected', { host: hostLabel(session.host) }))
+      setChip('connected', connectedText(session))
       restChip()
     }, FADE_MS)
   }
@@ -637,10 +665,14 @@ async function openSession(host) {
   closeSession()
   const label = hostLabel(host)
   const remote = new RemoteHost({
-    relayUrl: host.relayUrl,
+    relayUrls: host.relayUrls,
     serverId: host.serverId,
     device: { privateKey: host.privateKey, publicJwk: host.publicJwk },
     deviceName: host.deviceName,
+    onrelays: (relayUrls) => {
+      host.relayUrls = relayUrls
+      void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this visit only */ })
+    },
     onstatus: (status) => {
       if (current?.remote !== remote) return
       session.state = ['connected', 'rejected', 'retrying'].includes(status.state) ? status.state : 'connecting'
@@ -660,7 +692,7 @@ async function openSession(host) {
           setChip('loading', t('loadingHost', { host: label }))
           return
         }
-        setChip('connected', t('connected', { host: label }))
+        setChip('connected', connectedText(session))
         restChip(troubled ? 2500 : 0)
         return
       }
@@ -734,6 +766,12 @@ function hostLabel(host) {
   return host.hostName || host.serverId.slice(0, 8)
 }
 
+/** Chip text of a connected session, naming the relay that carries it. */
+function connectedText(session) {
+  const relay = session.remote.relayUrl
+  return relay === undefined ? t('connected', { host: hostLabel(session.host) }) : t('connectedVia', { host: hostLabel(session.host), relay: relayHost(relay) })
+}
+
 // ---------------------------------------------------------------------------
 // Device menu bridge
 // ---------------------------------------------------------------------------
@@ -755,12 +793,13 @@ async function sendContext(session) {
   if (current !== session || target === null) return
   const state = session.state
   const tone = state === 'connected' ? 'ok' : state === 'connecting' ? 'warn' : 'error'
+  const relay = state === 'connected' ? session.remote.relayUrl : undefined
   const remotes = hosts.map((host) => {
     const shown = host.serverId === session.host.serverId
     return {
       id: host.serverId,
       name: hostLabel(host),
-      meta: shown ? t(`state_${state}`) : '',
+      meta: !shown ? '' : relay === undefined ? t(`state_${state}`) : `${t(`state_${state}`)} · ${relayHost(relay)}`,
       metaTone: shown && tone === 'error' ? 'error' : undefined,
       tone: shown ? tone : undefined,
       current: shown,
@@ -777,8 +816,9 @@ async function sendContext(session) {
     state,
     shown: true,
     pending: null,
-    // Removing here forgets the DSH in this browser, like the home page's Remove button.
-    rows: { local: null, removable: true, remotes },
+    // Removing here forgets the DSH in this browser, like the home page's Remove button. Relay
+    // probes are answered for the DSH that is open (`relays` messages).
+    rows: { local: null, removable: true, relays: true, remotes },
     attributes: {},
   }, location.origin)
 }
@@ -820,6 +860,22 @@ async function onBridgeMessage(event) {
     }
     const host = (await listHosts()).find((candidate) => candidate.serverId === data.id)
     if (host !== undefined && current === session) await openSession(host)
+  } else if (data.type === 'relays' && typeof data.id === 'string') {
+    // Only the open DSH has a tunnel to measure; another paired DSH would need one of its own.
+    let reply
+    if (data.id !== session.host.serverId) {
+      reply = { error: t('relaysOpenOnly') }
+    } else {
+      try {
+        const results = await session.remote.probe()
+        reply = { results: results.map((result) => ({ ...result, host: relayHost(result.relayUrl) })) }
+      } catch (error) {
+        reply = { error: error?.message ?? String(error) }
+      }
+    }
+    const target = session.frame.contentWindow
+    if (current !== session || target === null) return
+    target.postMessage({ channel: BRIDGE, v: BRIDGE_VERSION, type: 'relays-result', id: data.id, ...reply }, location.origin)
   }
 }
 
@@ -865,7 +921,7 @@ async function startPairing(code, errorElement) {
       const result = await pairDevice({ pairing, device, deviceName })
       const host = {
         serverId: pairing.serverId,
-        relayUrl: pairing.relayUrl,
+        relayUrls: result.relayUrls.length > 0 ? result.relayUrls : pairing.relayUrls,
         hostName: result.hostName || pairing.hostName,
         deviceId: device.id,
         deviceName: result.device.name || deviceName,
