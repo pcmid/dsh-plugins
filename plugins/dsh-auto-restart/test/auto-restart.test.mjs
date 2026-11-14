@@ -225,10 +225,12 @@ describe('createRecovery', () => {
     const inbox = {
       nextTurn: [...pending], nextStep: [],
       remove(id) { calls.push(['remove', id]); this.nextTurn = this.nextTurn.filter(m => m.id !== id) },
+      prepend(_target, msg) { this.nextTurn = [msg, ...this.nextTurn] },
     }
     const agent = {
       id: 'root', status, inbox, session: { id: 'root' },
-      followup(msg) { calls.push(['followup', msg]) },
+      followup(msg) { calls.push(['followup', msg]); inbox.nextTurn = [...inbox.nextTurn, msg] },
+      runMaintenance(task) { calls.push(['maintenance']); return task(new AbortController().signal) },
     }
     const goalView = goal
     const ctx = {
@@ -260,7 +262,7 @@ describe('createRecovery', () => {
       },
     }
     const recover = createRecovery(ctx, config(), store, { processStart: PROCESS_START, now: () => PROCESS_START + 10_000 })
-    return { calls, store, ctx, run: () => recover(new AbortController().signal) }
+    return { calls, store, ctx, inbox, run: () => recover(new AbortController().signal) }
   }
 
   const crashedRoot = { events: log(inserted(1, message('user', 'task')), turnStart(1, 2), turnEnd(1, before, CRASH)) }
@@ -272,7 +274,7 @@ describe('createRecovery', () => {
     f.store.addChild('root', 'child')
     await f.run()
     const order = f.calls.filter(([kind]) => kind !== 'dispose').map(([kind]) => kind)
-    assert.deepEqual(order, ['resolve', 'followup', 'flush', 'goal-resume'])
+    assert.deepEqual(order, ['resolve', 'maintenance', 'followup', 'flush', 'goal-resume'])
     const notice = f.calls.find(([kind]) => kind === 'followup')[1]
     assert.equal(notice.role, 'user')
     assert.deepEqual(notice.source, { kind: SOURCE_KIND, attempt: 1, form: 'notice', summary: 'Harness restarted; continuing the interrupted turn' })
@@ -288,6 +290,16 @@ describe('createRecovery', () => {
     await f.run()
     assert.deepEqual(f.calls.find(([kind]) => kind === 'remove'), ['remove', 'stale'])
     assert.equal(f.calls.find(([kind]) => kind === 'followup')[1].source.attempt, 2)
+  })
+
+  it('sends the notice ahead of queued messages and leaves them queued in order', async () => {
+    const first = message('user', 'first')
+    const second = message('user', 'second')
+    const f = await fixture({ logs: { root: crashedRoot }, pending: [first, second] })
+    f.store.setRoot('root', true)
+    await f.run()
+    const notice = f.calls.find(([kind]) => kind === 'followup')[1]
+    assert.deepEqual(f.inbox.nextTurn.map(m => m.id), [notice.id, 'first', 'second'])
   })
 
   it('leaves a conversation alone when something else already drove it', async () => {
