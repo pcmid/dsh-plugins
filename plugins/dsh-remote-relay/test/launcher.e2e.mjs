@@ -15,7 +15,7 @@ import { fakeContext, startFakeGui, until } from './harness.mjs'
 const { chromium } = await import(process.env.PLAYWRIGHT ?? '/tmp/pw/node_modules/playwright-core/index.mjs')
 const relayUrl = process.env.RELAY_URL ?? 'ws://127.0.0.1:18788/ws'
 const launcherDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'launcher')
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.svg': 'image/svg+xml', '.webmanifest': 'application/manifest+json' }
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' }
 
 function serveLauncher() {
   const server = http.createServer(async (req, res) => {
