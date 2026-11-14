@@ -16,3 +16,4 @@
 - 涉及发布时，按顺序在同一个分支里做：提交插件改动 → `git push -u origin <分支>` → `npm run build:index` → 提交 `index.json` → 再推送 → `gh pr create --base main`。先推送是为了让索引固定的提交已在远端，否则脚本会警告。
 - 合并 PR 必须用 merge commit，不能 squash 或 rebase：那样会改写提交号，`index.json` 里固定的提交就不在 `main` 上了。
 - 不要自己合并 PR，把链接交给用户。合并后由用户把 `main` 同步到 `id` 镜像。
+- PR 合并后清理：回到主检出目录，确认 worktree 里没有未提交改动，然后 `git worktree remove .agents/worktrees/<分支>`、`git branch -d <分支>`、`git push origin --delete <分支>`，并把本地 `main` 快进到 `origin/main`。
