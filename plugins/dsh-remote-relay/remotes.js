@@ -261,12 +261,7 @@ export class RemoteDevices {
         session.status = { state: status.state, error: status.error ?? null, code: status.code ?? null, relayUrl: status.relayUrl ?? null, generation: status.generation ?? null }
         if (status.state === 'rejected') this.options.log('info', `"${remote.hostName}" refused this DSH: ${status.error}`)
       },
-      onrelays: (relayUrls) => {
-        remote.relayUrls = relayUrls
-        remote.relayUrl = relayUrls[0]
-        this.options.log('info', `"${remote.hostName}" now offers relays ${relayUrls.map(relayHost).join(', ')}`)
-        void this.save().catch((error) => { this.options.log('warn', `could not save the relays of "${remote.hostName}": ${errorText(error)}`) })
-      },
+      onrelays: (relayUrls) => { this.learned(remote, relayUrls) },
     })
     this.sessions.set(remote.serverId, session)
     if (session.remote.options.device === undefined) {
@@ -289,9 +284,19 @@ export class RemoteDevices {
     })
   }
 
+  /** A handshake, the tunnel's or a measurement's, reported a different relay list: keep it. */
+  learned(remote, relayUrls) {
+    if (!this.remotes.includes(remote)) return
+    remote.relayUrls = relayUrls
+    remote.relayUrl = relayUrls[0]
+    this.options.log('info', `"${remote.hostName}" now offers relays ${relayUrls.map(relayHost).join(', ')}`)
+    void this.save().catch((error) => { this.options.log('warn', `could not save the relays of "${remote.hostName}": ${errorText(error)}`) })
+  }
+
   /**
    * Measure the round trip to a paired host through each of its relays. An open tunnel is measured
-   * in place; nothing switches relays.
+   * in place; nothing switches relays. Each measurement also hears which relays the host offers
+   * now, so the device's list follows the host's settings without waiting for a reconnect.
    * @param {string} id - host id.
    * @param {string} [relayUrl] - measure only this relay.
    * @returns {Promise<Array<{ relayUrl: string, host: string, current: boolean, preferred: boolean, ms: number | null, code?: string, error?: string }>>} results in priority order.
@@ -302,7 +307,9 @@ export class RemoteDevices {
     if (!this.keys.has(id)) throw new TunnelError('storage', 'The stored device key is unusable; add this device again')
     if (relayUrl !== undefined && !remote.relayUrls.includes(relayUrl)) throw new TunnelError('not-found', 'This DSH does not offer that relay')
     const open = this.sessions.get(id)
-    const client = open !== undefined && open.status.state !== 'rejected' ? open.remote : this.client(remote, {})
+    const client = open !== undefined && open.status.state !== 'rejected'
+      ? open.remote
+      : this.client(remote, { onrelays: (relayUrls) => { this.learned(remote, relayUrls) } })
     const results = relayUrl === undefined ? await client.probe() : [await client.probeOne(relayUrl)]
     return results.map((result) => ({ ...result, host: relayHost(result.relayUrl) }))
   }

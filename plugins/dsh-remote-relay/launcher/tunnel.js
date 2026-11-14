@@ -1511,6 +1511,16 @@ export class RemoteHost {
     for (const waiter of this.waiters.splice(0)) waiter.reject(error)
   }
 
+  /**
+   * Keep the relay list a handshake reported; hosts before 0.4.0 report none.
+   * @param {string[] | undefined} relays - relays the host offers now, in priority order.
+   */
+  learn(relays) {
+    if (relays === undefined || relays.length === 0 || sameList(relays, this.relayUrls)) return
+    this.relayUrls = relays
+    this.options.onrelays?.(relays)
+  }
+
   /** Relays in the order the next connection tries them. */
   order() {
     const preferred = this.preferred
@@ -1556,10 +1566,7 @@ export class RemoteHost {
           channel.close(1000, 'stopped')
           return
         }
-        if (relays !== undefined && !sameList(relays, this.relayUrls)) {
-          this.relayUrls = relays
-          this.options.onrelays?.(relays)
-        }
+        this.learn(relays)
         const mux = new Mux(channel, { keepAliveMs: 20_000 })
         const closed = new Promise((resolve) => { mux.onclose = (code, reason) => { resolve({ code, reason }) } })
         this.mux = mux
@@ -1624,11 +1631,16 @@ export class RemoteHost {
           reject(new TunnelError('timeout', 'No answer in time'))
         }, timeoutMs)
       })
-      if (entry.current) return { ...entry, ms: await Promise.race([mux.ping(timeoutMs), deadline]) }
+      if (entry.current) {
+        // The open tunnel learned the host's relays when it connected; ask again alongside.
+        void this.lookup(relayUrl, timeoutMs)
+        return { ...entry, ms: await Promise.race([mux.ping(timeoutMs), deadline]) }
+      }
       const connecting = connectClient({ ...this.options, relayUrl, mode: 'auth', probe: true, signal: attempt.signal })
       // A handshake that completes after the deadline is closed rather than left open.
       connecting.then(({ channel }) => { if (attempt.signal.aborted) channel.close(1000, 'probe') }, () => {})
-      const { channel } = await Promise.race([connecting, deadline])
+      const { channel, relays } = await Promise.race([connecting, deadline])
+      this.learn(relays)
       const probe = new Mux(channel, { keepAliveMs: timeoutMs })
       try {
         return { ...entry, ms: await Promise.race([probe.ping(timeoutMs), deadline]) }
@@ -1637,6 +1649,28 @@ export class RemoteHost {
       }
     } catch (error) {
       return { ...entry, ms: null, code: error instanceof TunnelError ? error.code : 'error', error: String(error?.message ?? error) }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /**
+   * Ask the host which relays it offers now, through a short-lived probe connection. An open
+   * tunnel hears the list only when it connects, so a relay the host added later would otherwise
+   * stay unknown until the tunnel reconnects. A failure changes nothing.
+   * @param {string} relayUrl - relay to ask through.
+   * @param {number} [timeoutMs] - deadline.
+   * @returns {Promise<void>} settles once the list is known or the attempt is abandoned.
+   */
+  async lookup(relayUrl, timeoutMs = PROBE_TIMEOUT_MS) {
+    const attempt = new AbortController()
+    const timer = setTimeout(() => { attempt.abort() }, timeoutMs)
+    try {
+      const { channel, relays } = await connectClient({ ...this.options, relayUrl, mode: 'auth', probe: true, signal: attempt.signal })
+      channel.close(1000, 'probe')
+      this.learn(relays)
+    } catch {
+      // The measurement over the open tunnel reports how this relay is doing.
     } finally {
       clearTimeout(timer)
     }

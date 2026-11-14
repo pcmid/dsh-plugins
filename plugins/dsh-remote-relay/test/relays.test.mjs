@@ -108,3 +108,49 @@ test('the host serves every relay and devices fall over to the next one', async 
     gui.close()
   }
 })
+
+test('measuring hears relays the host added, with or without an open tunnel', async () => {
+  const gui = await startFakeGui()
+  const settings = { enabled: true, relays: [relayA], relayUrl: '', launcherUrl: '', hostName: 'grows', pairingMinutes: 5 }
+  const host = fakeContext(gui.origin, settings)
+  const viewer = fakeContext('http://127.0.0.1:1', { enabled: false, relays: [], relayUrl: '', launcherUrl: '', hostName: 'viewer', pairingMinutes: 5 })
+  const online = (count) => until(async () => (await host.call('status')).value.relays.filter((relay) => relay.state === 'online').length === count, `${count} relays online`)
+  const listed = async () => (await viewer.call('remotes')).value.remotes[0].relayUrls
+  try {
+    apply(host.ctx, host.config)
+    apply(viewer.ctx, viewer.config)
+    viewer.ctx.logger.info = () => {}
+    await online(1)
+    const pairing = (await host.call('pair')).value.pairing
+    const id = (await viewer.call('remote-add', { code: pairing.code, name: 'laptop' })).value.added
+    assert.deepEqual(await listed(), [relayA])
+
+    // Connected: the open tunnel only learned [A] when it connected; measuring A asks the host again.
+    await viewer.call('remote-open', { id })
+    await until(async () => (await viewer.call('remotes')).value.remotes[0].state === 'connected', 'tunnel connected')
+    settings.relays = [relayA, relayB]
+    host.volatileUpdate()
+    await online(2)
+    const current = (await viewer.call('remote-probe', { id, relayUrl: relayA })).value.results[0]
+    assert.equal(current.current, true)
+    await until(async () => (await listed()).length === 2, 'list learned over the open tunnel')
+    assert.deepEqual(await listed(), [relayA, relayB])
+    assert.deepEqual(viewer.records.get('remote-relay/remotes').payload.remotes[0].relayUrls, [relayA, relayB])
+    // The open tunnel stays where it is.
+    assert.equal((await viewer.call('remotes')).value.remotes[0].currentRelay, relayA)
+
+    // Not connected: a measurement's own handshake carries the list.
+    await viewer.call('remote-close', { id })
+    settings.relays = [relayB, relayA]
+    host.volatileUpdate()
+    await online(2)
+    const probed = (await viewer.call('remote-probe', { id, relayUrl: relayA })).value.results[0]
+    assert.equal(typeof probed.ms, 'number', JSON.stringify(probed))
+    assert.deepEqual(await listed(), [relayB, relayA])
+    assert.equal((await viewer.call('remotes')).value.remotes[0].state, 'idle')
+  } finally {
+    viewer.dispose()
+    host.dispose()
+    gui.close()
+  }
+})

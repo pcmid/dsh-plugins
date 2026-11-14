@@ -690,6 +690,7 @@ async function openSession(host) {
     onrelays: (relayUrls) => {
       host.relayUrls = relayUrls
       void saveRelays(host.serverId, relayUrls).catch(() => { /* kept for this visit only */ })
+      session.relayWatch?.listChanged()
     },
     onstatus: (status) => {
       if (current?.remote !== remote) return
@@ -790,7 +791,7 @@ function hostLabel(host) {
  * arrives, so a relay that does not answer holds up nothing else. Choosing a relay stores it and
  * moves the tunnel in the background; the dialog sees the switch through later snapshots.
  * @param {object} session - the open session.
- * @returns {{ emit: () => void, measureAll: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
+ * @returns {{ emit: () => void, measureAll: () => void, listChanged: () => void, pin: (relayUrl: string | null) => Promise<void> }} the watch.
  */
 function watchRelays(session) {
   const remote = session.remote
@@ -837,6 +838,11 @@ function watchRelays(session) {
     emit,
     measureAll() {
       for (const relayUrl of remote.relayUrls) measure(relayUrl)
+      emit()
+    },
+    /** The host reported a different relay list: show it, and measure the relays that are new. */
+    listChanged() {
+      for (const relayUrl of remote.relayUrls) if (!rows.has(relayUrl)) measure(relayUrl)
       emit()
     },
     async pin(relayUrl) {

@@ -1384,6 +1384,8 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         let preferred;
         let notice = null;
         let stopped = false;
+        let started = false;
+        // Rows follow the Host's list, which changes when a measurement hears the device's relays.
         const sync = () => {
           const remote = remoteOf(id);
           const urls = Array.isArray(remote?.relayUrls) ? remote.relayUrls : [];
@@ -1421,6 +1423,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         const watcher = {
           id,
           measureAll() {
+            started = true;
             sync();
             for (const row of rows) measure(row);
             emit();
@@ -1462,6 +1465,9 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
               switching = null;
               notice = t('switchSlow');
             }
+            // A relay the device just heard about is measured as soon as it shows up.
+            sync();
+            if (started) for (const row of rows) if (row.token === 0) measure(row);
             emit();
           },
           stop() {
