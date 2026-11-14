@@ -28,6 +28,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-mcp-skills`](plugins/dsh-mcp-skills) | 本仓库 | 工具与能力 | 在设置里添加、测试和管理 MCP 服务器与技能：粘贴命令或 JSON 即可添加 MCP，密钥存凭据库；技能可新建、编辑，并从技能仓库（GitHub 或本地文件夹）安装和更新 |
 | [`@pcmid/dsh-workspace-agent-preset`](plugins/dsh-workspace-agent-preset) | 本仓库 | 工具与能力 | 在工作区菜单里为工作区选择 Agent 预设，该工作区打开的新会话默认使用它 |
 | [`@pcmid/dsh-edit-prompt`](plugins/dsh-edit-prompt) | 本仓库 | 工具与能力 | 在自己发出的消息的复制按钮旁加编辑按钮：改完发送后丢弃这一轮及之后的消息，从修改后的提示词重新开始 |
+| [`@pcmid/dsh-folder-browser`](plugins/dsh-folder-browser) | 本仓库 | 工具与能力 | 添加工作区时用应用内的文件夹选择框代替系统文件管理器，远程打开 DSH 时也能选目录；可输入路径、Tab 补全、边输边筛、新建文件夹 |
 | [`@vectorize-io/hindsight-coding-agents`](https://github.com/vectorize-io/hindsight/tree/main/hindsight-integrations/coding-agents) | npm `0.8.7` | 工具与能力 | Hindsight 长期记忆：每次输入前把项目记忆注入上下文，每轮结束后把会话存进按仓库划分的记忆库，并提供 `hindsight_*` 工具。服务地址等配置在 `~/.hindsight/coding-agent.json` |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 

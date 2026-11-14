@@ -28,6 +28,7 @@
     { "path": "plugins/dsh-mcp-skills", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-workspace-agent-preset", "category": "tools", "labels": ["own"] },
     { "path": "plugins/dsh-edit-prompt", "category": "tools", "labels": ["own"] },
+    { "path": "plugins/dsh-folder-browser", "category": "tools", "labels": ["own"] },
     { "npm": "@vectorize-io/hindsight-coding-agents", "version": "0.8.7", "category": "tools", "labels": ["external"] },
     { "git": "https://github.com/pcmid/dsh-token-usage", "commit": "247c846fb7f39badd5cf2d61832cccebd6a7b626", "category": "usage", "labels": ["external"] }
   ]

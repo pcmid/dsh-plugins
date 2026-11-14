@@ -1,0 +1,47 @@
+{
+  "name": "@pcmid/dsh-folder-browser",
+  "version": "0.1.0",
+  "description": "Choose workspace folders in a built-in folder browser instead of the system file manager, so opening a workspace also works from a remote browser.",
+  "author": "pcmid",
+  "license": "MIT",
+  "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-folder-browser#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pcmid/dsh-plugins.git",
+    "directory": "plugins/dsh-folder-browser"
+  },
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/client.test.mjs"
+  },
+  "engines": {
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
+}

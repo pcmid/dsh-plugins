@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Built-in folder browser",
+    "description": "Adding or opening a workspace shows an in-app folder picker instead of the system file manager, so it also works when DSH is opened remotely. Type a path with Tab completion, filter as you type, jump to the folders that hold your workspaces, or create a folder on the DSH host."
+  }
+}
