@@ -438,8 +438,8 @@
         "zh": "编辑并重发提示词"
       },
       "description": {
-        "en": "Adds an edit button beside the copy button of each message you sent. Edit the text and send it: that turn and everything after it are dropped, the files those turns changed are put back, and the conversation restarts from the edited prompt. Images in the message are sent again; the original conversation is archived by default.",
-        "zh": "在你发出的每条消息的复制按钮旁加一个编辑按钮。改好内容后发送，这一轮及之后的所有消息都会被丢弃，这些轮次改过的文件也会回退，对话从修改后的提示词重新开始。消息里的图片会一起重发；默认把原会话移入归档。"
+        "en": "Adds an edit button beside the copy button of each message you sent. Edit the text and send it: that turn and everything after it are dropped, the files those turns changed are put back, and the conversation restarts from the edited prompt. Images in the message are sent again. The conversation keeps its id, and the dropped history moves to the archive.",
+        "zh": "在你发出的每条消息的复制按钮旁加一个编辑按钮。改好内容后发送，这一轮及之后的所有消息都会被丢弃，这些轮次改过的文件也会回退，对话从修改后的提示词重新开始。消息里的图片会一起重发。会话保留原来的 id，被丢弃的历史移入归档。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzRiNWJkNiIvPgogIDxwYXRoIGQ9Ik0xNSAyMC41QzE1IDE3LjQ2IDE3LjQ2IDE1IDIwLjUgMTVIMzkuNUM0Mi41NCAxNSA0NSAxNy40NiA0NSAyMC41VjMxLjVDNDUgMzQuNTQgNDIuNTQgMzcgMzkuNSAzN0gyN0wxOS41IDQzVjM3LjNDMTcgMzYuOSAxNSAzNC40IDE1IDMxLjVaIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHBhdGggZD0iTTIyLjUgMjNIMzcuNU0yMi41IDI5SDMxIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMy41IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz4KICA8cGF0aCBkPSJNNDcuNiAzMy40TDUyLjYgMzguNEwzOC42IDUyLjRMMzIuNCA1My42TDMzLjYgNDcuNFoiIGZpbGw9IiNmZmZmZmYiLz4KICA8cGF0aCBkPSJNNDUuNCAzNS42TDUwLjQgNDAuNiIgc3Ryb2tlPSIjNGI1YmQ2IiBzdHJva2Utd2lkdGg9IjIuNCIvPgo8L3N2Zz4K",
       "author": "pcmid",
@@ -456,16 +456,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.2.0"
+        "latest": "0.3.0"
       },
       "versions": [
         {
-          "version": "0.2.0",
-          "publishTimestamp": 1794543172,
+          "version": "0.3.0",
+          "publishTimestamp": 1794670992,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "bfe3063b4560f907f46f18f058d0a72b8a8ff65e",
+            "commit": "6dd03b8430abbbe0651e5e1ab49644c318fb69e8",
             "path": "plugins/dsh-edit-prompt"
           },
           "engines": {
