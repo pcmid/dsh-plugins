@@ -38,7 +38,6 @@ window.__ModuleLoader__.load({
       enableTip: '开启后，DSH 会保持与 relay 的连接，已配对的设备可以随时连进来。',
       status: '状态',
       relays: 'Relay 地址',
-      relaysTip: '自建 relay 的 WebSocket 地址，例如 wss://relay.example.com/ws，只写域名时会自动补全。可以添加多个，顺序就是优先级：设备先连第一个，1.5 秒内没连上或连接失败时再试下一个，连上后一直使用这个 relay，直到连接断开。',
       relayEmpty: '还没有 relay。',
       relayAdd: '添加',
       relayDrag: '调整 {host} 的顺序',
@@ -174,7 +173,6 @@ window.__ModuleLoader__.load({
       enableTip: 'While on, DSH stays connected to the relay so paired devices can reach it at any time.',
       status: 'Status',
       relays: 'Relay addresses',
-      relaysTip: 'WebSocket addresses of your relays, such as wss://relay.example.com/ws; a bare host name is completed automatically. You can add several, and their order is their priority: devices try the first relay first, the next one after 1.5 s or as soon as the first fails, and stay on the relay they connected through until the connection drops.',
       relayEmpty: 'No relays yet.',
       relayAdd: 'Add',
       relayDrag: 'Reorder {host}',
@@ -2048,7 +2046,7 @@ html.${PREFIX}-remote #root { visibility: hidden !important; }
         return 0;
       };
       return h('div', null,
-        h(Row, { title: t('relays'), desc: t('relaysTip') }, h(WriteStatus, { write, t })),
+        h(Row, { title: t('relays') }, h(WriteStatus, { write, t })),
         shown.length === 0
           ? h('div', { className: `${PREFIX}-desc`, style: { marginTop: 0 } }, t('relayEmpty'))
           : h('ol', { ref: listRef, className: `${PREFIX}-relays`, 'data-dragging': drag !== null || undefined }, shown.map((url, index) => {
