@@ -30,6 +30,17 @@ export const Config = z.object({
 
 const FALLBACK_CONTEXT_WINDOW = 128000
 
+/**
+ * Split a DSH model id into the Codex model and service tier. `gpt-5.6-sol@priority` is
+ * `gpt-5.6-sol` at the `priority` tier, the one Codex names Fast.
+ * @param id - DSH model id.
+ * @returns `{ model, serviceTier }`; `serviceTier` is undefined for the standard tier.
+ */
+export function splitServiceTier(id) {
+  const at = id.lastIndexOf('@')
+  return at > 0 && at < id.length - 1 ? { model: id.slice(0, at), serviceTier: id.slice(at + 1) } : { model: id, serviceTier: undefined }
+}
+
 // Keep Codex from adding its own instructions, context, tools and integrations to DSH requests.
 // These are process settings: several of them are read when the process or thread is created,
 // and thread-level overrides of them do not take effect.
@@ -131,10 +142,14 @@ export class CodexAdapter extends LlmAdapter {
   providerInfo(provider) { return { id: provider, name: 'Codex Provider' } }
 
   modelInfo(provider, model) {
-    const metadata = this.catalog?.find(entry => entry.model === model)
+    const { model: base, serviceTier } = splitServiceTier(model)
+    const metadata = this.catalog?.find(entry => entry.model === base)
+    const tier = metadata?.serviceTiers?.find(entry => entry.id === serviceTier)
     const efforts = metadata?.supportedReasoningEfforts ?? []
-    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(model) ?? this.modelsDev?.window(model) ?? FALLBACK_CONTEXT_WINDOW
-    return { provider, id: model, name: metadata?.displayName ?? model, inputModalities: ['text'],
+    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(base) ?? this.modelsDev?.window(base) ?? FALLBACK_CONTEXT_WINDOW
+    const name = serviceTier === undefined ? metadata?.displayName ?? model
+      : tier === undefined ? model : `${metadata.displayName} ${tier.name}`
+    return { provider, id: model, name, ...(tier?.description ? { description: tier.description } : {}), inputModalities: ['text'],
       context: { contextWindow },
       ...(efforts.length ? { reasoning: {
         efforts: efforts.map(effort => ({ id: effort.reasoningEffort, name: effort.reasoningEffort, description: effort.description })),
@@ -156,7 +171,9 @@ export class CodexAdapter extends LlmAdapter {
     await this.modelsDev?.load()
     if (this.config.models.length) return this.config.models.map(model => this.modelInfo(provider, model))
     try {
-      return (await this.loadCatalog()).map(model => this.modelInfo(provider, model.model))
+      // Each service tier a model offers (Fast) is listed as its own model.
+      return (await this.loadCatalog()).flatMap(model => [model.model, ...(model.serviceTiers ?? []).map(tier => `${model.model}@${tier.id}`)])
+        .map(model => this.modelInfo(provider, model))
     } catch (error) {
       throw toLlmError(error)
     }
@@ -261,10 +278,12 @@ export class CodexAdapter extends LlmAdapter {
   prepare(options) {
     const { instructions, messages } = splitInstructions(options)
     const names = toolNames(options.tools)
+    const { model, serviceTier } = splitServiceTier(options.model)
     return {
-      provider: options.provider, model: options.model, effort: options.reasoningEffort,
+      provider: options.provider, model, serviceTier, effort: options.reasoningEffort,
       instructions, names, messages, keys: messages.map(message => this.keys.of(message)),
-      spec: threadSpec(options.model, instructions, names.specs),
+      // The tier is not part of the thread: switching Fast on or off between turns keeps it.
+      spec: threadSpec(model, instructions, names.specs),
     }
   }
 
