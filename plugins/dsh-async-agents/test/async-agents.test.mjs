@@ -335,6 +335,16 @@ describe('missing host tools', () => {
     assert.deepEqual(h.registered(h.agent('unbound')), LISTENER_ONLY)
   })
 
+  it('does not bring back a tool that a restriction hides from the agent', () => {
+    const h = host()
+    for (const definition of [jobOutput().definition, tool('wait_agent'), tool('job_list'), bash().definition]) h.root.tools.register(definition)
+    const agent = h.agent('lead')
+    agent.ctx.tools.restrict({ deny: ['bash', 'job_output'] })
+    h.load()
+    assert.deepEqual(h.visible(agent), ['job_list'])
+    assert.deepEqual(h.registered(agent).tools, [])
+  })
+
   it('leaves bash alone when the agent has no job_output to read the job with', () => {
     const h = host()
     const shell = bash()
