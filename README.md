@@ -29,6 +29,7 @@ https://raw.githubusercontent.com/pcmid/dsh-plugins/main/index.json
 | [`@pcmid/dsh-workspace-agent-preset`](plugins/dsh-workspace-agent-preset) | 本仓库 | 工具与能力 | 在工作区菜单里为工作区选择 Agent 预设，该工作区打开的新会话默认使用它 |
 | [`@pcmid/dsh-edit-prompt`](plugins/dsh-edit-prompt) | 本仓库 | 工具与能力 | 在自己发出的消息的复制按钮旁加编辑按钮：改完发送后丢弃这一轮及之后的消息，从修改后的提示词重新开始 |
 | [`@pcmid/dsh-folder-browser`](plugins/dsh-folder-browser) | 本仓库 | 工具与能力 | 添加工作区时用应用内的文件夹选择框代替系统文件管理器，远程打开 DSH 时也能选目录；可输入路径、Tab 补全、边输边筛、新建文件夹 |
+| [`@pcmid/dsh-async-agents`](plugins/dsh-async-agents) | 本仓库 | 工具与能力 | 让会话的主智能体不再被后台工作卡住：Shell 命令超过 10 秒（最长可要求 60 秒）转为后台任务，主智能体不能再阻塞等待后台任务或子智能体，改为结束回合，由完成通知开始下一回合 |
 | [`@vectorize-io/hindsight-coding-agents`](https://github.com/vectorize-io/hindsight/tree/main/hindsight-integrations/coding-agents) | npm `0.8.7` | 工具与能力 | Hindsight 长期记忆：每次输入前把项目记忆注入上下文，每轮结束后把会话存进按仓库划分的记忆库，并提供 `hindsight_*` 工具。服务地址等配置在 `~/.hindsight/coding-agent.json` |
 | [`@laoyuehanni/dsh-token-usage`](https://github.com/pcmid/dsh-token-usage/blob/pcmid/FORK.md) | 我们的 fork `0.4.15-pcmid.1` | 用量与计费 | 记录每次请求的 token 用量与费用，提供统计页。上游 0.4.15 加一处修复：窄屏下输入栏下方的费用胶囊不再压到上下文圆环 |
 

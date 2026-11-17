@@ -150,16 +150,25 @@ export function apply(ctx) {
     }, 'async-agents'))
   }
 
+  /** `agent/created` is serial: a throw from its listener would fail the host's agent creation. */
+  const attachContained = (agent) => {
+    try {
+      attach(agent)
+    } catch (error) {
+      ctx.logger.warn(`could not apply to agent "${agent.id}", which keeps the host tools: ${error?.message ?? error}`)
+    }
+  }
+
   const isTopLevel = agent => agent.session.header.origin !== 'subagent'
 
   ctx.effect(function* () {
     // The agents' scopes own those registrations; without this they would outlive the plugin.
     yield () => { for (const dispose of [...attached.values()]) dispose() }
-    yield ctx.on('agent/created', ({ agent }) => { if (isTopLevel(agent)) attach(agent) })
+    yield ctx.on('agent/created', ({ agent }) => { if (isTopLevel(agent)) attachContained(agent) })
     // A blank session that switches preset inherits another set of tools.
     yield ctx.on('agent-preset/selected', (sessionId) => {
       const agent = ctx.agents.get(sessionId)
-      if (attached.has(agent)) attach(agent)
+      if (attached.has(agent)) attachContained(agent)
     })
     for (const agent of ctx.agents.list()) {
       if (!isTopLevel(agent)) continue

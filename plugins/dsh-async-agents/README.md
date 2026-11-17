@@ -39,6 +39,8 @@ The first sentence is in the prompt of every agent that has the job tools; the s
 
 Each changed tool is a copy of the tool DSH gave that agent at that moment. If DSH replaces one of those tools while the session is open, for example when one of its own plugins is reloaded, the agent keeps the copy until its session is opened again or its preset changes.
 
+If the plugin cannot apply to an agent, that agent keeps DSH's tools and prompt, and the Host log gets a warning that starts with `could not apply to agent`.
+
 ## Turning it off
 
 Open **Plugins**, find **Async agents** under **Installed**, and switch it off. When DSH applies the change without a restart, open sessions get `wait_agent`, the original `job_output` and `bash`, and the original prompt back from their next step. If DSH asks for a restart, the change applies after it. The plugin has no settings and stores nothing.
@@ -47,6 +49,7 @@ Open **Plugins**, find **Async agents** under **Installed**, and switch it off. 
 
 - **Top-level agents only.** Subagents can still wait for their jobs and for their own subagents.
 - **A command can be stopped after 10 to 60 seconds instead of moving to the background.** DSH cannot move a command to the background when the agent already runs as many jobs as DSH allows per agent (10 by default), or when its `bash` is configured with `promoteOnTimeout: false`. DSH then stops the command at its timeout, which for a top-level agent is now 10 to 60 seconds instead of DSH's own setting.
+- **A later tool restriction does not hide the copies.** If another plugin restricts `bash` or `job_output` for an agent after this plugin has applied, the agent still sees the copies. Nothing in DSH or in the plugins of this repository does that to a top-level agent.
 - **The model decides when to end its turn.** The plugin removes the blocking calls and changes the instructions. It does not end a turn itself, so a model can still keep polling.
 - **The sentences are matched exactly.** If a DSH release rewords one of them, that prompt section is left as DSH wrote it and the Host log gets one warning: `prompt section "tool:jobs" no longer contains the sentence this plugin rewrites; the section is left unchanged`. The tool changes still apply.
 
@@ -56,4 +59,4 @@ Open **Plugins**, find **Async agents** under **Installed**, and switch it off. 
 npm test
 ```
 
-`test/async-agents.test.mjs` runs the plugin against a stand-in for the parts of DSH it uses: scoped tool layers, effects owned by a context, and the prompt assembly. It needs no dependencies. It covers top-level agents and subagents, tools registered globally and in a preset, missing tools and `bash` variants, the argument handling of both tool copies, both prompt replacements and the warning, removal with a disposed agent, restoration when the plugin unloads, and re-application after a preset change.
+`test/async-agents.test.mjs` runs the plugin against a stand-in for the parts of DSH it uses: scoped tool layers, effects owned by a context, and the prompt assembly. It needs no dependencies. It covers top-level agents and subagents, tools registered globally and in a preset, missing tools and `bash` variants, the argument handling of both tool copies, both prompt replacements and the warning, removal with a disposed agent, restoration when the plugin unloads, an agent the plugin cannot apply to, and re-application after a preset change.

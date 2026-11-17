@@ -127,13 +127,15 @@ function host() {
       return { key, ctx }
     },
     /** Create and announce an agent, as the agent registry does. */
-    agent(id, { origin, preset } = {}) {
+    agent(id, { origin, preset, setup } = {}) {
       const agent = { id, session: { id, header: origin === undefined ? {} : { origin } } }
       if (preset !== undefined) parents.set(agent, preset.key)
       const owner = fiber(agent)
       agent.ctx = owner.ctx
       agents.set(id, agent)
       fibers.set(agent, owner)
+      // Creation-time composition of the agent's own scope runs before the agent is announced.
+      setup?.(agent.ctx)
       for (const entry of [...hooks.get('agent/created') ?? []]) {
         if (!admits(entry, agent)) continue
         // A serial listener that returns a value ends the dispatch for the listeners after it.
@@ -585,6 +587,20 @@ describe('lifetime', () => {
     h.load()
     assert.deepEqual(h.registered(dying), NOTHING)
     assert.deepEqual(h.registered(live), EVERYTHING)
+  })
+
+  it('does not fail agent creation when it cannot apply, and leaves that agent as the host made it', () => {
+    const h = host()
+    const { preset } = fullPreset(h)
+    h.load()
+    // The agent's own scope already holds a `job_output`, so the copy cannot be registered beside it.
+    const own = jobOutput('own').definition
+    const lead = h.agent('lead', { preset, setup: (ctx) => { ctx.tools.register(own) } })
+    assert.deepEqual(h.visible(lead), HOST_VIEW)
+    assert.equal(h.get('job_output', lead), own)
+    assert.deepEqual(h.registered(lead), { tools: ['job_output'], restrictions: [], listeners: [], effects: 1 })
+    assert.deepEqual(h.warnings, ['could not apply to agent "lead", which keeps the host tools: tool "job_output" is already registered in this scope'])
+    assert.deepEqual(h.registered(h.agent('next', { preset })), EVERYTHING)
   })
 
   it('still fails to load on any other error, and leaves nothing behind', () => {
