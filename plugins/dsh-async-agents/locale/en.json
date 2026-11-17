@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Async agents",
+    "description": "Keeps the main agent of a session from blocking on background work. A shell command that is still running after 10 seconds (up to 60 when the agent asks for more) continues as a background job. The agent can no longer wait on a job or on a subagent; it is told to end its turn instead, and the completion notice starts its next turn. Subagents are not changed in this version. Turning the plugin off restores the original behavior right away."
+  }
+}
