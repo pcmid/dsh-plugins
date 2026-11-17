@@ -6,7 +6,7 @@
 
 ## 安装与选择模型
 
-需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）和 `0.167.2` 上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
+需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）、`0.167.2` 和 `0.169.0` 上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
 
 ```sh
 codex login
@@ -14,6 +14,8 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 ```
 
 安装插件不会启动 Codex。在 **设置 → 模型 → 添加模型提供商** 选择 **Codex Provider**，点击 **保存** 后启用，再在模型选择器选择它的模型。模型列表来自 app-server 的 `model/list`；也可在插件配置里用 `models` 固定列表。其他供应商的请求不会经过 Codex。
+
+模型提供的每个服务档位单独列为一个模型，ID 为 `<模型>@<档位>`，名称后加档位名。目前 Codex 只有 Fast 档（`priority`），例如 `gpt-5.6-sol@priority` 显示为 “GPT-5.6-Sol Fast”，描述是 Codex 给的速度和额度说明（如 “1.5x speed, increased usage”）。选它时插件用 `gpt-5.6-sol` 并请求 `priority` 档；不带档位的模型始终用标准档，不受 Codex 配置里 `service_tier` 的影响。两轮之间切换 Fast 与标准模型时线程保留：档位随 `turn/start` 传入，不改动模型看到的历史。
 
 添加或 **编辑** 时只有一项 **codex 路径**（配置键 `codexPath`，可用 `~` 表示家目录）：插件用这个 Codex 可执行文件运行 `app-server --stdio`。留空时从 `PATH` 查找 `codex`；桌面应用找不到时填写完整路径，例如 ChatGPT 自带的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`。插件需要自己启动 app-server，才能用启动参数关掉 Codex 本会注入请求的内容，因此不支持连接已经在运行的 app-server。
 
@@ -26,7 +28,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
       codex-provider:
         # codexPath: ~/.local/bin/codex
     # codexHome: /absolute/path/to/.codex
-    # models: [gpt-5.6-sol]
+    # models: [gpt-5.6-sol, gpt-5.6-sol@priority]
     # contextWindow: 272000
     timeoutMs: 600000
     idleTimeoutMs: 1800000
@@ -42,7 +44,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 2. 每个 DSH 会话对应一个 ephemeral Codex 线程。DSH 系统提示词作为线程的 base instructions，DSH 工具按原名作为 `dynamicTools` 传入。Codex 不接受的名字（如 `exec`、`exec_command`、`mcp__*`）会改写：`mcp__a__b` 变为 `mcp_a__b`，其余加稳定的哈希后缀。
 3. 模型调用 DSH 工具时，插件把这批调用作为本次 DSH 步骤的结果交回 Harness，Codex 的这一轮停在未答复的 `item/tool/call` 请求上。DSH 照常执行工具；下一次 DSH 请求用真实结果答复这些请求，同一轮继续生成。上一轮结束后的新用户消息追加到同一线程。因此模型跨步骤保留历史、加密推理和 prompt cache 身份，不需要重放。
 4. 当前 Codex 模型使用 code mode：模型在 `exec` 脚本里调用 DSH 工具。同一脚本同时发起的调用（`Promise.all`）作为一批交给 DSH，结果返回后脚本继续执行。
-5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
+5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度或服务档位变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
 
 辅助请求（标题、摘要等带 `purpose` 的请求）使用单独的临时线程，结束后立即释放。取消、单步超时、消费方提前结束或出错时，中断这一轮并丢弃线程，下一次请求重建。
 

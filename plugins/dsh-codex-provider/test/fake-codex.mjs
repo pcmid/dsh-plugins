@@ -11,7 +11,8 @@ export const usage = { inputTokens: 100, cachedInputTokens: 60, cacheWriteInputT
 export class FakeCodex {
   constructor(script = [], { models } = {}) {
     this.script = script
-    this.models = models ?? [{ model: 'gpt-test', displayName: 'GPT Test', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'high', description: 'Deep' }], defaultReasoningEffort: 'high' }]
+    this.models = models ?? [{ model: 'gpt-test', displayName: 'GPT Test', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Fast' }, { reasoningEffort: 'high', description: 'Deep' }], defaultReasoningEffort: 'high',
+      serviceTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }] }]
     this.threads = new Map()
     this.samples = []
     this.calls = []
