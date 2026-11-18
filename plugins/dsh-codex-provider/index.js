@@ -10,6 +10,8 @@ import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
 import { MessageKeys, splitInstructions, threadSpec, toolNames } from './history.js'
 import { ModelsDev } from './models-dev.js'
+import { legacySpeed, registerSpeed, resolveSpeed, splitServiceTier } from './speed.js'
+export { splitServiceTier } from './speed.js'
 
 export const name = 'codex-provider'
 export const inject = ['llm']
@@ -29,17 +31,6 @@ export const Config = z.object({
 })
 
 const FALLBACK_CONTEXT_WINDOW = 128000
-
-/**
- * Split a DSH model id into the Codex model and service tier. `gpt-5.6-sol@priority` is
- * `gpt-5.6-sol` at the `priority` tier, the one Codex names Fast.
- * @param id - DSH model id.
- * @returns `{ model, serviceTier }`; `serviceTier` is undefined for the standard tier.
- */
-export function splitServiceTier(id) {
-  const at = id.lastIndexOf('@')
-  return at > 0 && at < id.length - 1 ? { model: id.slice(0, at), serviceTier: id.slice(at + 1) } : { model: id, serviceTier: undefined }
-}
 
 // Keep Codex from adding its own instructions, context, tools and integrations to DSH requests.
 // These are process settings: several of them are read when the process or thread is created,
@@ -169,11 +160,9 @@ export class CodexAdapter extends LlmAdapter {
 
   async listModels(provider) {
     await this.modelsDev?.load()
-    if (this.config.models.length) return this.config.models.map(model => this.modelInfo(provider, model))
+    if (this.config.models.length) return [...new Set(this.config.models.map(id => splitServiceTier(id).model))].map(model => this.modelInfo(provider, model))
     try {
-      // Each service tier a model offers (Fast) is listed as its own model.
-      return (await this.loadCatalog()).flatMap(model => [model.model, ...(model.serviceTiers ?? []).map(tier => `${model.model}@${tier.id}`)])
-        .map(model => this.modelInfo(provider, model))
+      return (await this.loadCatalog()).map(entry => this.modelInfo(provider, entry.model))
     } catch (error) {
       throw toLlmError(error)
     }
@@ -318,6 +307,11 @@ export class CodexAdapter extends LlmAdapter {
     let owned = false
     let finished = false
     try {
+      const selected = options.purpose === undefined ? this.sessionSpeed?.(options.sessionId) ?? legacySpeed(options.model) : legacySpeed(options.model)
+      if (selected !== 'standard') await this.loadCatalog(signal)
+      const speed = resolveSpeed(selected, this.catalog?.find(entry => entry.model === request.model))
+      request.serviceTier = speed.serviceTier
+      request.speed = { model: request.model, selected, actual: speed.actual }
       const existing = key === undefined ? undefined : this.conversations.get(key)
       let plan
       if (existing && !existing.busy) {
@@ -381,6 +375,10 @@ export function apply(ctx, config) {
   // The route exists only while the Models page has enabled the provider; a changed
   // app-server path replaces the adapter and its app-server process.
   let current
+  let speeds
+  ctx.inject(['sessionProjections', 'commands', 'sessions'], async scope => {
+    speeds = await registerSpeed(scope, () => current?.adapter)
+  })
   const sync = () => {
     const selected = providers.get()?.[name]
     const codexPath = selected === undefined ? undefined : selected.codexPath?.trim() || 'codex'
@@ -392,11 +390,15 @@ export function apply(ctx, config) {
     current = undefined
     if (codexPath === undefined) return
     const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev)
+    adapter.sessionSpeed = id => {
+      const session = ctx.get('sessions')?.get(id)
+      return session && speeds ? speeds.stateOf(session).selected : undefined
+    }
     current = { codexPath, adapter, unregister: ctx.llm.registerAdapter([name], adapter) }
   }
   sync()
   ctx.on('loader/volatile-update', sync)
-  ctx.on('dispose', () => {
+  ctx.effect(() => () => {
     current?.unregister()
     return current?.adapter.dispose()
   })

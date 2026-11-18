@@ -15,7 +15,9 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 
 安装插件不会启动 Codex。在 **设置 → 模型 → 添加模型提供商** 选择 **Codex Provider**，点击 **保存** 后启用，再在模型选择器选择它的模型。模型列表来自 app-server 的 `model/list`；也可在插件配置里用 `models` 固定列表。其他供应商的请求不会经过 Codex。
 
-模型提供的每个服务档位单独列为一个模型，ID 为 `<模型>@<档位>`，名称后加档位名。目前 Codex 只有 Fast 档（`priority`），例如 `gpt-5.6-sol@priority` 显示为 “GPT-5.6-Sol Fast”，描述是 Codex 给的速度和额度说明（如 “1.5x speed, increased usage”）。选它时插件用 `gpt-5.6-sol` 并请求 `priority` 档；不带档位的模型始终用标准档，不受 Codex 配置里 `service_tier` 的影响。两轮之间切换 Fast 与标准模型时线程保留：档位随 `turn/start` 传入，不改动模型看到的历史。
+模型列表只显示基础模型，不再显示 Fast/Ultrafast 变体。在会话模型菜单选择 **Codex 速度**，或运行 `/fast`（切换标准/Fast）、`/fast on`、`/fast off`、`/fast standard|fast|ultrafast`（`ultra` 是 `ultrafast` 的别名）。选择按会话保存，恢复和分叉从成功命令日志重建；不会改写旧记录。旧会话的 `@priority` / `@ultrafast` 模型在未显式选择速度时仍作为兼容基线。
+
+Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每轮按 Codex `model/list` 的服务档位计算并传入 `turn/start`，标准档显式传 `null`，不受用户 Codex 配置 `service_tier` 影响。菜单区分所选档位与上次请求的有效档位；有效档位表示插件实际请求的档位，不保证后端计费或额度。较高速度可能消耗更多额度。两轮间切换速度保留线程；工具等待期间改变有效档位则从 DSH 历史重建。
 
 添加或 **编辑** 时只有一项 **codex 路径**（配置键 `codexPath`，可用 `~` 表示家目录）：插件用这个 Codex 可执行文件运行 `app-server --stdio`。留空时从 `PATH` 查找 `codex`；桌面应用找不到时填写完整路径，例如 ChatGPT 自带的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`。插件需要自己启动 app-server，才能用启动参数关掉 Codex 本会注入请求的内容，因此不支持连接已经在运行的 app-server。
 
@@ -28,7 +30,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
       codex-provider:
         # codexPath: ~/.local/bin/codex
     # codexHome: /absolute/path/to/.codex
-    # models: [gpt-5.6-sol, gpt-5.6-sol@priority]
+    # models: [gpt-5.6-sol]
     # contextWindow: 272000
     timeoutMs: 600000
     idleTimeoutMs: 1800000
