@@ -65,7 +65,8 @@ const toolResult = (s, callId, at) => s.append('tool/result', { turn: 1, step: 1
 
 /**
  * Apply the plugin to a stand-in Host. `services` holds the optional services
- * by name; `snapshot` sends one request through the registered route.
+ * by name; `snapshot` and `sessions` each send one request through their
+ * registered route.
  */
 function host(services = {}) {
   const loaded = new Map()
@@ -87,22 +88,28 @@ function host(services = {}) {
     get: key => services[key],
     connection: { fetch: { register: (route) => { routes.push(route); return async () => {} } } },
   })
-  const [route] = routes
-  const post = body => route.fetch(new Request(`http://localhost${route.path}`, { method: 'POST', body }))
+  /** Send a body to the route of one endpoint. */
+  const post = (body, endpoint = 'snapshot') => {
+    const route = routes.find(one => one.path === `/api/pcmid/agent-monitor/${endpoint}`)
+    return route.fetch(new Request(`http://localhost${route.path}`, { method: 'POST', body }))
+  }
+  /** Send one request in the RPC envelope and return the value of its answer. */
+  async function call(endpoint, payload) {
+    const response = await post(JSON.stringify({ type: 'client-request', rpcId: 'rpc-1', method: `pcmid/agent-monitor/${endpoint}`, payload }), endpoint)
+    const body = await response.json()
+    assert.equal(body.type, 'server-response')
+    assert.equal(body.rpcId, 'rpc-1')
+    assert.equal(body.result.ok, true, JSON.stringify(body.result))
+    return body.result.value
+  }
   return {
-    route,
+    routes,
     post,
     load(...agents) {
       for (const one of agents) loaded.set(one.id, one)
     },
-    async snapshot(sessionId) {
-      const response = await post(JSON.stringify({ type: 'client-request', rpcId: 'rpc-1', method: 'pcmid/agent-monitor/snapshot', payload: { sessionId } }))
-      const body = await response.json()
-      assert.equal(body.type, 'server-response')
-      assert.equal(body.rpcId, 'rpc-1')
-      assert.equal(body.result.ok, true, JSON.stringify(body.result))
-      return body.result.value.agents
-    },
+    snapshot: async sessionId => (await call('snapshot', { sessionId })).agents,
+    sessions: async () => (await call('sessions', {})).sessions,
   }
 }
 
@@ -208,29 +215,50 @@ function tree(services = {}) {
 }
 
 describe('plugin', () => {
-  it('needs the connection and the agent registry, and registers one owner route', () => {
-    const { route } = host()
+  it('needs the connection and the agent registry, and registers two owner routes', () => {
+    const { routes } = host()
     assert.equal(name, 'agent-monitor')
     assert.deepEqual(inject, ['connection', 'agents'])
-    assert.equal(route.path, '/api/pcmid/agent-monitor/snapshot')
-    assert.deepEqual(route.methods, ['POST'])
-    assert.equal(route.requestBody, 'buffered')
+    assert.deepEqual(routes.map(route => route.path), ['/api/pcmid/agent-monitor/snapshot', '/api/pcmid/agent-monitor/sessions'])
+    for (const route of routes) {
+      assert.deepEqual(route.methods, ['POST'])
+      assert.equal(route.requestBody, 'buffered')
+    }
   })
 
   it('answers a body that is not JSON with 400 and a wrong envelope with a refusal', async () => {
     const { post } = host()
-    assert.equal((await post('not json')).status, 400)
-    for (const [envelope, rpcId] of [
-      [{ type: 'client-request', rpcId: 'r7', payload: {} }, 'r7'],
-      [{ type: 'client-request', rpcId: 'r8', payload: { sessionId: 7 } }, 'r8'],
-      [{ type: 'server-response', rpcId: 'r9', payload: { sessionId: ROOT } }, 'r9'],
-      [{ type: 'client-request', payload: null }, 'invalid-request'],
+    for (const [endpoint, envelopes] of [
+      ['snapshot', [
+        [{ type: 'client-request', rpcId: 'r7', payload: {} }, 'r7'],
+        [{ type: 'client-request', rpcId: 'r8', payload: { sessionId: 7 } }, 'r8'],
+        [{ type: 'server-response', rpcId: 'r9', payload: { sessionId: ROOT } }, 'r9'],
+        [{ type: 'client-request', payload: null }, 'invalid-request'],
+      ]],
+      ['sessions', [
+        [{ type: 'server-response', rpcId: 'r9', payload: {} }, 'r9'],
+        [{ rpcId: 'r10' }, 'r10'],
+        [null, 'invalid-request'],
+      ]],
     ]) {
-      const body = await (await post(JSON.stringify(envelope))).json()
-      assert.equal(body.rpcId, rpcId)
-      assert.equal(body.result.ok, false)
-      assert.equal(body.result.error.code, 'bad-request')
+      assert.equal((await post('not json', endpoint)).status, 400)
+      for (const [envelope, rpcId] of envelopes) {
+        const body = await (await post(JSON.stringify(envelope), endpoint)).json()
+        assert.equal(body.type, 'server-response')
+        assert.equal(body.rpcId, rpcId)
+        assert.equal(body.result.ok, false)
+        assert.equal(body.result.error.code, 'bad-request', `${endpoint} ${JSON.stringify(envelope)}`)
+      }
     }
+  })
+
+  it('answers a request it cannot serve with a refusal that carries the reason', async () => {
+    const h = host()
+    const gone = agent(session(ROOT))
+    Object.defineProperty(gone, 'status', { get() { throw new Error('agent is gone') } })
+    h.load(gone)
+    const body = await (await h.post(JSON.stringify({ type: 'client-request', rpcId: 'r11', payload: { sessionId: ROOT } }))).json()
+    assert.deepEqual(body, { type: 'server-response', rpcId: 'r11', result: { ok: false, error: { code: 'internal', message: 'agent is gone', details: {} } } })
   })
 })
 
@@ -579,6 +607,119 @@ describe('goalWaiting', () => {
     agents.child.inbox.nextTurn.push({ id: 'm1' })
     assert.deepEqual((await h.snapshot(ROOT)).map(row => row.state), ['waiting', 'queued'])
     assert.equal(await waiting(h), undefined)
+  })
+})
+
+describe('sessions', () => {
+  /** The answer does not promise an order. */
+  const byId = entries => [...entries].sort((a, b) => a.id.localeCompare(b.id))
+
+  /** What the snapshots say the answer is: an entry for each agent whose own row waits, counting the rows of its tree. */
+  async function fromSnapshots(h, agents) {
+    const entries = []
+    for (const one of agents) {
+      const rows = await h.snapshot(one.id)
+      const count = state => rows.filter(row => row.state === state).length
+      if (rows[0].state === 'waiting') {
+        entries.push({ id: one.id, running: count('running'), waiting: count('waiting'), subagentRunning: rows.some(row => row.depth === 1 && row.state === 'running') })
+      }
+    }
+    return entries
+  }
+
+  it('lists every agent that waits on background work, with the running and waiting agents of its tree', async () => {
+    const { h } = tree()
+    assert.deepEqual(byId(await h.sessions()), [
+      // Itself and the tester wait, the builder and its checker run; the subagents with pending messages and without work are in neither count.
+      // The builder is a subagent it created itself.
+      { id: ROOT, running: 2, waiting: 2, subagentRunning: true },
+      // Stopped with a running and a stopping job.
+      { id: TESTER, running: 0, waiting: 1, subagentRunning: false },
+    ])
+    // The request names nothing: it is answered whatever its payload is.
+    for (const envelope of [{ type: 'client-request', rpcId: 'r1' }, { type: 'client-request', rpcId: 'r1', payload: { sessionId: BUILDER } }]) {
+      const body = await (await h.post(JSON.stringify(envelope), 'sessions')).json()
+      assert.deepEqual(byId(body.result.value.sessions).map(entry => entry.id), [ROOT, TESTER])
+    }
+  })
+
+  it('counts a waiting subagent in its own entry and in the entry of each agent above it', async () => {
+    const { h, agents } = tree()
+    // The builder stopped while its checker runs.
+    agents.builder.status = 'idle'
+    assert.deepEqual(byId(await h.sessions()), [
+      // The checker runs, but the builder created it: none of the root's own subagents is running.
+      { id: ROOT, running: 1, waiting: 3, subagentRunning: false },
+      { id: BUILDER, running: 1, waiting: 1, subagentRunning: true },
+      { id: TESTER, running: 0, waiting: 1, subagentRunning: false },
+    ])
+  })
+
+  it('gives every agent the state its snapshot gives it', async () => {
+    for (const change of [
+      () => {},
+      (agents) => { agents.builder.status = 'idle' },
+      (agents) => { agents.root.status = 'running' },
+      (agents) => {
+        agents.checker.status = 'idle'
+        agents.checker.inbox.nextTurn.push({ id: 'm3' })
+      },
+    ]) {
+      const { h, agents } = tree()
+      change(agents)
+      const answer = byId(await h.sessions())
+      assert.deepEqual(answer, byId(await fromSnapshots(h, Object.values(agents))))
+      assert.ok(answer.length > 0)
+    }
+  })
+
+  it('keeps to the tree of each agent, and gives a waiting agent outside every tree its own entry', async () => {
+    const { h } = tree()
+    const other = session(id('99999999', 7))
+    const stranger = subSession(id('88888888', 8), other.header.id, 100)
+    // A historical ordinary fork keeps its source id but is not a subagent.
+    const fork = session(id('77777777', 9), { parent: ROOT, createdAt: T0 + 100 })
+    // Its creator is not loaded.
+    const orphan = subSession(id('66666666', 10), id('55555555', 11), 100)
+    const grandchild = subSession(id('44444444', 12), orphan.header.id, 200)
+    h.load(agent(other), agent(stranger, 'running'), agent(fork, 'running'), agent(orphan), agent(grandchild))
+    assert.deepEqual(byId(await h.sessions()), byId([
+      { id: ROOT, running: 2, waiting: 2, subagentRunning: true },
+      { id: TESTER, running: 0, waiting: 1, subagentRunning: false },
+      { id: other.header.id, running: 1, waiting: 1, subagentRunning: true },
+      { id: orphan.header.id, running: 0, waiting: 1, subagentRunning: false },
+    ]))
+  })
+
+  it('reads no Session log', async () => {
+    const { h, agents } = tree()
+    assert.equal((await h.sessions()).length, 2)
+    for (const one of Object.values(agents)) assert.deepEqual(one.session.reads, [])
+  })
+
+  it('counts no job without a job registry', async () => {
+    const { h } = tree({ jobs: undefined })
+    // The tester's jobs are unknown, so it reads as idle, as in its snapshot.
+    assert.deepEqual(await h.sessions(), [{ id: ROOT, running: 2, waiting: 1, subagentRunning: true }])
+  })
+
+  it('skips an agent whose state cannot be read, and still answers', async () => {
+    const { h, agents } = tree({ jobs: { list: (caller) => { if (caller === TESTER) throw new Error('registry is closing'); return [] } } })
+    // Without its jobs nothing tells that the tester waits.
+    assert.deepEqual(await h.sessions(), [{ id: ROOT, running: 2, waiting: 1, subagentRunning: true }])
+    Object.defineProperty(agents.builder, 'status', { get() { throw new Error('agent is gone') } })
+    // The builder is in no count and is not known to run; its checker still counts.
+    assert.deepEqual(await h.sessions(), [{ id: ROOT, running: 1, waiting: 1, subagentRunning: false }])
+    Object.defineProperty(agents.root, 'status', { get() { throw new Error('agent is gone') } })
+    assert.deepEqual(await h.sessions(), [])
+  })
+
+  it('is empty while no agent waits', async () => {
+    assert.deepEqual(await host().sessions(), [])
+    // Finished and foreign jobs are not background work, and an agent that runs does not wait.
+    const h = host({ jobs: registry([job(ROOT, 'completed', 'ls', 10), job(undefined, 'running', 'shared watcher', 10), job(BUILDER, 'running', 'make', 10)]) })
+    h.load(agent(session(ROOT)), agent(session(BUILDER), 'running'))
+    assert.deepEqual(await h.sessions(), [])
   })
 })
 

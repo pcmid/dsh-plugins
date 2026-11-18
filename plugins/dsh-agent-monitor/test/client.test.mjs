@@ -1,8 +1,8 @@
 // Loads the browser half (client.js) against stand-in Client services. The helper,
-// registration and polling tests need nothing else. The rendering tests drive the strip in
-// jsdom with the real React of a deepseek-harness source checkout whose dependencies are
-// installed: HARNESS_DIR, or a `deepseek-harness` directory beside any ancestor of this
-// plugin (the repository or one of its worktrees). They are skipped without one.
+// registration and polling tests need nothing else. The rendering tests drive the strip and
+// the sidebar entries in jsdom with the real React of a deepseek-harness source checkout whose
+// dependencies are installed: HARNESS_DIR, or a `deepseek-harness` directory beside any
+// ancestor of this plugin (the repository or one of its worktrees). They are skipped without one.
 import assert from 'node:assert/strict'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -62,7 +62,11 @@ afterEach(async () => {
   visibility = 'visible'
 })
 
+/** The answers of the Host half's two routes. */
 const ok = agents => ({ ok: true, value: { agents } })
+const okSessions = sessions => ({ ok: true, value: { sessions } })
+/** The route a request went to. */
+const SESSIONS = 'pcmid/agent-monitor/sessions'
 
 /** Let the promises of a request settle. `setImmediate` stays real under the mocked timers. */
 const flush = () => new Promise(resolve => setImmediate(resolve))
@@ -75,9 +79,10 @@ const translate = dictionary => (key, params) => {
 
 /**
  * Apply the module to stand-in services and capture what it registers.
- * `answer` is the Host: it receives a request's payload and returns the RPC result, or throws.
+ * `answer` is the Host: it receives a request's payload and endpoint and returns the RPC result, or throws.
+ * `options` and `Component` are the strip's; `entry` gives those of any slot.
  */
-function mount({ answer = () => ok([]) } = {}) {
+function mount({ answer = (payload, endpoint) => endpoint === SESSIONS ? okSessions([]) : ok([]) } = {}) {
   const registrations = []
   const slots = []
   const dictionaries = {}
@@ -98,7 +103,7 @@ function mount({ answer = () => ok([]) } = {}) {
       rpc: {
         call: async (channel, endpoint, payload) => {
           calls.push([channel, endpoint, payload])
-          return answer(payload)
+          return answer(payload, endpoint)
         },
       },
     },
@@ -107,10 +112,11 @@ function mount({ answer = () => ok([]) } = {}) {
       register: (options, Component) => { registrations.push({ options, Component }); return () => {} },
     },
   })
-  assert.equal(registrations.length, 1)
-  const [{ options, Component }] = registrations
+  assert.equal(registrations.length, 3)
+  const entry = slot => registrations.find(one => one.options.name === slot)
+  const { options, Component } = entry('conversation.input.dock')
   return {
-    plugin, slots, options, Component, dictionaries, calls,
+    plugin, slots, entry, options, Component, dictionaries, calls,
     helpers: plugin.__helpers,
     t: (language = 'en') => translate(dictionaries[options.locale][language]),
     unload: () => { for (const dispose of disposers.reverse()) dispose() },
@@ -122,12 +128,22 @@ describe('registration', () => {
     const m = mount()
     assert.equal(definition.id, '@pcmid/dsh-agent-monitor')
     assert.deepEqual(m.plugin.inject, ['slots', 'locale', 'connection'])
-    assert.deepEqual(m.slots, ['conversation.input.dock'])
+    assert.deepEqual(m.slots, ['conversation.input.dock', 'sidebar.session.row.trailing', 'sidebar.session.row.hover'])
     assert.equal(m.options.name, 'conversation.input.dock')
     assert.equal(m.options.id, 'agent-monitor')
     assert.equal(m.options.order, 6)
     assert.equal(m.options.locale, 'agentMonitor')
     assert.deepEqual(Object.keys(m.dictionaries), ['agentMonitor'])
+  })
+
+  it('adds a mark to the end of each sidebar session row and a line to its hover card', () => {
+    const m = mount()
+    for (const slot of ['sidebar.session.row.trailing', 'sidebar.session.row.hover']) {
+      const { options, Component } = m.entry(slot)
+      assert.deepEqual({ ...options, inject: undefined }, { name: slot, id: 'agent-monitor', order: 20, locale: 'agentMonitor', inject: undefined })
+      assert.equal(typeof Component, 'function')
+    }
+    assert.notEqual(m.entry('sidebar.session.row.trailing').Component, m.entry('sidebar.session.row.hover').Component)
   })
 
   it('registers Chinese and English copy with the same keys and placeholders', () => {
@@ -349,6 +365,42 @@ describe('polling', () => {
     assert.equal(first.getSnapshot().agents[0].id, 's1')
     assert.equal(second.getSnapshot().agents[0].id, 's2')
   })
+
+  it('keeps one store for the whole sidebar, which asks at once and then every five seconds', async (t) => {
+    clock(t)
+    const WAITING = [{ id: 's1', running: 1, waiting: 4, subagentRunning: false }]
+    const m = mount({ answer: (payload, endpoint) => endpoint === SESSIONS ? okSessions(structuredClone(WAITING)) : ok([]) })
+    const store = m.entry('sidebar.session.row.trailing').options.inject().hooks.waitingAgents
+    // The same store for every row, on the row and in its hover card.
+    assert.equal(m.entry('sidebar.session.row.trailing').options.inject().hooks.waitingAgents, store)
+    assert.equal(m.entry('sidebar.session.row.hover').options.inject().hooks.waitingAgents, store)
+    assert.deepEqual(m.calls, [])
+    // Any number of rows is one request.
+    const stops = [1, 2, 3].map(() => store.subscribe(() => {}))
+    await flush()
+    assert.deepEqual(m.calls, [['/api', SESSIONS, {}]])
+    assert.deepEqual(store.getSnapshot(), { agents: WAITING, at: NOW })
+    t.mock.timers.tick(4999)
+    await flush()
+    assert.equal(m.calls.length, 1)
+    t.mock.timers.tick(1)
+    await flush()
+    assert.equal(m.calls.length, 2)
+    // Not while the page is hidden.
+    visibility = 'hidden'
+    t.mock.timers.tick(15_000)
+    await flush()
+    assert.equal(m.calls.length, 2)
+    visibility = 'visible'
+    t.mock.timers.tick(5000)
+    await flush()
+    assert.equal(m.calls.length, 3)
+    // Not once the last row is gone.
+    for (const stop of stops) stop()
+    t.mock.timers.tick(60_000)
+    await flush()
+    assert.equal(m.calls.length, 3)
+  })
 })
 
 /** A session whose agent waits on four jobs and a goal, with four subagents, one of which has its own. */
@@ -376,35 +428,40 @@ const SAMPLE = [
   { id: 'i', depth: 1, name: 'f5555555', state: 'idle', subagents: 0 },
 ]
 
-describe('strip', { skip }, () => {
-  const act = callback => React.act(async () => { await callback() })
+const act = callback => React.act(async () => { await callback() })
 
-  /** Render the registered strip with the hook the renderer makes of the session's store. */
-  async function show(m, useAgentMonitor, t = m.t()) {
-    const container = document.createElement('div')
-    document.body.append(container)
-    const root = ReactDOMClient.createRoot(container)
-    await act(() => { root.render(React.createElement(m.Component, { useAgentMonitor, t })) })
-    let mounted = true
-    const remove = async () => {
-      if (!mounted) return
-      mounted = false
-      await act(() => { root.unmount() })
-      container.remove()
-    }
-    cleanups.push(remove)
-    return { container, remove }
+/** Put an element on the page until the test ends or `remove` is called. */
+async function render(element) {
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = ReactDOMClient.createRoot(container)
+  await act(() => { root.render(element) })
+  let mounted = true
+  const remove = async () => {
+    if (!mounted) return
+    mounted = false
+    await act(() => { root.unmount() })
+    container.remove()
   }
+  cleanups.push(remove)
+  return { container, remove }
+}
 
-  /** The hook of an answer that does not change. */
-  const fixed = (agents, at = NOW) => selector => selector({ agents, at })
-  /** As the renderer binds a store of the `hooks` compartment: a selector hook over its snapshot. */
-  const bind = store => selector => React.useSyncExternalStore(store.subscribe, () => selector(store.getSnapshot()))
+/** The hook of an answer that does not change. */
+const fixed = (agents, at = NOW) => selector => selector({ agents, at })
+/** As the renderer binds a store of the `hooks` compartment: a selector hook over its snapshot. */
+const bind = store => selector => React.useSyncExternalStore(store.subscribe, () => selector(store.getSnapshot()))
+
+const click = element => act(() => { element.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })) })
+const texts = (element, selector) => [...element.querySelectorAll(selector)].map(node => node.textContent)
+const icon = element => element.querySelector('use').getAttribute('href')
+
+describe('strip', { skip }, () => {
+  /** Render the registered strip with the hook the renderer makes of the session's store. */
+  const show = (m, useAgentMonitor, t = m.t()) => render(React.createElement(m.Component, { useAgentMonitor, t }))
 
   const header = container => container.querySelector('button')
-  const toggle = container => act(() => { header(container).dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true })) })
-  const texts = (element, selector) => [...element.querySelectorAll(selector)].map(node => node.textContent)
-  const icon = element => element.querySelector('use').getAttribute('href')
+  const toggle = container => click(header(container))
   /** A row's own line: name, label, what it does, elapsed time. */
   const line = item => ['name', 'label', 'doing', 'time'].map(part => item.querySelector(`.dsh-am-row > .dsh-am-${part}`)?.textContent)
   /** The lines under a row: text and elapsed time. */
@@ -558,5 +615,160 @@ describe('strip', { skip }, () => {
     assert.doesNotMatch(sheet, /#[0-9a-f]{3,8}\b|\b(?:rgb|hsl)a?\(/i)
     m.unload()
     assert.equal(sheets().length, before)
+  })
+})
+
+describe('sidebar', { skip }, () => {
+  /** Two sessions whose own agent waits: one with three more that wait and an agent running further down its tree, one alone. */
+  const WAITING = [{ id: 's1', running: 1, waiting: 4, subagentRunning: false }, { id: 's2', running: 0, waiting: 1, subagentRunning: false }]
+  /** The first of them once a subagent its agent created runs: Harness's own spinner is on that row. */
+  const SPINNING = [{ ...WAITING[0], subagentRunning: true }, WAITING[1]]
+  const ROW = 'sidebar.session.row.trailing'
+  const CARD = 'sidebar.session.row.hover'
+
+  /** Render what one slot adds for a session, with the hook the renderer makes of the shared store. */
+  const show = (m, slot, sessionId, useWaitingAgents, t = m.t()) => render(React.createElement(m.entry(slot).Component, { sessionId, useWaitingAgents, t }))
+  const controls = container => container.querySelectorAll('button, a, input, [tabindex], [role]').length
+
+  it('marks the row of a session whose agent waits on background work', async () => {
+    const { container } = await show(mount(), ROW, 's1', fixed(WAITING))
+    const mark = container.firstElementChild
+    assert.equal(mark.getAttribute('class'), 'dsh-am-mark')
+    // The pause sign of the strip's waiting agents, at the size of the row's other icons.
+    const glyph = mark.querySelector('svg')
+    assert.equal(glyph.getAttribute('class'), 'dsh-am-paused')
+    assert.equal(icon(mark), '#dsw-icon-pause-outline-regular')
+    assert.deepEqual([glyph.getAttribute('width'), glyph.getAttribute('height')], ['14', '14'])
+    // Assistive technology reads the counts in its place.
+    assert.equal(glyph.getAttribute('aria-hidden'), 'true')
+    assert.deepEqual(texts(mark, '.dsh-am-hidden'), [`Agents: 1 working${DOT}4 waiting for background work`])
+    assert.equal(mark.textContent, `Agents: 1 working${DOT}4 waiting for background work`)
+    assert.equal(controls(container), 0)
+  })
+
+  it('does not open the session when the mark is pressed', async () => {
+    const m = mount()
+    let opened = 0
+    // A row opens its session on a click anywhere in it.
+    const { container } = await render(React.createElement('div', { onClick: () => { opened += 1 } },
+      React.createElement('span', { className: 'title' }, 'A session'),
+      React.createElement(m.entry(ROW).Component, { sessionId: 's1', useWaitingAgents: fixed(WAITING), t: m.t() })))
+    await click(container.querySelector('.dsh-am-mark svg'))
+    assert.equal(opened, 0)
+    await click(container.querySelector('.title'))
+    assert.equal(opened, 1)
+  })
+
+  it('adds a line to the hover card of that row: the sign, the title and the counts', async () => {
+    const { container } = await show(mount(), CARD, 's1', fixed(WAITING))
+    const line = container.firstElementChild
+    assert.equal(line.getAttribute('class'), 'dsh-am-hover')
+    assert.deepEqual(texts(line, '.dsh-am-hover-body > span'), ['Agents', `1 working${DOT}4 waiting for background work`])
+    assert.deepEqual(texts(line, '.dsh-am-hover-title'), ['Agents'])
+    assert.deepEqual(texts(line, '.dsh-am-hover-counts'), [`1 working${DOT}4 waiting for background work`])
+    const glyph = line.querySelector('.dsh-am-hover-icon > svg')
+    assert.equal(icon(line), '#dsw-icon-pause-outline-regular')
+    assert.deepEqual([glyph.getAttribute('width'), glyph.getAttribute('height')], ['12', '12'])
+    assert.equal(glyph.getAttribute('aria-hidden'), 'true')
+    assert.equal(controls(container), 0)
+  })
+
+  it('leaves the row to the spinner while a subagent that agent created is running, and keeps the line of the hover card', async () => {
+    const m = mount()
+    assert.equal((await show(m, ROW, 's1', fixed(SPINNING))).container.innerHTML, '')
+    // Not the other rows.
+    assert.equal((await show(m, ROW, 's2', fixed(SPINNING))).container.querySelectorAll('.dsh-am-mark').length, 1)
+    const card = await show(m, CARD, 's1', fixed(SPINNING))
+    assert.deepEqual(texts(card.container, '.dsh-am-hover-body > span'), ['Agents', `1 working${DOT}4 waiting for background work`])
+  })
+
+  it('adds nothing for a session whose agent does not wait', async () => {
+    const m = mount()
+    for (const slot of [ROW, CARD]) {
+      for (const [sessionId, agents] of [['s3', WAITING], ['s1', []]]) {
+        const { container } = await show(m, slot, sessionId, fixed(agents))
+        assert.equal(container.innerHTML, '', `${slot} ${sessionId}`)
+      }
+    }
+  })
+
+  it('reads in Chinese', async () => {
+    const m = mount()
+    const zh = m.t('zh')
+    assert.equal((await show(m, ROW, 's1', fixed(WAITING), zh)).container.textContent, `智能体：1 个运行中${DOT}4 个等待后台工作`)
+    assert.equal((await show(m, ROW, 's2', fixed(WAITING), zh)).container.textContent, '智能体：1 个等待后台工作')
+    const card = await show(m, CARD, 's2', fixed(WAITING), zh)
+    assert.deepEqual(texts(card.container, '.dsh-am-hover-body > span'), ['智能体', '1 个等待后台工作'])
+  })
+
+  it('follows the Host: every row from one request each five seconds, until no row is left', async (t) => {
+    t.mock.timers.enable({ apis: ['setInterval', 'Date'], now: NOW })
+    let waiting = WAITING
+    const m = mount({ answer: (payload, endpoint) => endpoint === SESSIONS ? okSessions(structuredClone(waiting)) : ok([]) })
+    const en = m.t()
+    /** How often the mark of each row was drawn, counted by its lookups of the label. */
+    const drawn = {}
+    const counting = sessionId => (key, params) => {
+      if (key === 'sidebar.label') drawn[sessionId] = (drawn[sessionId] ?? 0) + 1
+      return en(key, params)
+    }
+    const useRow = bind(m.entry(ROW).options.inject().hooks.waitingAgents)
+    const useCard = bind(m.entry(CARD).options.inject().hooks.waitingAgents)
+    // Three rows of a sidebar, and the open hover card of the first.
+    const { container, remove } = await render(React.createElement('div', null,
+      ['s1', 's2', 's3'].map(sessionId => React.createElement('div', { key: sessionId, 'data-row': sessionId },
+        React.createElement(m.entry(ROW).Component, { sessionId, useWaitingAgents: useRow, t: counting(sessionId) }))),
+      React.createElement('div', { 'data-card': 's1' }, React.createElement(m.entry(CARD).Component, { sessionId: 's1', useWaitingAgents: useCard, t: en }))))
+    await act(flush)
+    const tick = ms => act(async () => {
+      t.mock.timers.tick(ms)
+      await flush()
+    })
+    const row = sessionId => container.querySelector(`[data-row="${sessionId}"]`)
+    const marked = () => [...container.querySelectorAll('[data-row]')].filter(one => one.querySelector('.dsh-am-mark') !== null).map(one => one.dataset.row)
+    const card = () => texts(container, '[data-card] .dsh-am-hover-counts')
+
+    assert.deepEqual(m.calls, [['/api', SESSIONS, {}]])
+    assert.deepEqual(marked(), ['s1', 's2'])
+    assert.deepEqual(card(), [`1 working${DOT}4 waiting for background work`])
+    assert.deepEqual(drawn, { s1: 1, s2: 1 })
+
+    await tick(4999)
+    assert.equal(m.calls.length, 1)
+    // The same answer again draws no row again.
+    await tick(1)
+    assert.equal(m.calls.length, 2)
+    assert.deepEqual(drawn, { s1: 1, s2: 1 })
+
+    // The second session's agent no longer waits and the third's now does; the first row says what it said.
+    waiting = [WAITING[0], { id: 's3', running: 2, waiting: 1, subagentRunning: false }]
+    await tick(5000)
+    assert.deepEqual(marked(), ['s1', 's3'])
+    assert.equal(row('s3').textContent, `Agents: 2 working${DOT}1 waiting for background work`)
+    assert.deepEqual(drawn, { s1: 1, s2: 1, s3: 1 })
+
+    // The first session's counts change: its row and its hover card follow.
+    waiting = [{ id: 's1', running: 0, waiting: 2, subagentRunning: false }]
+    await tick(5000)
+    assert.deepEqual(marked(), ['s1'])
+    assert.equal(row('s1').textContent, 'Agents: 2 waiting for background work')
+    assert.deepEqual(card(), ['2 waiting for background work'])
+
+    // A subagent its agent created starts to run: the mark goes, the hover card keeps its line.
+    waiting = [{ id: 's1', running: 1, waiting: 2, subagentRunning: true }]
+    await tick(5000)
+    assert.deepEqual(marked(), [])
+    assert.deepEqual(card(), [`1 working${DOT}2 waiting for background work`])
+    // And comes back when that subagent stops.
+    waiting = [{ id: 's1', running: 0, waiting: 3, subagentRunning: false }]
+    await tick(5000)
+    assert.deepEqual(marked(), ['s1'])
+
+    // Off the page nothing asks.
+    assert.equal(m.calls.length, 6)
+    await remove()
+    await tick(60_000)
+    assert.equal(m.calls.length, 6)
+    assert.ok(m.calls.every(([, endpoint]) => endpoint === SESSIONS))
   })
 })

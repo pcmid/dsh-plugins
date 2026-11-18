@@ -1,16 +1,28 @@
 /**
- * Browser half of @pcmid/dsh-agent-monitor: a strip above the composer, among
- * Harness's task list and goal bar, that shows what each agent of the session
- * is doing. It only displays: the header expands and collapses the list, and
- * nothing in it acts on an agent.
+ * Browser half of @pcmid/dsh-agent-monitor. It shows what the agents of a
+ * session are doing in three slots, and only displays: the strip's header
+ * expands and collapses its list, and nothing acts on an agent.
  *
- * The strip asks the Host half for the session's agents when it mounts and
- * then every two seconds while the page is visible. It draws nothing while the
- * session's own agent is alone and has no background job and no waiting goal.
+ * - `conversation.input.dock`: a strip above the composer, among Harness's
+ *   task list and goal bar, with one row per agent of the open session. It
+ *   asks the Host half's `snapshot` route when it mounts and then every two
+ *   seconds while the page is visible, and draws nothing while the session's
+ *   own agent is alone and has no background job and no waiting goal.
+ * - `sidebar.session.row.trailing`: a mark on the sidebar row of each session
+ *   whose own agent has stopped and waits on background work, which the row
+ *   itself does not show. The mark is left out while the row has Harness's
+ *   own spinner for a running subagent of that agent.
+ * - `sidebar.session.row.hover`: the same as a line of that row's hover card.
  *
- * Markup, spacing, type and tokens copy Harness's task list (TodoPanel); the
- * running and idle marks copy its in-progress and pending marks. Icons
- * reference the theme's shared icon sprite.
+ * Every row of the sidebar reads one store, which asks the Host half's
+ * `sessions` route every five seconds while a row is mounted and the page is
+ * visible.
+ *
+ * The strip's markup, spacing, type and tokens copy Harness's task list
+ * (TodoPanel), and its running and idle marks copy that list's in-progress
+ * and pending marks. The sidebar mark and the hover line copy the entries
+ * Harness has in those two slots. Icons reference the theme's shared icon
+ * sprite.
  */
 window.__ModuleLoader__.load({
   id: '@pcmid/dsh-agent-monitor',
@@ -20,14 +32,16 @@ window.__ModuleLoader__.load({
     const { useState } = React
 
     const NS = 'agentMonitor'
-    /** The row id in cordis.patch.yml, and this strip's id in the dock. */
+    /** The row id in cordis.patch.yml, and this plugin's entry id in each slot. */
     const ENTRY = 'agent-monitor'
     const PREFIX = 'dsh-am'
-    /** Connection RPC channel and endpoint prefix of the Host half's route. */
+    /** Connection RPC channel and endpoint prefix of the Host half's routes. */
     const HOST_CHANNEL = '/api'
     const HOST_API = 'pcmid/agent-monitor'
     /** How often a mounted strip asks the Host again. */
     const POLL_MS = 2000
+    /** How often the sidebar asks. A row only tells that agents are at work, and a page opened through a relay pays for every request. */
+    const SIDEBAR_POLL_MS = 5000
     /** Jobs listed under one agent before the rest are counted. */
     const MAX_JOBS = 3
     /** Indentation per level of the agent tree, in px. */
@@ -48,6 +62,7 @@ window.__ModuleLoader__.load({
       'state.idle': '空闲',
       'jobs.more': '另有 {n} 个',
       goalWaiting: '目标：等待后台工作，之后开始下一轮',
+      'sidebar.label': '智能体：{counts}',
       'duration.seconds': '{s}秒',
       'duration.minutes': '{m}分{s}秒',
       'duration.hours': '{h}小时{m}分',
@@ -65,6 +80,7 @@ window.__ModuleLoader__.load({
       'state.idle': 'Idle',
       'jobs.more': '+{n} more',
       goalWaiting: 'Goal: waiting for background work before the next round',
+      'sidebar.label': 'Agents: {counts}',
       'duration.seconds': '{s}s',
       'duration.minutes': '{m}m {s}s',
       'duration.hours': '{h}h {m}m',
@@ -132,6 +148,17 @@ window.__ModuleLoader__.load({
   .${PREFIX}-turn, .${PREFIX}-arc { animation: none; }
   .${PREFIX}-arc { stroke-dasharray: 18 150; stroke-dashoffset: -3; }
 }
+/* The mark among the icons at the end of a sidebar session row, sized as Harness sizes its own there: to the row's 20px line. */
+.${PREFIX}-mark { display: inline-flex; flex: none; align-items: center; justify-content: center; height: 20px; color: var(--dsw-alias-label-tertiary); }
+/* Text for assistive technology only, hidden as the row hides the labels of its own status dot. */
+.${PREFIX}-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* The line in the row's hover card, laid out as the scheduled-task lines there. The card is dark in both themes, so it has label tokens of its own. */
+.${PREFIX}-hover { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.${PREFIX}-hover-icon { display: inline-flex; flex: none; align-items: center; height: 16px; color: var(--dsw-alias-hovercard-label-secondary); }
+/* The counts follow the title on its line, and go below it when the card is too narrow for both. */
+.${PREFIX}-hover-body { display: flex; flex-wrap: wrap; gap: 2px 6px; min-width: 0; font-size: 12px; line-height: 16px; }
+.${PREFIX}-hover-title { color: var(--dsw-alias-hovercard-label-primary); }
+.${PREFIX}-hover-counts { min-width: 0; color: var(--dsw-alias-hovercard-label-secondary); overflow-wrap: break-word; }
 `
 
     /**
@@ -145,21 +172,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The header's counts per state over all agents. Zero counts are omitted,
-     * and an agent with queued messages counts as idle.
-     * @param agents - the rows of the Host's answer.
+     * Counts of agents per state, as text. Zero counts are omitted.
+     * @param {{ running: number, waiting: number, idle?: number }} counts - how many agents are in each state.
      * @param t - this plugin's translate function.
      * @returns {string} for example `2 working · 1 idle`.
      */
-    function summary(agents, t) {
-      const running = agents.filter(row => row.state === 'running').length
-      const waiting = agents.filter(row => row.state === 'waiting').length
-      const idle = agents.length - running - waiting
+    function countsText({ running, waiting, idle = 0 }, t) {
       return [
         ...running > 0 ? [t('summary.running', { n: running })] : [],
         ...waiting > 0 ? [t('summary.waiting', { n: waiting })] : [],
         ...idle > 0 ? [t('summary.idle', { n: idle })] : [],
       ].join(SEPARATOR)
+    }
+
+    /**
+     * The header's counts per state over all agents. An agent with queued
+     * messages counts as idle.
+     * @param agents - the rows of the Host's answer.
+     * @param t - this plugin's translate function.
+     * @returns {string} the counts as {@link countsText} writes them.
+     */
+    function summary(agents, t) {
+      const running = agents.filter(row => row.state === 'running').length
+      const waiting = agents.filter(row => row.state === 'waiting').length
+      return countsText({ running, waiting, idle: agents.length - running - waiting }, t)
     }
 
     /**
@@ -191,16 +227,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The agents of one session as a store the strip subscribes to. While it
-     * has a subscriber it reads them at once and then every {@link POLL_MS},
-     * skipping reads while the page is hidden. A failed read keeps the last
-     * answer, and the next tick reads again. `agents` is replaced only when
-     * the answer changed; `at` is the time of the latest read, which elapsed
-     * times are counted to.
-     * @param {() => Promise<object[]>} read - asks the Host for the rows.
+     * Agents as the Host describes them, as a store that components subscribe
+     * to. While it has a subscriber it reads them at once and then every
+     * `interval` milliseconds, skipping reads while the page is hidden. A
+     * failed read keeps the last answer, and the next tick reads again.
+     * `agents` is replaced only when the answer changed; `at` is the time of
+     * the latest read, which elapsed times are counted to.
+     * @param {() => Promise<object[]>} read - asks the Host for the agents.
+     * @param {number} interval - milliseconds from one read to the next.
      * @returns {{ getSnapshot: () => { agents: object[], at: number }, subscribe: (listener: () => void) => () => void }} the store.
      */
-    function createMonitor(read) {
+    function createMonitor(read, interval) {
       let snapshot = { agents: [], at: 0 }
       let answer = '[]'
       let reading = false
@@ -228,7 +265,7 @@ window.__ModuleLoader__.load({
         subscribe(listener) {
           listeners.add(listener)
           if (listeners.size === 1) {
-            timer = setInterval(() => { void poll() }, POLL_MS)
+            timer = setInterval(() => { void poll() }, interval)
             void poll()
           }
           return () => {
@@ -240,8 +277,8 @@ window.__ModuleLoader__.load({
     }
 
     /** A glyph of the theme's icon sprite, the artwork Harness's own icons use. */
-    function Glyph({ name, className }) {
-      return h('svg', { width: 14, height: 14, className, 'aria-hidden': true }, h('use', { href: `#dsw-icon-${name}-regular` }))
+    function Glyph({ name, className, size = 14 }) {
+      return h('svg', { width: size, height: size, className, 'aria-hidden': true }, h('use', { href: `#dsw-icon-${name}-regular` }))
     }
 
     /** As Harness's loaders do: start a loader's animations at document time zero, so every visible loader turns in step. */
@@ -302,6 +339,49 @@ window.__ModuleLoader__.load({
           open ? h('ul', { className: `${PREFIX}-list` }, agents.map(row => h(AgentRow, { key: row.id, row, now, t }))) : null))
     }
 
+    /**
+     * What the sidebar says about one session: the counts of the running and
+     * waiting agents of its tree, while its own agent waits on background work.
+     * @param useWaitingAgents - selector hook over the store every row shares.
+     * @param {string} sessionId - the row's session.
+     * @param t - this plugin's translate function.
+     * @param {boolean} [quietRowOnly] - say nothing while a subagent that agent created is running.
+     * @returns {string | undefined} the counts; undefined while that agent does not wait, or while it is not to be said.
+     */
+    function useSessionCounts(useWaitingAgents, sessionId, t, quietRowOnly = false) {
+      // The text is what is selected, so a row draws again only when what it says changes.
+      return useWaitingAgents((state) => {
+        const waiting = state.agents.find(agent => agent.id === sessionId)
+        if (waiting === undefined || (quietRowOnly && waiting.subagentRunning)) return undefined
+        return countsText(waiting, t)
+      })
+    }
+
+    /**
+     * The mark on a session's sidebar row: the pause sign of the strip's waiting agents. It is no control.
+     * It is left out while a subagent the session's agent created is running: the row then has Harness's
+     * own spinner, and a pause sign beside a spinner would contradict it.
+     */
+    function SessionMark({ sessionId, useWaitingAgents, t }) {
+      const counts = useSessionCounts(useWaitingAgents, sessionId, t, true)
+      if (counts === undefined) return null
+      // As Harness's own mark on a row: a press on it does not open the session through the row.
+      return h('span', { className: `${PREFIX}-mark`, onClick: (event) => { event.stopPropagation() } },
+        h(StateMark, { state: 'waiting' }),
+        h('span', { className: `${PREFIX}-hidden` }, t('sidebar.label', { counts })))
+    }
+
+    /** The line in the hover card of a session's sidebar row: the same sign, the title and the counts. */
+    function SessionHover({ sessionId, useWaitingAgents, t }) {
+      const counts = useSessionCounts(useWaitingAgents, sessionId, t)
+      if (counts === undefined) return null
+      return h('div', { className: `${PREFIX}-hover` },
+        h('span', { className: `${PREFIX}-hover-icon` }, h(Glyph, { name: 'pause-outline', size: 12 })),
+        h('span', { className: `${PREFIX}-hover-body` },
+          h('span', { className: `${PREFIX}-hover-title` }, t('title')),
+          h('span', { className: `${PREFIX}-hover-counts` }, counts)))
+    }
+
     return {
       inject: ['slots', 'locale', 'connection'],
       // The pure parts, so their tests need no page.
@@ -316,11 +396,11 @@ window.__ModuleLoader__.load({
           return () => { style.remove() }
         }, 'agent-monitor: styles')
 
-        /** Ask the Host half for a session's rows; a refusal throws. */
-        async function read(sessionId) {
-          const result = await ctx.connection.rpc.call(HOST_CHANNEL, `${HOST_API}/snapshot`, { sessionId })
+        /** Ask one route of the Host half; a refusal throws. */
+        async function ask(endpoint, payload) {
+          const result = await ctx.connection.rpc.call(HOST_CHANNEL, `${HOST_API}/${endpoint}`, payload)
           if (!result.ok) throw new Error(result.error?.message ?? 'request failed')
-          return result.value.agents
+          return result.value
         }
 
         ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
@@ -331,8 +411,29 @@ window.__ModuleLoader__.load({
           order: 6,
           locale: NS,
           // One store per session; the renderer hands it to that session's strip as the `useAgentMonitor` hook.
-          inject: sessionId => ({ hooks: { agentMonitor: createMonitor(() => read(sessionId)) } }),
+          inject: sessionId => ({ hooks: { agentMonitor: createMonitor(async () => (await ask('snapshot', { sessionId })).agents, POLL_MS) } }),
         }, AgentMonitor))
+
+        // One store for the page. Every sidebar row and hover card reads it as the `useWaitingAgents` hook, so any number of rows costs one request per interval.
+        const waitingAgents = createMonitor(async () => (await ask('sessions', {})).sessions, SIDEBAR_POLL_MS)
+        const sidebar = () => ({ hooks: { waitingAgents } })
+        // The end of the row and not its start: a row offers its leading cell only while its own state is idle, and a session whose turn has just ended holds its "completed" dot there.
+        ctx.slots.inject('sidebar.session.row.trailing', () => ctx.slots.register({
+          name: 'sidebar.session.row.trailing',
+          id: ENTRY,
+          // After the icons of Harness's experimental change-request plugin (10).
+          order: 20,
+          locale: NS,
+          inject: sidebar,
+        }, SessionMark))
+        ctx.slots.inject('sidebar.session.row.hover', () => ctx.slots.register({
+          name: 'sidebar.session.row.hover',
+          id: ENTRY,
+          // After Harness's scheduled tasks (10).
+          order: 20,
+          locale: NS,
+          inject: sidebar,
+        }, SessionHover))
       },
     }
   },

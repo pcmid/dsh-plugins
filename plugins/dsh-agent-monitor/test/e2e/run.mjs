@@ -7,7 +7,8 @@
  * delegates two subagents: `server` starts a background command that never
  * ends and ends its turn, and `tester` runs a foreground command. While that
  * command runs, the check signs in as the browser does and asks the plugin's
- * route what the agents are doing.
+ * two routes: `snapshot` what the agents of the conversation are doing, and
+ * `sessions` which agents wait on background work.
  *
  * A Harness that keeps a subagent loaded for its background job lists
  * `server` as waiting, with that job. One that unloads an idle subagent, such
@@ -36,7 +37,7 @@ const RECORD = join(ROOT, 'requests.jsonl')
 /** Commands no other process on the machine runs, so that `pkill` finds only the fixture's. */
 const SERVER = `sleep ${40_000 + process.pid}`
 const TESTS = `sleep ${50_000 + process.pid}`
-const ROUTE = '/api/pcmid/agent-monitor/snapshot'
+const API = '/api/pcmid/agent-monitor'
 mkdirSync(WORK, { recursive: true })
 writeFileSync(RECORD, '')
 
@@ -128,19 +129,21 @@ try {
   const origin = new URL(launch).origin
   const cookie = await signIn(launch)
   let calls = 0
-  const post = async (body, headers = { cookie }) => {
-    const response = await fetch(`${origin}${ROUTE}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
+  const post = async (endpoint, body, headers = { cookie }) => {
+    const response = await fetch(`${origin}${API}/${endpoint}`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) })
     return { status: response.status, body: response.headers.get('content-type')?.includes('json') ? await response.json() : await response.text() }
   }
-  const ask = async (sessionId) => {
+  /** Send one request in the RPC envelope and return the value of its answer. */
+  const call = async (endpoint, payload) => {
     const rpcId = `e2e-${calls += 1}`
-    const answer = await post({ type: 'client-request', rpcId, payload: { sessionId } })
+    const answer = await post(endpoint, { type: 'client-request', rpcId, payload })
     assert.equal(answer.status, 200)
     assert.equal(answer.body.type, 'server-response')
     assert.equal(answer.body.rpcId, rpcId)
     assert.equal(answer.body.result.ok, true, JSON.stringify(answer.body.result))
-    return answer.body.result.value.agents
+    return answer.body.result.value
   }
+  const ask = async sessionId => (await call('snapshot', { sessionId })).agents
 
   const agents = await ask(lead)
   const names = agents.map(row => row.name)
@@ -189,19 +192,35 @@ try {
   assert.deepEqual(own.map(row => [row.id, row.depth, row.name, row.label, row.state]), [[testerId, 0, '', undefined, 'running']])
   assert.equal(own[0].goalWaiting, undefined)
 
-  // A session without a loaded agent, a request that is not the RPC envelope, and a request without the session cookie.
+  // The sidebar's route: every agent that waits on background work, with the running and waiting agents of its tree.
+  const { sessions } = await call('sessions', {})
+  const serverId = records().find(r => r.role === 'server').sessionId
+  const byId = entries => [...entries].sort((a, b) => a.id.localeCompare(b.id))
+  assert.deepEqual(byId(sessions), byId(keeps.kept
+    // The conversation's agent waits above the running tester and the server, which waits on its command.
+    ? [{ id: lead, running: 1, waiting: 2, subagentRunning: true }, { id: serverId, running: 0, waiting: 1, subagentRunning: false }]
+    : [{ id: lead, running: 1, waiting: 1, subagentRunning: true }]), `sessions listed: ${JSON.stringify(sessions)}`)
+
+  // A session without a loaded agent, a request that is not the RPC envelope, and requests without the session cookie.
   assert.deepEqual(await ask('no-such-session'), [])
-  const malformed = await post({ type: 'client-request', rpcId: 'e2e-bad', payload: {} })
+  const malformed = await post('snapshot', { type: 'client-request', rpcId: 'e2e-bad', payload: {} })
   assert.equal(malformed.status, 200)
   assert.equal(malformed.body.result.ok, false)
   assert.equal(malformed.body.result.error.code, 'bad-request')
-  const stranger = await post({ type: 'client-request', rpcId: 'e2e-anon', payload: { sessionId: lead } }, {})
-  assert.equal(stranger.status, 401, `a request without the session cookie: ${JSON.stringify(stranger)}`)
+  for (const [endpoint, payload] of [['snapshot', { sessionId: lead }], ['sessions', {}]]) {
+    const stranger = await post(endpoint, { type: 'client-request', rpcId: 'e2e-anon', payload }, {})
+    assert.equal(stranger.status, 401, `${endpoint} without the session cookie: ${JSON.stringify(stranger)}`)
+  }
 
   child.kill('SIGTERM')
   const exit = await Promise.race([child.exited, sleep(15_000).then(() => undefined)])
   if (exit === undefined) throw new Error(`boot did not exit after SIGTERM\n${child.output}`)
-  console.log(`ok   agent-monitor e2e ${JSON.stringify({ keepsSubagents: keeps.kept, agents: agents.map(row => `${row.name === '' ? '(session)' : row.name}:${row.state}`) })}`)
+  const named = id => agents.find(row => row.id === id)?.name || '(session)'
+  console.log(`ok   agent-monitor e2e ${JSON.stringify({
+    keepsSubagents: keeps.kept,
+    agents: agents.map(row => `${named(row.id)}:${row.state}`),
+    sessions: byId(sessions).map(entry => `${named(entry.id)}: ${entry.running} running, ${entry.waiting} waiting`),
+  })}`)
 } catch (error) {
   process.exitCode = 1
   console.log(`FAIL agent-monitor e2e: ${error.stack ?? error}`)

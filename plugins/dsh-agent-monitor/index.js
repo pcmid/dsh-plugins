@@ -1,14 +1,21 @@
 /**
- * Host half of @pcmid/dsh-agent-monitor: one owner-only route,
- * `/api/pcmid/agent-monitor/snapshot`, that tells the browser half what each
- * loaded agent of a session is doing. It reads live state and Session logs and
- * changes nothing.
+ * Host half of @pcmid/dsh-agent-monitor: two owner-only routes under
+ * `/api/pcmid/agent-monitor` that tell the browser half what the loaded agents
+ * are doing. Both read and change nothing.
  *
- * The answer lists the viewed Session's agent and the loaded agents it created
- * as subagents, directly or through other loaded agents, a parent before its
- * children. Subagent names, background jobs, and goals come from optional
- * services; what a missing service would supply, and anything that cannot be
- * read about one agent, is left out of the answer instead of failing it.
+ * `snapshot` describes the agents of one session, for the strip above the
+ * composer: the viewed Session's agent and the loaded agents it created as
+ * subagents, directly or through other loaded agents, a parent before its
+ * children. It reads live state and Session logs.
+ *
+ * `sessions` lists every loaded agent that waits on background work, with how
+ * many agents of its tree are running and waiting and whether one of its own
+ * subagents is running, for the marks on the sidebar's session rows. It reads
+ * live state only.
+ *
+ * Subagent names, background jobs, and goals come from optional services; what
+ * a missing service would supply, and anything that cannot be read about one
+ * agent, is left out of the answer instead of failing it.
  *
  * @module @pcmid/dsh-agent-monitor
  */
@@ -132,7 +139,7 @@ function attempt(read) {
 }
 
 /**
- * Build the snapshot operation over the Harness services it reads.
+ * Build the two operations over the Harness services they read.
  * @param {object} sources - the reads.
  * @param {(sessionId: string) => object | undefined} sources.agentOf - the loaded Agent of a Session.
  * @param {() => object[]} sources.agents - every loaded Agent.
@@ -140,9 +147,9 @@ function attempt(read) {
  * @param {(agent: object) => string | undefined} sources.nameOf - an agent's model-facing name; may throw.
  * @param {(sessionId: string) => object[] | undefined} sources.jobsOf - the jobs a Session can see; undefined without a job registry.
  * @param {(agent: object) => object | undefined} sources.goalOf - an agent's goal; may throw.
- * @returns {(sessionId: string) => { agents: object[] }} the operation.
+ * @returns {{ snapshot: (sessionId: string) => { agents: object[] }, sessions: () => { sessions: object[] } }} the operations.
  */
-function createSnapshot({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
+function createOperations({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
   /** Task labels read so far, by Agent. A descriptor does not change once written. */
   const labels = new WeakMap()
 
@@ -187,17 +194,33 @@ function createSnapshot({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
       }))
   }
 
+  /**
+   * An agent's state, with the two live reads that decide it. The state is
+   * `running` while the agent runs; `waiting` once it has stopped and
+   * background work remains, a live job of its own or a loaded subagent;
+   * `queued` once it has stopped with messages to process; `idle` otherwise.
+   * A read that fails finds nothing and leaves its value undefined.
+   * @param agent - a loaded Agent.
+   * @param {number} subagents - how many loaded subagents it created.
+   * @param {Set<string>} [foreground] - ids of its jobs that are tool calls in flight.
+   * @returns {{ state: string, jobs?: object[], queued?: number }} the state and the reads.
+   */
+  function live(agent, subagents, foreground) {
+    const jobs = attempt(() => liveJobs(agent.id, foreground))
+    const queued = attempt(() => agent.inbox.nextTurn.length + agent.inbox.nextStep.length)
+    let state = 'idle'
+    if (agent.status === 'running') state = 'running'
+    else if ((jobs?.length ?? 0) > 0 || subagents > 0) state = 'waiting'
+    else if ((queued ?? 0) > 0) state = 'queued'
+    return { state, jobs, queued }
+  }
+
   /** One row of the answer. */
   function describe(agent, depth, subagents) {
     const running = agent.status === 'running'
     const log = attempt(() => readLog(agent.session, running, turnOf)) ?? {}
-    const jobs = attempt(() => liveJobs(agent.id, log.foreground))
-    const queued = attempt(() => agent.inbox.nextTurn.length + agent.inbox.nextStep.length)
+    const { state, jobs, queued } = live(agent, subagents, log.foreground)
     const label = depth === 0 ? undefined : attempt(() => labelOf(agent))
-    let state = 'idle'
-    if (running) state = 'running'
-    else if ((jobs?.length ?? 0) > 0 || subagents > 0) state = 'waiting'
-    else if ((queued ?? 0) > 0) state = 'queued'
     return {
       id: agent.id,
       depth,
@@ -212,12 +235,14 @@ function createSnapshot({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
     }
   }
 
-  return function snapshot(sessionId) {
-    const viewed = agentOf(sessionId)
-    if (viewed === undefined) return { agents: [] }
-    // Loaded subagents by the Session that created them, oldest first.
+  /**
+   * Group subagents by the Session that created them.
+   * @param {object[]} loaded - every loaded Agent.
+   * @returns {Map<string, object[]>} the subagents among them by their creator's id, oldest first.
+   */
+  function subagentsByCreator(loaded) {
     const created = new Map()
-    for (const agent of agents()) {
+    for (const agent of loaded) {
       const { origin, parentSession } = agent.session.header
       if (origin !== 'subagent' || parentSession === undefined) continue
       const siblings = created.get(parentSession)
@@ -225,6 +250,14 @@ function createSnapshot({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
       else siblings.push(agent)
     }
     for (const siblings of created.values()) siblings.sort((a, b) => a.session.header.createdAt - b.session.header.createdAt)
+    return created
+  }
+
+  /** The agents of one session: its own agent, then each subagent before its own subagents. Empty for a Session without a loaded agent. */
+  function snapshot(sessionId) {
+    const viewed = agentOf(sessionId)
+    if (viewed === undefined) return { agents: [] }
+    const created = subagentsByCreator(agents())
     const rows = []
     const visit = (agent, depth) => {
       const children = created.get(agent.id) ?? []
@@ -241,14 +274,44 @@ function createSnapshot({ agentOf, agents, turnOf, nameOf, jobsOf, goalOf }) {
       && self.state !== 'running' && background) self.goalWaiting = true
     return { agents: rows }
   }
+
+  /**
+   * Every loaded agent that waits on background work, with how many agents of
+   * its tree, itself included, are running and how many are waiting, and
+   * whether a subagent it created itself is running. The states are those
+   * `snapshot` gives, without a read of any Session log: an agent that has
+   * stopped has no tool call in flight, so every live job it owns is
+   * background work, and a running agent is running whatever it owns.
+   */
+  function sessions() {
+    const loaded = agents()
+    const created = subagentsByCreator(loaded)
+    // An agent whose state cannot be read is in no count and has no entry of its own.
+    const states = new Map(loaded.map(agent => [agent.id, attempt(() => live(agent, created.get(agent.id)?.length ?? 0).state)]))
+    const count = (id, counts) => {
+      const state = states.get(id)
+      if (state === 'running' || state === 'waiting') counts[state] += 1
+      for (const child of created.get(id) ?? []) count(child.id, counts)
+      return counts
+    }
+    return {
+      sessions: loaded.filter(agent => states.get(agent.id) === 'waiting').map(agent => ({
+        id: agent.id,
+        ...count(agent.id, { running: 0, waiting: 0 }),
+        subagentRunning: (created.get(agent.id) ?? []).some(child => states.get(child.id) === 'running'),
+      })),
+    }
+  }
+
+  return { snapshot, sessions }
 }
 
 /**
- * Register the route.
+ * Register the routes.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
  */
 export function apply(ctx) {
-  const snapshot = createSnapshot({
+  const { snapshot, sessions } = createOperations({
     agentOf: sessionId => ctx.agents.get(sessionId),
     agents: () => ctx.agents.list(),
     turnOf: session => ctx.agents.turnBoundaryOf(session),
@@ -257,32 +320,39 @@ export function apply(ctx) {
     goalOf: agent => ctx.get('goals')?.get(agent),
   })
 
-  // One exact POST route that speaks the Connection RPC envelope, as the browser half's `rpc.call` sends it.
-  ctx.connection.fetch.register({
-    path: `${API}/snapshot`,
-    methods: ['POST'],
-    requestBody: 'buffered',
-    fetch: async (request) => {
-      let envelope
-      try {
-        envelope = await request.json()
-      } catch {
-        // A body that is not JSON carries no rpcId to answer.
-        return new Response('body is not JSON', { status: 400 })
-      }
-      const rpcId = typeof envelope?.rpcId === 'string' ? envelope.rpcId : 'invalid-request'
-      const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } })
-      let result
-      if (envelope?.type !== 'client-request' || typeof envelope.payload?.sessionId !== 'string') {
-        result = failure('bad-request', 'Expected a client-request envelope whose payload names a sessionId')
-      } else {
+  /**
+   * Register one exact POST route that speaks the Connection RPC envelope, as the browser half's `rpc.call` sends it.
+   * @param {string} endpoint - the route's name under {@link API}.
+   * @param {(payload: unknown) => object | undefined} answer - the value for a request's payload; undefined for a payload it cannot answer.
+   */
+  function serve(endpoint, answer) {
+    ctx.connection.fetch.register({
+      path: `${API}/${endpoint}`,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async (request) => {
+        let envelope
         try {
-          result = { ok: true, value: snapshot(envelope.payload.sessionId) }
+          envelope = await request.json()
+        } catch {
+          // A body that is not JSON carries no rpcId to answer.
+          return new Response('body is not JSON', { status: 400 })
+        }
+        const rpcId = typeof envelope?.rpcId === 'string' ? envelope.rpcId : 'invalid-request'
+        const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } })
+        let result
+        try {
+          const value = envelope?.type === 'client-request' ? answer(envelope.payload) : undefined
+          result = value === undefined ? failure('bad-request', `Expected a client-request envelope with the payload of ${endpoint}`) : { ok: true, value }
         } catch (error) {
           result = failure('internal', error?.message ?? String(error))
         }
-      }
-      return Response.json({ type: 'server-response', rpcId, result })
-    },
-  })
+        return Response.json({ type: 'server-response', rpcId, result })
+      },
+    })
+  }
+
+  serve('snapshot', payload => typeof payload?.sessionId === 'string' ? snapshot(payload.sessionId) : undefined)
+  // The answer covers every session, so the payload names nothing.
+  serve('sessions', () => sessions())
 }
