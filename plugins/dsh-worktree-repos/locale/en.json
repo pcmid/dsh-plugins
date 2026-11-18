@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Worktrees from nested repositories",
+    "description": "For a workspace that is not a Git repository, turn on \"Scan Git repositories\" in its menu. New sessions there can then pick a Git repository among the workspace's first-level subdirectories and cut a worktree from a branch of it."
+  }
+}
