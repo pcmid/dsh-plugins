@@ -23,7 +23,7 @@ export const Config = z.object({
   providers: z.dict(Profile).default({}).volatile().description('Enabled from Settings → Models; absent keeps the provider off.'),
   codexHome: z.string().description('Optional CODEX_HOME; uses the CLI login from this directory.'),
   models: z.array(z.string()).default([]).description('Model IDs to show; empty discovers models through app-server.'),
-  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the window Codex reports for the model; before that, the models.dev value, else 128000.'),
+  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the models.dev value for the model; for a model models.dev does not list, the window Codex reports, else 128000.'),
   timeoutMs: z.natural().min(1000).max(2147483647).default(600000).description('Maximum time for one model step.'),
   idleTimeoutMs: z.natural().min(1000).max(2147483647).default(1800000).description('Release a session\'s Codex thread after this long without a request; the next request rebuilds it from DSH history.'),
 })
@@ -120,7 +120,7 @@ export class CodexAdapter extends LlmAdapter {
   /**
    * @param config - resolved plugin config plus the selected `codexPath`.
    * @param connect - `(executable, args, options) => connection`, replaceable in tests.
-   * @param modelsDev - optional `ModelsDev` cache for context windows before Codex reports one.
+   * @param modelsDev - optional `ModelsDev` cache of context windows; its value outranks the window Codex reports.
    */
   constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options), modelsDev = undefined) {
     super()
@@ -146,7 +146,7 @@ export class CodexAdapter extends LlmAdapter {
     const metadata = this.catalog?.find(entry => entry.model === base)
     const tier = metadata?.serviceTiers?.find(entry => entry.id === serviceTier)
     const efforts = metadata?.supportedReasoningEfforts ?? []
-    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(base) ?? this.modelsDev?.window(base) ?? FALLBACK_CONTEXT_WINDOW
+    const contextWindow = this.config.contextWindow ?? this.modelsDev?.window(base) ?? this.contextWindows.get(base) ?? FALLBACK_CONTEXT_WINDOW
     const name = serviceTier === undefined ? metadata?.displayName ?? model
       : tier === undefined ? model : `${metadata.displayName} ${tier.name}`
     return { provider, id: model, name, ...(tier?.description ? { description: tier.description } : {}), inputModalities: ['text'],
