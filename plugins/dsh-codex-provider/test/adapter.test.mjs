@@ -354,7 +354,7 @@ test('model catalog, reasoning efforts and the reported context window', async (
   } finally { await adapter.dispose() }
 })
 
-test('models.dev supplies the window until Codex reports one; the config overrides both', async () => {
+test('the models.dev window outranks the Codex report; the config overrides both', async () => {
   const f = fakes([[message('m1', 'Hi')]])
   let loads = 0
   const modelsDev = { load: async () => { loads++ }, window: model => ({ 'gpt-test': 400000 })[model] }
@@ -363,7 +363,7 @@ test('models.dev supplies the window until Codex reports one; the config overrid
     assert.equal((await adapter.listModels(provider))[0].context.contextWindow, 400000)
     await run(adapter, base)
     f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
-    assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 258400)
+    assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 400000, 'models.dev outranks the Codex report')
     assert.equal(loads, 2, 'Listing and resolving both check the cache')
     const fixed = new CodexAdapter({ models: ['gpt-test', 'unlisted'], contextWindow: 64000 }, undefined, modelsDev)
     assert.deepEqual((await fixed.listModels(provider)).map(m => m.context.contextWindow), [64000, 64000])
