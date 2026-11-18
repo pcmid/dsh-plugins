@@ -518,6 +518,49 @@
       ]
     },
     {
+      "name": "@pcmid/dsh-worktree-repos",
+      "title": {
+        "en": "Worktrees from nested repositories",
+        "zh": "从子目录仓库切出 worktree"
+      },
+      "description": {
+        "en": "For a workspace that is not a Git repository, turn on \"Scan Git repositories\" in its menu. New sessions there can then pick a Git repository among the workspace's first-level subdirectories and cut a worktree from a branch of it.",
+        "zh": "工作区本身不是 Git 仓库时，可在工作区菜单里开启「扫描 Git 仓库」。开启后，新会话可以选择工作区第一层子目录里的 Git 仓库，再选分支切出 worktree。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzViNGJiNyIvPgogIDxwYXRoIGQ9Ik0xMCAxOWE0IDQgMCAwIDEgNC00aDkuNWw0LjUgNWgyMmE0IDQgMCAwIDEgNCA0djIxYTQgNCAwIDAgMS00IDRIMTRhNCA0IDAgMCAxLTQtNHoiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHBhdGggZD0iTTI0IDMyaDdjMiAwIDMtLjUgNC41LTJsMy41LTMuNU0yNCAzMmg3YzIgMCAzIC41IDQuNSAybDMuNSAzLjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIyLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9IjIyIiBjeT0iMzIiIHI9IjMuNSIgZmlsbD0iI2ZmZmZmZiIvPgogIDxjaXJjbGUgY3g9IjQxLjUiIGN5PSIyNSIgcj0iMy41IiBmaWxsPSIjZmZmZmZmIi8+CiAgPGNpcmNsZSBjeD0iNDEuNSIgY3k9IjM5IiByPSIzLjUiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-worktree-repos#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-worktree-repos"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794975829,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "a0f65932e0dc47ddcb337b85bd3f01f5f7e536c9",
+            "path": "plugins/dsh-worktree-repos"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
       "name": "@vectorize-io/hindsight-coding-agents",
       "description": "Reflect-only Hindsight long-term memory for coding agents (harness-pluggable: opencode, …), with automatic background ingestion (no setup CLI).",
       "repository": {
