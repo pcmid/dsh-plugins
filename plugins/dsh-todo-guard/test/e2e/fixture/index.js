@@ -6,7 +6,10 @@
  * The model's reply depends on how many assistant messages the request
  * already carries: the first reply writes a three-item task list, the next
  * `config.workSteps` replies each read `notes.txt`, and the last one answers
- * in text without updating the list. Before answering the request that
+ * in text without updating the list. A read reply whose count is a key of
+ * `config.before` first emits that entry's `text` or `reasoning` block, the
+ * way a model writes a progress note before its tool call. Before answering
+ * the request that
  * carries `config.retune.replies` replies, it writes `config.retune.patch`
  * through the Settings service while the turn runs. Every request appends one
  * JSON line to `config.record` with its user-role messages.
@@ -27,11 +30,20 @@ function text(content) {
   return content.filter(block => block.type === 'text').map(block => block.text).join('')
 }
 
-function* toolCall(id, name, args) {
+/** One step's reply: optional text or reasoning, then one tool call. */
+function* toolCall(id, name, args, before = {}) {
+  let index = 0
+  for (const kind of ['reasoning', 'text']) {
+    if (before[kind] === undefined) continue
+    yield { type: 'block-start', index, blockType: kind }
+    yield { type: `${kind}-delta`, index, text: before[kind] }
+    yield { type: 'block-end', index, block: { type: kind, text: before[kind] } }
+    index += 1
+  }
   const json = JSON.stringify(args)
-  yield { type: 'block-start', index: 0, blockType: 'tool-call' }
-  yield { type: 'tool-call-delta', index: 0, id, name, argumentsDelta: json }
-  yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name, arguments: json } }
+  yield { type: 'block-start', index, blockType: 'tool-call' }
+  yield { type: 'tool-call-delta', index, id, name, argumentsDelta: json }
+  yield { type: 'block-end', index, block: { type: 'tool-call', id, name, arguments: json } }
   yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } }
   yield { type: 'finish', reason: { kind: 'tool-calls' } }
 }
@@ -67,7 +79,7 @@ class FixtureAdapter extends LlmAdapter {
       return
     }
     if (replies <= this.config.workSteps) {
-      yield* toolCall(`read-${replies}`, 'read', { file_path: this.config.notes })
+      yield* toolCall(`read-${replies}`, 'read', { file_path: this.config.notes }, this.config.before[replies])
       return
     }
     const answer = 'Done.'

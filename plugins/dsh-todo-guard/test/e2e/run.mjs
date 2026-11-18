@@ -3,17 +3,18 @@
  * End-to-end check of @pcmid/dsh-todo-guard against an installed Harness.
  *
  * Boots the `web` profile in a temporary DSH_HOME with this plugin and the
- * scripted fixture linked into it. The fixture writes the guard's settings
+ * scripted fixture linked into it. The fixture writes the guard's setting
  * through the Settings service, the path the plugin page's form takes:
- * `stepThreshold: 3` and `autoCompleteOnTurnEnd: true`. Its model writes a
- * three-item task list, reads a file in seven more steps without updating the
- * list, and then answers. The first reminder rides step 4, so the model sees
- * it in its fifth request. Before answering that request the fixture lowers
- * `stepThreshold` to 2 while the turn runs; the running plugin must use the new
- * value at once, so the next reminders ride steps 6 and 8 instead of step 7.
- * The stored log must end with a completed list, and the profile patch must
- * hold the saved values. The Harness CLI is the installed Desktop runtime
- * unless DSH_CLI names another `dsh` executable.
+ * `autoCompleteOnTurnEnd: false`. Its model writes a three-item task list,
+ * reads a file in seven more steps without updating the list, and then
+ * answers. Steps 4 and 7 write a progress note before their read, step 3 only
+ * reasons, and step 6 writes whitespace. A reminder must ride steps 4 and 7
+ * alone, so the model sees one in its fifth request and a second in its
+ * eighth. Before answering the fifth request the fixture switches
+ * `autoCompleteOnTurnEnd` on while the turn runs; the running plugin must use
+ * the new value at turn end, so the stored log must end with a completed list,
+ * and the profile patch must hold the saved value. The Harness CLI is the
+ * installed Desktop runtime unless DSH_CLI names another `dsh` executable.
  *
  * Usage: node test/e2e/run.mjs
  */
@@ -97,8 +98,9 @@ try {
   const patch = join(ROOT, 'boot.yml')
   const fixtureConfig = {
     record: RECORD, cwd: WORK, notes: NOTES, workSteps: WORK_STEPS,
-    settings: { stepThreshold: 3, callThreshold: 100, autoCompleteOnTurnEnd: true },
-    retune: { replies: 4, patch: { stepThreshold: 2 } },
+    before: { 2: { reasoning: 'Reading the notes again.' }, 3: { text: 'Now the second pass.' }, 5: { text: '  ' }, 6: { text: 'Now the last pass.' } },
+    settings: { autoCompleteOnTurnEnd: false },
+    retune: { replies: 4, patch: { autoCompleteOnTurnEnd: true } },
   }
   writeFileSync(patch, [
     '- id: hmr',
@@ -126,18 +128,21 @@ try {
   const requests = records().filter(r => r.sessionId === id)
   assert.deepEqual(requests.map(r => r.replies), [...Array(WORK_STEPS + 2).keys()], 'one request per step, nothing extra')
   assert.ok(requests[0].tools.includes('todo_write') && requests[0].tools.includes('read'), `tools: ${requests[0].tools}`)
-  // Without the mid-turn change the counts would be [0, 0, 0, 0, 1, 1, 1, 2, 2].
-  assert.deepEqual(requests.map(r => reminders(r).length), [0, 0, 0, 0, 1, 1, 2, 2, 3])
+  // Steps 2 to 8 read the notes; only the notes of steps 4 and 7 draw a reminder.
+  assert.deepEqual(requests.map(r => reminders(r).length), [0, 0, 0, 0, 1, 1, 1, 2, 2])
 
   const [first] = reminders(requests[4])
   assert.deepEqual(first.source, { kind: 'todo-guard', form: 'notice', summary: 'Todo list 0/3 completed · Read the notes' })
   assert.match(first.text, /^Todo list check: 0\/3 completed, 3 step\(s\) and 3 tool call\(s\) since your last todo_write\./)
   assert.match(first.text, /\n1\. \[in_progress\] Read the notes\n2\. \[pending\] Summarize the notes\n3\. \[pending\] Report the summary\n/)
-  assert.match(reminders(requests[6])[1].text, /^Todo list check: 0\/3 completed, 2 step\(s\)/)
+  assert.match(reminders(requests[7])[1].text, /^Todo list check: 0\/3 completed, 3 step\(s\) and 3 tool call\(s\)/)
 
   const log = sessionLog(id)
   const stored = log.filter(event => event.type === 'user/message' && event.data.source.kind === 'todo-guard')
-  assert.equal(stored.length, 3, 'every reminder is in the durable log')
+  assert.equal(stored.length, 2, 'every reminder is in the durable log')
+  const noted = log.filter(event => event.type === 'assistant/message' && event.data.message.content.some(block => block.type === 'text' && block.text.trim() !== ''))
+  assert.deepEqual(noted.map(event => event.data.step), [4, 7, 9], 'the notes and the final answer')
+  assert.deepEqual(stored.map(event => log.findLast(other => other.seq < event.seq && other.type === 'tool/result').data.step), [4, 7], 'each reminder follows its step\'s results')
   const writes = log.filter(event => event.type === 'todo/write')
   assert.equal(writes.length, 2, 'the model write and the turn-end completion')
   assert.ok(writes[1].data.todos.every(item => item.status === 'completed'))
@@ -145,8 +150,7 @@ try {
   assert.ok(writes[1].seq < log.findLast(event => event.type === 'turn/end').seq, 'completion is written inside the turn')
 
   const profilePatch = readFileSync(join(HOME, 'profiles', 'web', 'cordis.patch.yml'), 'utf8')
-  assert.match(profilePatch, /- id: todo-guard\n[\s\S]*stepThreshold: 2\n/)
-  assert.match(profilePatch, /callThreshold: 100\n[\s\S]*autoCompleteOnTurnEnd: true/)
+  assert.match(profilePatch, /- id: todo-guard\n[\s\S]*autoCompleteOnTurnEnd: true\n/)
   console.log(`ok   todo-guard e2e ${JSON.stringify({ id, reminders: stored.map(event => event.seq), completion: writes[1].seq })}`)
 } catch (error) {
   process.exitCode = 1
