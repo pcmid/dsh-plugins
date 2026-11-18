@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
-import { speedProjection as unit, legacySpeed, parseSpeed, registerSpeed, resolveSpeed, speedReceipt } from '../speed.js'
-import { CodexAdapter } from '../index.js'
+import { speedProjection as unit, legacySpeed, parseSpeed, registerSpeed, resolveSpeed, speedReceipt, supportedSpeeds } from '../speed.js'
+import { CodexAdapter, Config, apply } from '../index.js'
 import { fakes, message } from './fake-codex.mjs'
 
 const event = (type, data, seq) => ({ type, data, seq, time: seq })
@@ -19,6 +19,9 @@ test('speed capabilities downgrade Ultrafast to Fast, then standard; never upgra
   assert.equal(resolveSpeed('fast', ultra).serviceTier, 'priority')
   assert.equal(resolveSpeed('standard', ultra).serviceTier, undefined)
   assert.equal(resolveSpeed('fast', undefined).actual, 'standard')
+  assert.deepEqual(supportedSpeeds(ultra), ['standard', 'fast', 'ultrafast'])
+  assert.deepEqual(supportedSpeeds(fast), ['standard', 'fast'])
+  assert.deepEqual(supportedSpeeds(undefined), ['standard'])
   assert.equal(legacySpeed('gpt@priority'), 'fast')
   assert.equal(parseSpeed(' ON '), 'fast')
   assert.equal(parseSpeed('off'), 'standard')
@@ -53,19 +56,16 @@ test('successful invocation order, full replay, fork prefixes and truncated reve
   assert.equal(unit.stateSchema.safeParse(parent).success, true)
 })
 
-test('session selection reaches turn/start, isolates sessions, persists into replay metadata and ignores auxiliary calls', async () => {
+test('session selection reaches turn/start, isolates sessions and ignores auxiliary calls', async () => {
   const f = fakes([[message('1', 'one')], [message('2', 'two')], [message('3', 'three')]])
   const adapter = new CodexAdapter({}, f.connect)
   adapter.sessionSpeed = id => id === 'fast-session' ? 'ultrafast' : 'standard'
   const options = { provider: 'codex-provider', model: 'gpt-test', tools: [], messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }] }
   try {
-    const first = await Array.fromAsync(adapter.stream({ ...options, sessionId: 'fast-session' }))
-    assert.deepEqual(first.at(-1).replayState.response.codex.speed, { model: 'gpt-test', selected: 'ultrafast', actual: 'fast' })
+    await Array.fromAsync(adapter.stream({ ...options, sessionId: 'fast-session' }))
     await Array.fromAsync(adapter.stream({ ...options, sessionId: 'standard-session' }))
     await Array.fromAsync(adapter.stream({ ...options, sessionId: 'fast-session', purpose: 'title' }))
     assert.deepEqual(f.instances[0].calls.filter(c => c.method === 'turn/start').map(c => c.params.serviceTier), ['priority', null, null])
-    const observed = fold([event('assistant/message', { message: { source: { provider: 'codex-provider', replayState: first.at(-1).replayState } } }, 0)])
-    assert.equal(observed.lastUsed.actual, 'fast')
     adapter.config.models = ['gpt-test@priority', 'gpt-test@ultrafast', 'gpt-test']
     assert.deepEqual((await adapter.listModels('codex-provider')).map(m => m.id), ['gpt-test'])
   } finally { await adapter.dispose() }
@@ -124,4 +124,22 @@ test('real Session registry and command executor replay, checkpoint and fork the
     assert.equal(ctx.sessionProjections.viewCheckpoint(checkpoint).codexSpeed.selected, 'standard')
     assert.equal(ctx.sessionProjections.snapshot(session).values.codexSpeed.selected, 'standard')
   } finally { await Promise.all(forks.reverse().map(fork => fork.dispose())) }
+})
+
+test('the speeds route answers each model\'s supported speeds in the Connection RPC envelope', async () => {
+  let route, adapter
+  const ctx = {
+    llm: { registerConfigurableProviders() {}, registerAdapter: (_ids, value) => { adapter = value; return () => {} } },
+    inject(keys, callback) { if (keys[0] === 'connection') callback({ connection: { fetch: { register: value => { route = value } } } }) },
+    effect() {}, on() {}, get() {},
+  }
+  apply(ctx, { ...Config({}), providers: { get: () => ({ 'codex-provider': {} }) } })
+  adapter.loadCatalog = async () => [{ model: 'sol', serviceTiers: [{ id: 'priority' }, { id: 'ultrafast' }] }, { model: 'luna', serviceTiers: [{ id: 'priority' }] }]
+  assert.equal(route.path, '/api/pcmid/codex-provider/speeds')
+  const ask = async body => (await route.fetch(new Request('http://x/', { method: 'POST', body }))).json()
+  assert.deepEqual(await ask(JSON.stringify({ type: 'client-request', rpcId: 'r1', payload: {} })),
+    { type: 'server-response', rpcId: 'r1', result: { ok: true, value: { sol: ['standard', 'fast', 'ultrafast'], luna: ['standard', 'fast'] } } })
+  adapter.loadCatalog = async () => { throw new Error('codex down') }
+  assert.deepEqual((await ask('not json')).result, { ok: false, error: { code: 'internal', message: 'codex down', details: {} } })
+  await adapter.dispose()
 })

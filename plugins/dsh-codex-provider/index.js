@@ -10,7 +10,7 @@ import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
 import { MessageKeys, splitInstructions, threadSpec, toolNames } from './history.js'
 import { ModelsDev } from './models-dev.js'
-import { legacySpeed, registerSpeed, resolveSpeed, splitServiceTier } from './speed.js'
+import { legacySpeed, registerSpeed, resolveSpeed, splitServiceTier, supportedSpeeds } from './speed.js'
 export { splitServiceTier } from './speed.js'
 
 export const name = 'codex-provider'
@@ -311,7 +311,6 @@ export class CodexAdapter extends LlmAdapter {
       if (selected !== 'standard') await this.loadCatalog(signal)
       const speed = resolveSpeed(selected, this.catalog?.find(entry => entry.model === request.model))
       request.serviceTier = speed.serviceTier
-      request.speed = { model: request.model, selected, actual: speed.actual }
       const existing = key === undefined ? undefined : this.conversations.get(key)
       let plan
       if (existing && !existing.busy) {
@@ -378,6 +377,23 @@ export function apply(ctx, config) {
   let speeds
   ctx.inject(['sessionProjections', 'commands', 'sessions'], async scope => {
     speeds = await registerSpeed(scope, () => current?.adapter)
+  })
+  // The model menu offers only the speeds each model supports; speaks the Connection RPC envelope.
+  ctx.inject(['connection'], scope => {
+    scope.connection.fetch.register({
+      path: '/api/pcmid/codex-provider/speeds', methods: ['POST'], requestBody: 'buffered',
+      fetch: async request => {
+        const rpcId = (await request.json().catch(() => null))?.rpcId
+        let result
+        try {
+          const catalog = current ? await current.adapter.loadCatalog(request.signal) : []
+          result = { ok: true, value: Object.fromEntries(catalog.map(entry => [entry.model, supportedSpeeds(entry)])) }
+        } catch (error) {
+          result = { ok: false, error: { code: 'internal', message: error?.message || 'Could not read Codex speeds', details: {} } }
+        }
+        return Response.json({ type: 'server-response', rpcId: typeof rpcId === 'string' ? rpcId : 'invalid-request', result })
+      },
+    })
   })
   const sync = () => {
     const selected = providers.get()?.[name]

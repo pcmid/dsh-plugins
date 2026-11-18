@@ -32,17 +32,17 @@ export function resolveSpeed(selected, metadata) {
   return { selected, actual, serviceTier: actual === 'ultrafast' ? 'ultrafast' : actual === 'fast' ? 'priority' : undefined }
 }
 
-const lastUsedSchema = z.object({ model: z.string(), selected: speedSchema, actual: speedSchema }).nullable()
+/** Speeds a model runs at as chosen; `standard` always. */
+export const supportedSpeeds = metadata => SPEEDS.filter(speed => resolveSpeed(speed, metadata).actual === speed)
 
 export const speedProjection = {
   key: 'codexSpeed',
-  stateVersion: 1,
+  stateVersion: 2,
   stateSchema: z.object({
     selected: speedSchema.nullable(), selectedAt: z.number(),
     running: z.array(z.object({ id: z.string(), seq: z.number(), wanted: z.string() })),
-    lastUsed: lastUsedSchema,
   }),
-  init: () => ({ selected: null, selectedAt: -1, running: [], lastUsed: null }),
+  init: () => ({ selected: null, selectedAt: -1, running: [] }),
   apply(state, event) {
     const { data } = event
     if (event.type === 'command/run' && data.name === 'fast' && typeof data.args === 'string') {
@@ -59,17 +59,12 @@ export const speedProjection = {
       return { ...state, running: state.running.filter(entry => entry !== run),
         ...(accepted ? { selected, selectedAt: run.seq } : {}) }
     }
-    if (event.type === 'assistant/message' && data.message.source?.provider === 'codex-provider') {
-      const codex = data.message.source.replayState?.response?.codex
-      const parsed = lastUsedSchema.safeParse(codex?.speed)
-      if (parsed.success && parsed.data !== null) return { ...state, lastUsed: parsed.data }
-    }
     return state
   },
   wire: {
-    viewSchema: z.object({ selected: speedSchema.nullable(), lastUsed: lastUsedSchema }),
+    viewSchema: z.object({ selected: speedSchema.nullable() }),
     summary: false,
-    view: state => ({ selected: state.selected, lastUsed: state.lastUsed }),
+    view: state => ({ selected: state.selected }),
   },
 }
 
