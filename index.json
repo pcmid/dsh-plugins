@@ -633,11 +633,11 @@
       "versions": [
         {
           "version": "0.1.0",
-          "publishTimestamp": 1795005805,
+          "publishTimestamp": 1795012949,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "ed7e60334d00731583faed6a2b5e1d9e3814f07b",
+            "commit": "66d5c264b3921e7a20393e7b74a73c15c9b9e836",
             "path": "plugins/dsh-agent-monitor"
           },
           "engines": {
