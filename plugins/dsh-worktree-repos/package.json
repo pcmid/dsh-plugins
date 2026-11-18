@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-worktree-repos",
   "version": "0.1.0",
-  "description": "Scan the Git repositories directly under a workspace that is not a Git repository, so a new session can pick one and cut a worktree from it.",
+  "description": "A new session in a workspace that is not a Git repository can pick one of the Git repositories inside it and cut a worktree from it.",
   "author": "pcmid",
   "license": "MIT",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-worktree-repos#readme",
@@ -46,7 +46,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-context-menu",
         "@deepseek-ai/dsh-client-ui-settings",
-        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }

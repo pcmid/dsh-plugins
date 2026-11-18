@@ -1,14 +1,12 @@
 /**
  * Host half of @pcmid/dsh-worktree-repos: a new session in a workspace that is
- * not a Git checkout can move into one of the Git repositories directly under
- * that workspace, so Harness's worktree option can cut a worktree from it.
+ * not a Git checkout can move into one of the Git repositories under that
+ * workspace, so Harness's worktree option can cut a worktree from it.
  *
- * The workspaces with scanning turned on are this row's volatile Config,
- * toggled from the workspace menu in the browser half. Three owner-only
- * routes under `/api/pcmid/worktree-repos/` serve the browser half:
+ * How many directory levels are searched is this row's volatile `depth`
+ * Config. Two owner-only routes under `/api/pcmid/worktree-repos/` serve the
+ * browser half:
  *
- * - `probe` tells the workspace menu whether a workspace is a Git checkout;
- *   the menu offers scanning only outside one.
  * - `repositories` lists the repositories a new session may move into.
  * - `choose` moves the session's working directory into one of them, or back
  *   to the workspace, as Agent maintenance. An open worktree request is
@@ -29,10 +27,10 @@ export const inject = ['connection', 'agents', 'workingDirectory']
 /** Route prefix of the browser half's API. */
 const API = '/api/pcmid/worktree-repos'
 
-/** The list is volatile: a toggle applies to the next look at the new-session row without a reload. */
+/** The depth is volatile: a saved change applies to the next look at the new-session row without a reload. */
 export const Config = z.object({
-  workspaces: z.array(z.string()).default([]).volatile()
-    .description('Workspace directories with scanning on. A new session in a listed workspace that is not itself a Git checkout can move into a Git repository among its first-level subdirectories.'),
+  depth: z.natural().min(1).default(1).volatile()
+    .description('How many directory levels under the workspace are searched for Git repositories. 1 searches only its direct subdirectories.'),
 })
 
 /**
@@ -47,11 +45,11 @@ function current(value) {
 /**
  * Register the routes.
  * @param {import('@deepseek-ai/cordis').Context} ctx - plugin context.
- * @param {{ workspaces: unknown }} config - row Config.
+ * @param {{ depth: unknown }} config - row Config.
  */
 export function apply(ctx, config) {
   const operations = createOperations({
-    workspaces: () => current(config.workspaces),
+    depth: () => current(config.depth),
     agentOf: sessionId => ctx.agents.get(sessionId),
     // The predicate Harness uses before reusing a blank Session.
     started: (session) => {

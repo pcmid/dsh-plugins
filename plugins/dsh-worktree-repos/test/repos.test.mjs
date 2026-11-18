@@ -4,23 +4,35 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, before, describe, it } from 'node:test'
-import { HostError, createOperations, insideGitCheckout, listed, normalizePath, scanRepositories } from '../repos.js'
+import { HostError, createOperations, currentBranch, insideGitCheckout, normalizePath, scanRepositories } from '../repos.js'
 
 let root
 let workspace
 
+/** A repository directory whose HEAD names `head`. */
+async function repository(path, head = 'ref: refs/heads/main') {
+  await mkdir(join(path, '.git'), { recursive: true })
+  await writeFile(join(path, '.git', 'HEAD'), `${head}\n`)
+}
+
 before(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), 'dsh-worktree-repos-')))
   workspace = join(root, 'workspace')
-  await mkdir(join(workspace, 'beta', '.git'), { recursive: true })
+  await repository(join(workspace, 'beta'), 'ref: refs/heads/feature/x')
+  // A worktree checkout: `.git` is a file pointing at its Git directory.
+  await repository(join(root, 'alpha-git'), '0123456789abcdef0123456789abcdef01234567')
   await mkdir(join(workspace, 'alpha'), { recursive: true })
-  await writeFile(join(workspace, 'alpha', '.git'), 'gitdir: /elsewhere\n')
-  await mkdir(join(workspace, 'plain', 'nested', '.git'), { recursive: true })
-  await mkdir(join(workspace, '.hidden', '.git'), { recursive: true })
+  await writeFile(join(workspace, 'alpha', '.git'), 'gitdir: ../../alpha-git/.git\n')
+  await repository(join(workspace, 'group', 'nested'))
+  await repository(join(workspace, 'group', 'deeper', 'deepest'))
+  await repository(join(workspace, 'beta', 'inner'))
+  await repository(join(workspace, '.hidden'))
   await writeFile(join(workspace, 'file.txt'), '')
-  await mkdir(join(root, 'outside', '.git'), { recursive: true })
+  await mkdir(join(workspace, 'plain', 'empty'), { recursive: true })
+  await repository(join(root, 'outside'))
   await symlink(join(root, 'outside'), join(workspace, 'linked'))
-  await mkdir(join(root, 'checkout', '.git'), { recursive: true })
+  await symlink(workspace, join(workspace, 'group', 'loop'))
+  await repository(join(root, 'checkout'))
   await mkdir(join(root, 'checkout', 'sub'), { recursive: true })
 })
 
@@ -28,18 +40,11 @@ after(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-describe('normalizePath / listed', () => {
+describe('normalizePath', () => {
   it('ignores trailing separators but keeps roots', () => {
     assert.equal(normalizePath('/a/b/'), '/a/b')
     assert.equal(normalizePath('/'), '/')
     assert.equal(normalizePath('C:\\'), 'C:\\')
-  })
-
-  it('matches listed directories only', () => {
-    assert.equal(listed(['/a/b/'], '/a/b'), true)
-    assert.equal(listed(['/a/b'], '/a/c'), false)
-    assert.equal(listed(undefined, '/a/b'), false)
-    assert.equal(listed({ '/a/b': true }, '/a/b'), false)
   })
 })
 
@@ -51,18 +56,32 @@ describe('insideGitCheckout', () => {
 
   it('reports a directory outside any checkout', async () => {
     // The temporary directory sits outside a checkout unless the machine's tmp is one.
-    const expected = await insideGitCheckout(root)
-    assert.equal(await insideGitCheckout(workspace), expected)
+    assert.equal(await insideGitCheckout(workspace), await insideGitCheckout(root))
+  })
+})
+
+describe('currentBranch', () => {
+  it('reads the branch, a detached commit, and a worktree checkout', async () => {
+    assert.equal(await currentBranch(join(workspace, 'beta')), 'feature/x')
+    assert.equal(await currentBranch(join(workspace, 'alpha')), '0123456')
+    assert.equal(await currentBranch(join(workspace, 'group')), null)
   })
 })
 
 describe('scanRepositories', () => {
-  it('lists first-level repositories by name, skipping hidden, plain, and nested ones', async () => {
+  it('lists the direct subdirectories that are repositories by default', async () => {
     assert.deepEqual(await scanRepositories(workspace), [
-      { name: 'alpha', path: join(workspace, 'alpha') },
-      { name: 'beta', path: join(workspace, 'beta') },
-      { name: 'linked', path: join(root, 'outside') },
+      { name: 'alpha', path: join(workspace, 'alpha'), branch: '0123456' },
+      { name: 'beta', path: join(workspace, 'beta'), branch: 'feature/x' },
+      { name: 'linked', path: join(root, 'outside'), branch: 'main' },
     ])
+  })
+
+  it('goes deeper with a larger depth, without entering repositories or following links', async () => {
+    assert.deepEqual((await scanRepositories(workspace, 2)).map(repository => repository.name),
+      ['alpha', 'beta', 'group/nested', 'linked'])
+    assert.deepEqual((await scanRepositories(workspace, 5)).map(repository => repository.name),
+      ['alpha', 'beta', 'group/deeper/deepest', 'group/nested', 'linked'])
   })
 
   it('rejects a missing workspace', async () => {
@@ -71,14 +90,14 @@ describe('scanRepositories', () => {
 })
 
 /** Stub services around one Session whose header names `cwd`. */
-function setup({ cwd = workspace, current = cwd, workspaces = [workspace], started = false, loaded = true, requested = false } = {}) {
+function setup({ cwd = workspace, current = cwd, depth = 1, started = false, loaded = true, requested = false } = {}) {
   const session = { id: 's1', header: { cwd } }
   const agent = { session }
   const moves = []
   let directory = current
   let request = requested
   const operations = createOperations({
-    workspaces: () => workspaces,
+    depth: () => depth,
     agentOf: id => loaded && id === 's1' ? agent : undefined,
     started: () => started,
     cwdOf: () => directory,
@@ -95,27 +114,23 @@ function setup({ cwd = workspace, current = cwd, workspaces = [workspace], start
 }
 
 describe('repositories', () => {
-  it('lists the repositories of a scanned workspace', async () => {
-    const { operations } = setup()
-    const state = await operations.repositories({ sessionId: 's1' })
+  it('lists the repositories of a workspace that is not a checkout', async () => {
+    const state = await setup().operations.repositories({ sessionId: 's1' })
     assert.equal(state.workspace, workspace)
     assert.equal(state.current, workspace)
     assert.deepEqual(state.repositories.map(repository => repository.name), ['alpha', 'beta', 'linked'])
   })
 
-  it('keeps the picker of a Session already in a repository after scanning is turned off', async () => {
-    const beta = join(workspace, 'beta')
-    const state = await setup({ workspaces: [], current: beta }).operations.repositories({ sessionId: 's1' })
-    assert.equal(state.current, beta)
-    assert.equal(await setup({ workspaces: [], current: join(workspace, 'plain') }).operations.repositories({ sessionId: 's1' }), null)
+  it('follows the configured depth', async () => {
+    const state = await setup({ depth: 2 }).operations.repositories({ sessionId: 's1' })
+    assert.ok(state.repositories.some(repository => repository.name === 'group/nested'))
   })
 
-  it('does not apply when scanning is off, the Session started or is not loaded, or the workspace is a checkout', async () => {
-    assert.equal(await setup({ workspaces: [] }).operations.repositories({ sessionId: 's1' }), null)
+  it('does not apply once the Session started, when it is not loaded, in a checkout, or without repositories', async () => {
     assert.equal(await setup({ started: true }).operations.repositories({ sessionId: 's1' }), null)
     assert.equal(await setup({ loaded: false }).operations.repositories({ sessionId: 's1' }), null)
-    const checkout = join(root, 'checkout')
-    assert.equal(await setup({ cwd: checkout, workspaces: [checkout] }).operations.repositories({ sessionId: 's1' }), null)
+    assert.equal(await setup({ cwd: join(root, 'checkout') }).operations.repositories({ sessionId: 's1' }), null)
+    assert.equal(await setup({ cwd: join(workspace, 'plain') }).operations.repositories({ sessionId: 's1' }), null)
   })
 
   it('rejects a request without a Session id', async () => {
@@ -124,14 +139,13 @@ describe('repositories', () => {
 })
 
 describe('choose', () => {
-  it('moves the Session into a repository and back to the workspace', async () => {
+  it('moves the Session into a repository and back to the workspace root', async () => {
     const { operations, moves } = setup({ requested: true })
     const beta = join(workspace, 'beta')
     const first = await operations.choose({ sessionId: 's1', path: beta })
     assert.equal(first.state.current, beta)
     assert.equal(first.withdrawn, true)
     const again = await operations.choose({ sessionId: 's1', path: beta })
-    assert.equal(again.state.current, beta)
     assert.equal(again.withdrawn, false)
     const back = await operations.choose({ sessionId: 's1', path: null })
     assert.equal(back.state.current, workspace)
@@ -139,15 +153,9 @@ describe('choose', () => {
     assert.deepEqual(moves, [beta, workspace])
   })
 
-  it('lets a Session go back to the workspace after scanning is turned off, then hides the picker', async () => {
-    const { operations } = setup({ workspaces: [], current: join(workspace, 'beta') })
-    const back = await operations.choose({ sessionId: 's1', path: null })
-    assert.equal(back.state, null)
-  })
-
   it('refuses a directory that is not one of the repositories', async () => {
     const { operations, moves } = setup()
-    await assert.rejects(operations.choose({ sessionId: 's1', path: join(workspace, 'plain') }),
+    await assert.rejects(operations.choose({ sessionId: 's1', path: join(workspace, 'group') }),
       error => error instanceof HostError && error.code === 'not-found')
     assert.deepEqual(moves, [])
   })
@@ -155,13 +163,5 @@ describe('choose', () => {
   it('refuses a Session that can no longer change', async () => {
     await assert.rejects(setup({ started: true }).operations.choose({ sessionId: 's1', path: null }),
       error => error instanceof HostError && error.code === 'unavailable')
-  })
-})
-
-describe('probe', () => {
-  it('tells a checkout from a plain directory', async () => {
-    const { operations } = setup()
-    assert.deepEqual(await operations.probe({ path: join(root, 'checkout') }), { git: true })
-    await assert.rejects(operations.probe({ path: 'relative' }), error => error instanceof HostError)
   })
 })

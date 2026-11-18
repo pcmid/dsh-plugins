@@ -1,13 +1,13 @@
 /**
- * Repository scanning and the three Host operations, free of Harness imports
- * so they run under plain Node in tests.
+ * Repository scanning and the Host operations, free of Harness imports so they
+ * run under plain Node in tests.
  *
  * @module @pcmid/dsh-worktree-repos/repos
  */
-import { readdir, realpath, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join } from 'node:path'
+import { readFile, readdir, realpath, stat } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 
-/** An expected failure the client shows as is; anything else is answered as `internal`. */
+/** An expected failure the client shows in its own words; anything else is answered as `internal`. */
 export class HostError extends Error {
   /**
    * @param {string} code - stable failure code.
@@ -28,18 +28,6 @@ export class HostError extends Error {
 export function normalizePath(path) {
   const trimmed = path.replace(/[\\/]+$/u, '')
   return trimmed === '' || /^[A-Za-z]:$/u.test(trimmed) ? path : trimmed
-}
-
-/**
- * Whether scanning is on for a workspace directory.
- * @param {unknown} workspaces - the `workspaces` Config value.
- * @param {string} path - workspace directory.
- * @returns {boolean} whether the list names the directory.
- */
-export function listed(workspaces, path) {
-  if (!Array.isArray(workspaces)) return false
-  const wanted = normalizePath(path)
-  return workspaces.some(entry => typeof entry === 'string' && normalizePath(entry) === wanted)
 }
 
 /** Whether a path exists; an unreadable path counts as absent. */
@@ -66,26 +54,72 @@ export async function insideGitCheckout(directory) {
 }
 
 /**
- * List the Git repositories directly under a workspace: first-level
- * subdirectories, other than hidden ones, that have a `.git` entry.
- * @param {string} workspace - absolute workspace directory.
- * @returns {Promise<{ name: string, path: string }[]>} repositories by name; `path` is canonical.
+ * The checked-out branch of a repository, read from its `HEAD` file without
+ * running Git. A `.git` file (a worktree or submodule checkout) is followed to
+ * its Git directory.
+ * @param {string} repository - repository directory.
+ * @returns {Promise<string | null>} the branch, the short commit of a detached HEAD, or null when unreadable.
  */
-export async function scanRepositories(workspace) {
-  const entries = await readdir(workspace, { withFileTypes: true })
-  const found = await Promise.all(entries.map(async (entry) => {
-    if (entry.name.startsWith('.') || !(entry.isDirectory() || entry.isSymbolicLink())) return undefined
-    const path = join(workspace, entry.name)
-    if (!(await isDirectory(path)) || !(await exists(join(path, '.git')))) return undefined
-    return { name: entry.name, path: await realpath(path) }
-  }))
-  return found.filter(repository => repository !== undefined).sort((a, b) => a.name.localeCompare(b.name))
+export async function currentBranch(repository) {
+  try {
+    let gitDir = join(repository, '.git')
+    if ((await stat(gitDir)).isFile()) {
+      const pointer = /^gitdir:\s*(.+?)\s*$/mu.exec(await readFile(gitDir, 'utf8'))
+      if (pointer === null) return null
+      gitDir = resolve(repository, pointer[1])
+    }
+    const head = (await readFile(join(gitDir, 'HEAD'), 'utf8')).trim()
+    if (head.startsWith('ref: ')) return head.slice(5).replace(/^refs\/heads\//u, '')
+    return /^[\da-f]{7,}$/iu.test(head) ? head.slice(0, 7) : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * List the Git repositories under a workspace, down to `depth` directory
+ * levels: directories with a `.git` entry. Hidden directories are skipped, a
+ * repository is not searched for repositories inside it, and a symbolic link
+ * counts only when it points at a repository, so a link loop cannot recurse.
+ * @param {string} workspace - absolute workspace directory.
+ * @param {number} depth - levels searched; 1 searches the direct subdirectories.
+ * @returns {Promise<{ name: string, path: string, branch: string | null }[]>} repositories by name;
+ *   `name` is the path relative to the workspace and `path` is canonical.
+ */
+export async function scanRepositories(workspace, depth = 1) {
+  const found = []
+  async function walk(directory, prefix, level) {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      // An unreadable workspace is the caller's failure; an unreadable subdirectory holds no listed repository.
+      if (level === 1) throw error
+      return
+    }
+    await Promise.all(entries.map(async (entry) => {
+      const link = entry.isSymbolicLink()
+      if (entry.name.startsWith('.') || !(entry.isDirectory() || link)) return
+      const path = join(directory, entry.name)
+      if (!(await isDirectory(path))) return
+      const name = prefix === '' ? entry.name : `${prefix}/${entry.name}`
+      if (await exists(join(path, '.git'))) {
+        found.push({ name, path: await realpath(path), branch: await currentBranch(path) })
+      } else if (!link && level < depth) {
+        await walk(path, name, level + 1)
+      }
+    }))
+  }
+  await walk(workspace, '', 1)
+  found.sort((a, b) => a.name.localeCompare(b.name))
+  const seen = new Set()
+  return found.filter(repository => !seen.has(repository.path) && seen.add(repository.path))
 }
 
 /**
  * Build the Host operations over the live services.
  * @param {object} deps - lookups bound to the live Host services.
- * @param {() => unknown} deps.workspaces - current `workspaces` Config value.
+ * @param {() => number} deps.depth - current scan depth.
  * @param {(sessionId: string) => any} deps.agentOf - live Agent of a Session, if loaded.
  * @param {(session: any) => boolean} deps.started - whether the Session has started a turn.
  * @param {(session: any) => string} deps.cwdOf - the Session's current working directory.
@@ -93,22 +127,16 @@ export async function scanRepositories(workspace) {
  *   directory; resolves whether an open worktree request was withdrawn on the way.
  * @returns {Record<string, (payload: object, signal: AbortSignal) => Promise<unknown>>} operations by route name.
  */
-export function createOperations({ workspaces, agentOf, started, cwdOf, changeDirectory }) {
+export function createOperations({ depth, agentOf, started, cwdOf, changeDirectory }) {
   /**
-   * The picker state of a Session, or null while the picker does not apply. A
-   * Session already moved into a repository keeps its picker after scanning is
-   * turned off, so it can still move back.
+   * The picker state of a Session: null once it started, when its workspace is
+   * itself inside a Git checkout, or when the workspace holds no repository.
    */
   async function stateOf(agent) {
     const workspace = agent.session.header?.cwd
-    if (typeof workspace !== 'string' || started(agent.session)) return null
-    const current = cwdOf(agent.session)
-    const scanning = listed(workspaces(), workspace)
-    if (!scanning && normalizePath(current) === normalizePath(workspace)) return null
-    if (await insideGitCheckout(workspace)) return null
-    const repositories = await scanRepositories(workspace)
-    if (!scanning && !repositories.some(repository => normalizePath(repository.path) === normalizePath(current))) return null
-    return { workspace, current, repositories }
+    if (typeof workspace !== 'string' || started(agent.session) || await insideGitCheckout(workspace)) return null
+    const repositories = await scanRepositories(workspace, depth())
+    return repositories.length === 0 ? null : { workspace, current: cwdOf(agent.session), repositories }
   }
 
   function sessionAgent(payload) {
@@ -117,13 +145,7 @@ export function createOperations({ workspaces, agentOf, started, cwdOf, changeDi
   }
 
   return {
-    /** Whether a workspace directory is inside a Git checkout; the workspace menu offers scanning only outside one. */
-    async probe(payload) {
-      if (typeof payload.path !== 'string' || !isAbsolute(payload.path)) throw new HostError('bad-request', 'path must be an absolute directory')
-      return { git: await insideGitCheckout(payload.path) }
-    },
-
-    /** The repositories a new Session may move into, or null when scanning is off, the workspace is a checkout, or the Session started. */
+    /** The repositories a new Session may move into, or null while the picker does not apply. */
     async repositories(payload) {
       const agent = sessionAgent(payload)
       return agent === undefined ? null : await stateOf(agent)
@@ -141,8 +163,7 @@ export function createOperations({ workspaces, agentOf, started, cwdOf, changeDi
       const target = payload.path === null ? state.workspace : state.repositories.find(repository => repository.path === payload.path)?.path
       if (target === undefined) throw new HostError('not-found', 'The repository is no longer in this workspace.')
       const withdrawn = normalizePath(target) !== normalizePath(state.current) && await changeDirectory(agent, target, signal)
-      const next = await stateOf(agent)
-      return { state: next, withdrawn }
+      return { state: await stateOf(agent), withdrawn }
     },
   }
 }
