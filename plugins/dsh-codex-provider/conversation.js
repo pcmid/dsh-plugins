@@ -23,7 +23,8 @@ export function planContinuation(state, request) {
   if (assistant.role !== 'assistant' || marker?.thread !== state.threadId || marker?.step !== state.step) return undefined
   const tail = request.messages.slice(committed.length + 1)
   if (state.awaiting) {
-    if (request.effort !== state.effort) return undefined
+    // Effort and service tier are set when a turn starts; the waiting turn cannot change them.
+    if (request.effort !== state.effort || request.serviceTier !== state.serviceTier) return undefined
     const calls = assistant.content.filter(block => block.type === 'tool-call').map(block => block.id)
     const results = tail.slice(0, state.awaiting.size)
     const answered = new Set(results.map(message => message.role === 'tool' ? message.toolCallId : undefined))
@@ -153,6 +154,7 @@ export class Conversation {
     this.names = request.names
     this.provider = request.provider
     this.effort = request.effort
+    this.serviceTier = request.serviceTier
     this.onUsageWindow = onUsageWindow
     this.committed = []
     this.step = 0
@@ -235,8 +237,10 @@ export class Conversation {
     }
     this.awaiting = undefined
     this.effort = request.effort
+    this.serviceTier = request.serviceTier
+    // An explicit null runs the standard tier, also when the user's Codex config sets `service_tier`.
     const { turn } = await this.connection.request('turn/start', {
-      threadId: this.threadId, input: [], ...(request.effort ? { effort: request.effort } : {}),
+      threadId: this.threadId, input: [], serviceTier: request.serviceTier ?? null, ...(request.effort ? { effort: request.effort } : {}),
     })
     this.turnId = turn.id
     this.turnActive = true
@@ -267,7 +271,7 @@ export class Conversation {
       this.committed = request.keys
       this.awaiting = kind === 'tool-calls' ? new Map(batch.map(id => [id, this.requested.get(id)])) : undefined
       yield { type: 'finish', reason: { kind },
-        replayState: { response: { codex: { thread: this.threadId, step: this.step, items, ...(nested.length ? { nested } : {}) } } } }
+        replayState: { response: { codex: { thread: this.threadId, step: this.step, items, speed: request.speed, ...(nested.length ? { nested } : {}) } } } }
     }.bind(this)
     while (true) {
       const ready = responseDone && batch.length && batch.every(id => this.requested.has(id))

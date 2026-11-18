@@ -13,7 +13,7 @@ const reasoning = { type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_te
 const call = (id, name, args) => ({ type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name, arguments: JSON.stringify(args), status: 'completed' })
 const message = (id, text) => ({ type: 'message', id, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] })
 
-async function fixture(outputs) {
+async function fixture(outputs, speedCatalog = false) {
   const recorded = []
   const server = createServer(async (req, res) => {
     let data = Buffer.concat(await Array.fromAsync(req))
@@ -37,7 +37,19 @@ async function fixture(outputs) {
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const codexHome = await mkdtemp(join(tmpdir(), 'dsh-codex-e2e-'))
+  if (speedCatalog) await writeFile(join(codexHome, 'models.json'), JSON.stringify({ models: [{
+    slug: 'gpt-6.2-sol', display_name: 'GPT Fixture', description: 'Loopback speed fixture',
+    default_reasoning_level: 'low', supported_reasoning_levels: [{ effort: 'low', description: 'Low' }],
+    shell_type: 'shell_command', visibility: 'list', supported_in_api: true, priority: 1,
+    additional_speed_tiers: ['fast', 'ultrafast'],
+    service_tiers: [{ id: 'priority', name: 'Fast', description: 'Fast' }, { id: 'ultrafast', name: 'Ultrafast', description: 'Ultrafast' }],
+    model_messages: { instructions_template: 'Fixture' },
+    supports_reasoning_summaries: false, support_verbosity: false,
+    truncation_policy: { mode: 'bytes', limit: 10000 }, supports_parallel_tool_calls: true,
+    experimental_supported_tools: [], context_window: 128000, input_modalities: ['text'],
+  }] }))
   await writeFile(join(codexHome, 'config.toml'), [
+    ...(speedCatalog ? [`model_catalog_json=\"${join(codexHome, 'models.json')}\"`] : []),
     'model_provider="fixture"', 'model="fixture-model"',
     '[model_providers.fixture]', 'name="Fixture"', 'wire_api="responses"',
     `base_url="http://127.0.0.1:${server.address().port}/v1"`, 'requires_openai_auth=false',
@@ -126,4 +138,21 @@ test('real Codex keeps one thread per session, pauses on DSH tools and rebuilds 
     await restarted?.dispose()
     await f.close()
   }
+})
+
+test('real Codex sends the selected tier and capability downgrades to the loopback API', { timeout: 60000 }, async () => {
+  const f = await fixture([[message('speed_1', 'Ultra')], [message('speed_2', 'Fast')], [message('speed_3', 'Standard')]], true)
+  const adapter = new CodexAdapter({ codexPath: process.env.CODEX_BIN ?? 'codex', codexHome: f.codexHome, timeoutMs: 20000 })
+  adapter.sessionSpeed = () => 'ultrafast'
+  const options = { provider: 'codex-provider', model: 'gpt-6.2-sol', sessionId: 'speed', tools: [], messages: [user('Hello')] }
+  try {
+    const first = await Array.fromAsync(adapter.stream(options))
+    assert.deepEqual(adapter.catalog[0].serviceTiers.map(tier => tier.id), ['priority', 'ultrafast'])
+    adapter.catalog[0].serviceTiers = [{ id: 'priority' }]
+    const second = await Array.fromAsync(adapter.stream({ ...options, messages: [...options.messages, assistantOf(first, options), user('Again')] }))
+    adapter.catalog[0].serviceTiers = []
+    await Array.fromAsync(adapter.stream({ ...options, messages: [...options.messages, assistantOf(first, options), user('Again'), assistantOf(second, options), user('Once more')] }))
+    assert.deepEqual(f.recorded.map(r => r.body.service_tier ?? null), ['ultrafast', 'priority', null])
+    assert.equal(new Set(f.recorded.map(r => r.body.prompt_cache_key)).size, 1)
+  } finally { await adapter.dispose(); await f.close() }
 })

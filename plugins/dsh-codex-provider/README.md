@@ -6,7 +6,7 @@
 
 ## 安装与选择模型
 
-需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）和 `0.167.2` 上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
+需要 DSH `0.2.2-rc.1` 和 Codex CLI。已在 Codex `0.166.0-alpha.6`（ChatGPT 桌面版自带的 CLI：`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`）、`0.167.2` 和 `0.169.0` 上验证。插件依赖 app-server 的实验性接口，升级 Codex 后应重新运行端到端测试。
 
 ```sh
 codex login
@@ -14,6 +14,10 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 ```
 
 安装插件不会启动 Codex。在 **设置 → 模型 → 添加模型提供商** 选择 **Codex Provider**，点击 **保存** 后启用，再在模型选择器选择它的模型。模型列表来自 app-server 的 `model/list`；也可在插件配置里用 `models` 固定列表。其他供应商的请求不会经过 Codex。
+
+模型列表只显示基础模型，不再显示 Fast/Ultrafast 变体。在会话模型菜单选择 **Codex 速度**，或运行 `/fast`（切换标准/Fast）、`/fast on`、`/fast off`、`/fast standard|fast|ultrafast`（`ultra` 是 `ultrafast` 的别名）。选择按会话保存，恢复和分叉从成功命令日志重建；不会改写旧记录。旧会话的 `@priority` / `@ultrafast` 模型在未显式选择速度时仍作为兼容基线。
+
+Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每轮按 Codex `model/list` 的服务档位计算并传入 `turn/start`，标准档显式传 `null`，不受用户 Codex 配置 `service_tier` 影响。菜单区分所选档位与上次请求的有效档位；有效档位表示插件实际请求的档位，不保证后端计费或额度。较高速度可能消耗更多额度。两轮间切换速度保留线程；工具等待期间改变有效档位则从 DSH 历史重建。
 
 添加或 **编辑** 时只有一项 **codex 路径**（配置键 `codexPath`，可用 `~` 表示家目录）：插件用这个 Codex 可执行文件运行 `app-server --stdio`。留空时从 `PATH` 查找 `codex`；桌面应用找不到时填写完整路径，例如 ChatGPT 自带的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`。插件需要自己启动 app-server，才能用启动参数关掉 Codex 本会注入请求的内容，因此不支持连接已经在运行的 app-server。
 
@@ -34,7 +38,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 
 省略 `providers.codex-provider` 时供应商保持未启用。`codexHome` 未设置时沿用进程环境及 Codex 默认目录；需要登录时在同一目录执行 `CODEX_HOME=/absolute/path codex login`。
 
-`contextWindow` 未设置时，模型窗口按以下顺序取值：Codex 在请求后报告的窗口；[models.dev](https://models.dev/api.json) 中 `openai` 供应商对应模型的 `limit.context`；都没有时按 128000 计算。models.dev 的数据缓存在 `<DSH_HOME>/codex-provider/models-dev.json`，超过一天后在下一次查询模型信息时后台更新；没有缓存时等待第一次拉取，最多 15 秒。拉取失败只记录警告，一小时后再试。models.dev 记录的是 OpenAI API 的上限（如 gpt-6-sol 为 1050000），通常大于 ChatGPT 登录的 Codex 实际允许的窗口（如 272000 的 95%），因此 Codex 报告的值优先；第一次请求超出实际窗口时，Codex 返回上下文超限错误，由 DSH 压缩后重试。
+`contextWindow` 未设置时，模型窗口按以下顺序取值：[models.dev](https://models.dev/api.json) 中 `openai` 供应商对应模型的 `limit.context`；models.dev 没有该模型时，用 Codex 在请求后报告的窗口；都没有时按 128000 计算。models.dev 的数据缓存在 `<DSH_HOME>/codex-provider/models-dev.json`，超过一天后在下一次查询模型信息时后台更新；没有缓存时等待第一次拉取，最多 15 秒。拉取失败只记录警告，一小时后再试。models.dev 记录的是 OpenAI API 的上限（如 gpt-6-sol 为 1050000），可能大于 ChatGPT 登录的 Codex 实际允许的窗口（如 272000 的 95%）；请求超出实际窗口时，Codex 返回上下文超限错误，由 DSH 压缩后重试。
 
 ## DSH 如何调度
 
@@ -42,7 +46,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 2. 每个 DSH 会话对应一个 ephemeral Codex 线程。DSH 系统提示词作为线程的 base instructions，DSH 工具按原名作为 `dynamicTools` 传入。Codex 不接受的名字（如 `exec`、`exec_command`、`mcp__*`）会改写：`mcp__a__b` 变为 `mcp_a__b`，其余加稳定的哈希后缀。
 3. 模型调用 DSH 工具时，插件把这批调用作为本次 DSH 步骤的结果交回 Harness，Codex 的这一轮停在未答复的 `item/tool/call` 请求上。DSH 照常执行工具；下一次 DSH 请求用真实结果答复这些请求，同一轮继续生成。上一轮结束后的新用户消息追加到同一线程。因此模型跨步骤保留历史、加密推理和 prompt cache 身份，不需要重放。
 4. 当前 Codex 模型使用 code mode：模型在 `exec` 脚本里调用 DSH 工具。同一脚本同时发起的调用（`Promise.all`）作为一批交给 DSH，结果返回后脚本继续执行。
-5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
+5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度或服务档位变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
 
 辅助请求（标题、摘要等带 `purpose` 的请求）使用单独的临时线程，结束后立即释放。取消、单步超时、消费方提前结束或出错时，中断这一轮并丢弃线程，下一次请求重建。
 

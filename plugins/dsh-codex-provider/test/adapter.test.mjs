@@ -6,7 +6,7 @@ import assert from 'node:assert/strict'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { LlmError } from '@deepseek-ai/dsh-llm'
 import * as plugin from '../index.js'
-import { CodexAdapter, Config, apply, name } from '../index.js'
+import { CodexAdapter, Config, apply, name, splitServiceTier } from '../index.js'
 import { planContinuation } from '../conversation.js'
 import { MessageKeys, projectHistory, toolNames } from '../history.js'
 import { call, exec, fakes, message, reasoning } from './fake-codex.mjs'
@@ -127,6 +127,19 @@ test('a new user turn after a completed turn appends to the same thread', async 
   } finally { await adapter.dispose() }
 })
 
+test('a Fast model runs the Codex model at the priority tier; switching between turns keeps the thread', async () => {
+  assert.deepEqual(splitServiceTier('gpt-5.6-sol@priority'), { model: 'gpt-5.6-sol', serviceTier: 'priority' })
+  for (const id of ['gpt-5.6-sol', '@priority', 'gpt-5.6-sol@']) assert.deepEqual(splitServiceTier(id), { model: id, serviceTier: undefined })
+  const { adapter, codex } = setup([[message('m1', 'Fast.')], [message('m2', 'Standard.')]])
+  try {
+    const first = await run(adapter, { ...base, model: 'gpt-test@priority' })
+    await run(adapter, { ...base, messages: [...base.messages, assistantOf(first), user('More')] })
+    assert.equal(codex().threads.size, 1)
+    assert.equal(codex().calls.find(c => c.method === 'thread/start').params.model, 'gpt-test')
+    assert.deepEqual(codex().calls.filter(c => c.method === 'turn/start').map(c => c.params.serviceTier), ['priority', null])
+  } finally { await adapter.dispose() }
+})
+
 test('input that arrives with tool results is queued after the results', async () => {
   const { adapter, codex } = setup([[call('a', 'read')], [message('m1', 'Ok.')]])
   try {
@@ -143,6 +156,7 @@ test('a request that does not continue the thread rebuilds it from DSH history, 
     options => ({ ...options, tools: tools.slice(0, 1) }),
     options => ({ ...options, model: 'gpt-other' }),
     options => ({ ...options, reasoningEffort: 'high' }),
+    options => ({ ...options, model: 'gpt-test@priority' }),
     options => ({ ...options, messages: [options.messages[0], user('Compacted summary'), ...options.messages.slice(2)] }),
     options => ({ ...options, messages: options.messages.slice(0, -1) }),
   ]) {
@@ -306,37 +320,40 @@ test('continuation requires the exact committed prefix and the waiting calls', (
   const assistant = { role: 'assistant', content: [{ type: 'tool-call', id: 'a' }], source: { provider, replayState: { response: { codex: { thread: 't', step: 1 } } } } }
   const result = { role: 'tool', toolCallId: 'a', content: [] }
   const messages = [user('Hi'), assistant, result]
-  const state = { spec: 's', threadId: 't', step: 1, committed: [keys.of(messages[0])], awaiting: new Map([['a', 7]]), effort: undefined }
-  const request = list => ({ spec: 's', provider, effort: undefined, messages: list, keys: list.map(m => keys.of(m)) })
+  const state = { spec: 's', threadId: 't', step: 1, committed: [keys.of(messages[0])], awaiting: new Map([['a', 7]]), effort: undefined, serviceTier: undefined }
+  const request = (list, serviceTier) => ({ spec: 's', provider, effort: undefined, serviceTier, messages: list, keys: list.map(m => keys.of(m)) })
   assert.equal(planContinuation(state, request(messages)).kind, 'tools')
   assert.equal(planContinuation(state, request([...messages, user('More')])).extra.length, 1)
   assert.equal(planContinuation(state, request(messages.slice(0, 2))), undefined, 'Missing results')
   assert.equal(planContinuation({ ...state, step: 2 }, request(messages)), undefined, 'Another step')
   assert.equal(planContinuation({ ...state, spec: 'x' }, request(messages)), undefined, 'Another thread spec')
+  assert.equal(planContinuation(state, request(messages, 'priority')), undefined, 'Another service tier for the waiting turn')
   assert.equal(planContinuation(state, request([user('Edited'), assistant, result])), undefined, 'Edited history')
-  assert.equal(planContinuation({ ...state, awaiting: undefined }, request([user('Hi'), assistant, user('Next')])).kind, 'turn')
+  assert.equal(planContinuation({ ...state, awaiting: undefined }, request([user('Hi'), assistant, user('Next')], 'priority')).kind, 'turn')
   assert.equal(planContinuation({ ...state, awaiting: undefined }, request([user('Hi'), assistant])), undefined, 'Nothing new')
 })
 
 test('model catalog, reasoning efforts and the reported context window', async () => {
   const { adapter, f } = setup([[message('m1', 'Hi')]])
   try {
-    const [model] = await adapter.listModels(provider)
+    const [model, fast] = await adapter.listModels(provider)
     assert.deepEqual([model.id, model.name, model.context.contextWindow], ['gpt-test', 'GPT Test', 128000])
     assert.deepEqual(model.reasoning.efforts.map(e => e.id), ['low', 'high'])
+    assert.equal(fast, undefined, 'Only base models are listed')
     assert.equal((await adapter.resolveModel(provider, 'gpt-test')).reasoning.defaultEffort, 'high')
     assert.equal(f.instances.length, 1, 'The catalog is loaded once')
     await run(adapter, base)
     assert.equal(f.instances.length, 1)
     f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
     assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 258400)
+    assert.equal((await adapter.resolveModel(provider, 'gpt-test@priority')).context.contextWindow, 258400)
     const fixed = new CodexAdapter({ models: ['custom'], contextWindow: 64000 }, () => { throw new Error('Must not start Codex') })
     assert.deepEqual((await fixed.listModels(provider)).map(m => [m.id, m.context.contextWindow]), [['custom', 64000]])
     assert.equal((await fixed.resolveModel(provider, 'custom')).id, 'custom')
   } finally { await adapter.dispose() }
 })
 
-test('models.dev supplies the window until Codex reports one; the config overrides both', async () => {
+test('the models.dev window outranks the Codex report; the config overrides both', async () => {
   const f = fakes([[message('m1', 'Hi')]])
   let loads = 0
   const modelsDev = { load: async () => { loads++ }, window: model => ({ 'gpt-test': 400000 })[model] }
@@ -345,7 +362,7 @@ test('models.dev supplies the window until Codex reports one; the config overrid
     assert.equal((await adapter.listModels(provider))[0].context.contextWindow, 400000)
     await run(adapter, base)
     f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
-    assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 258400)
+    assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 400000, 'models.dev outranks the Codex report')
     assert.equal(loads, 2, 'Listing and resolving both check the cache')
     const fixed = new CodexAdapter({ models: ['gpt-test', 'unlisted'], contextWindow: 64000 }, undefined, modelsDev)
     assert.deepEqual((await fixed.listModels(provider)).map(m => m.context.contextWindow), [64000, 64000])
@@ -361,13 +378,14 @@ test('the provider registers only while enabled and follows live settings change
   assert.equal(new CodexAdapter({ codexPath: '~/.local/share/mise/shims/codex' }).config.codexPath, join(homedir(), '.local/share/mise/shims/codex'))
   const registrations = []
   const listeners = {}
+  const cleanups = []
   const ctx = {
     llm: { registerAdapter(ids, adapter) {
       const entry = { ids, adapter, active: true }
       registrations.push(entry)
       return () => { entry.active = false }
     }, registerConfigurableProviders() {} },
-    inject() {}, effect: f => f(), on(event, listener) { listeners[event] = listener }, get() {},
+    inject() {}, effect: f => { const cleanup = f(); if (typeof cleanup === 'function') cleanups.push(cleanup) }, on(event, listener) { listeners[event] = listener }, get() {},
   }
   let value = {}
   apply(ctx, { ...Config({}), providers: { get: () => value } })
@@ -384,6 +402,13 @@ test('the provider registers only while enabled and follows live settings change
   value = {}
   listeners['loader/volatile-update']()
   assert.ok(!registrations[1].active && registrations[1].adapter.disposed)
+  value = { [name]: {} }
+  listeners['loader/volatile-update']()
+  const adapter = registrations[2].adapter
+  adapter.connect = fakes([]).connect
+  const connection = await adapter.open()
+  await Promise.all(cleanups.map(cleanup => cleanup()))
+  assert.ok(adapter.disposed && connection.isClosed, 'Unloading closes Codex through an owned effect')
 })
 
 test('the real DSH runtime registers, streams through and unloads the plugin', async () => {

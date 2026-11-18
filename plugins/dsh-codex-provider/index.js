@@ -10,6 +10,8 @@ import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
 import { MessageKeys, splitInstructions, threadSpec, toolNames } from './history.js'
 import { ModelsDev } from './models-dev.js'
+import { legacySpeed, registerSpeed, resolveSpeed, splitServiceTier } from './speed.js'
+export { splitServiceTier } from './speed.js'
 
 export const name = 'codex-provider'
 export const inject = ['llm']
@@ -23,7 +25,7 @@ export const Config = z.object({
   providers: z.dict(Profile).default({}).volatile().description('Enabled from Settings → Models; absent keeps the provider off.'),
   codexHome: z.string().description('Optional CODEX_HOME; uses the CLI login from this directory.'),
   models: z.array(z.string()).default([]).description('Model IDs to show; empty discovers models through app-server.'),
-  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the window Codex reports for the model; before that, the models.dev value, else 128000.'),
+  contextWindow: z.natural().min(1).description('DSH context budget. Empty uses the models.dev value for the model; for a model models.dev does not list, the window Codex reports, else 128000.'),
   timeoutMs: z.natural().min(1000).max(2147483647).default(600000).description('Maximum time for one model step.'),
   idleTimeoutMs: z.natural().min(1000).max(2147483647).default(1800000).description('Release a session\'s Codex thread after this long without a request; the next request rebuilds it from DSH history.'),
 })
@@ -109,7 +111,7 @@ export class CodexAdapter extends LlmAdapter {
   /**
    * @param config - resolved plugin config plus the selected `codexPath`.
    * @param connect - `(executable, args, options) => connection`, replaceable in tests.
-   * @param modelsDev - optional `ModelsDev` cache for context windows before Codex reports one.
+   * @param modelsDev - optional `ModelsDev` cache of context windows; its value outranks the window Codex reports.
    */
   constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options), modelsDev = undefined) {
     super()
@@ -131,10 +133,14 @@ export class CodexAdapter extends LlmAdapter {
   providerInfo(provider) { return { id: provider, name: 'Codex Provider' } }
 
   modelInfo(provider, model) {
-    const metadata = this.catalog?.find(entry => entry.model === model)
+    const { model: base, serviceTier } = splitServiceTier(model)
+    const metadata = this.catalog?.find(entry => entry.model === base)
+    const tier = metadata?.serviceTiers?.find(entry => entry.id === serviceTier)
     const efforts = metadata?.supportedReasoningEfforts ?? []
-    const contextWindow = this.config.contextWindow ?? this.contextWindows.get(model) ?? this.modelsDev?.window(model) ?? FALLBACK_CONTEXT_WINDOW
-    return { provider, id: model, name: metadata?.displayName ?? model, inputModalities: ['text'],
+    const contextWindow = this.config.contextWindow ?? this.modelsDev?.window(base) ?? this.contextWindows.get(base) ?? FALLBACK_CONTEXT_WINDOW
+    const name = serviceTier === undefined ? metadata?.displayName ?? model
+      : tier === undefined ? model : `${metadata.displayName} ${tier.name}`
+    return { provider, id: model, name, ...(tier?.description ? { description: tier.description } : {}), inputModalities: ['text'],
       context: { contextWindow },
       ...(efforts.length ? { reasoning: {
         efforts: efforts.map(effort => ({ id: effort.reasoningEffort, name: effort.reasoningEffort, description: effort.description })),
@@ -154,9 +160,9 @@ export class CodexAdapter extends LlmAdapter {
 
   async listModels(provider) {
     await this.modelsDev?.load()
-    if (this.config.models.length) return this.config.models.map(model => this.modelInfo(provider, model))
+    if (this.config.models.length) return [...new Set(this.config.models.map(id => splitServiceTier(id).model))].map(model => this.modelInfo(provider, model))
     try {
-      return (await this.loadCatalog()).map(model => this.modelInfo(provider, model.model))
+      return (await this.loadCatalog()).map(entry => this.modelInfo(provider, entry.model))
     } catch (error) {
       throw toLlmError(error)
     }
@@ -261,10 +267,12 @@ export class CodexAdapter extends LlmAdapter {
   prepare(options) {
     const { instructions, messages } = splitInstructions(options)
     const names = toolNames(options.tools)
+    const { model, serviceTier } = splitServiceTier(options.model)
     return {
-      provider: options.provider, model: options.model, effort: options.reasoningEffort,
+      provider: options.provider, model, serviceTier, effort: options.reasoningEffort,
       instructions, names, messages, keys: messages.map(message => this.keys.of(message)),
-      spec: threadSpec(options.model, instructions, names.specs),
+      // The tier is not part of the thread: switching Fast on or off between turns keeps it.
+      spec: threadSpec(model, instructions, names.specs),
     }
   }
 
@@ -299,6 +307,11 @@ export class CodexAdapter extends LlmAdapter {
     let owned = false
     let finished = false
     try {
+      const selected = options.purpose === undefined ? this.sessionSpeed?.(options.sessionId) ?? legacySpeed(options.model) : legacySpeed(options.model)
+      if (selected !== 'standard') await this.loadCatalog(signal)
+      const speed = resolveSpeed(selected, this.catalog?.find(entry => entry.model === request.model))
+      request.serviceTier = speed.serviceTier
+      request.speed = { model: request.model, selected, actual: speed.actual }
       const existing = key === undefined ? undefined : this.conversations.get(key)
       let plan
       if (existing && !existing.busy) {
@@ -362,6 +375,10 @@ export function apply(ctx, config) {
   // The route exists only while the Models page has enabled the provider; a changed
   // app-server path replaces the adapter and its app-server process.
   let current
+  let speeds
+  ctx.inject(['sessionProjections', 'commands', 'sessions'], async scope => {
+    speeds = await registerSpeed(scope, () => current?.adapter)
+  })
   const sync = () => {
     const selected = providers.get()?.[name]
     const codexPath = selected === undefined ? undefined : selected.codexPath?.trim() || 'codex'
@@ -373,11 +390,15 @@ export function apply(ctx, config) {
     current = undefined
     if (codexPath === undefined) return
     const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev)
+    adapter.sessionSpeed = id => {
+      const session = ctx.get('sessions')?.get(id)
+      return session && speeds ? speeds.stateOf(session).selected : undefined
+    }
     current = { codexPath, adapter, unregister: ctx.llm.registerAdapter([name], adapter) }
   }
   sync()
   ctx.on('loader/volatile-update', sync)
-  ctx.on('dispose', () => {
+  ctx.effect(() => () => {
     current?.unregister()
     return current?.adapter.dispose()
   })
