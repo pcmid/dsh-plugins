@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-todo-guard",
-  "version": "0.1.0",
-  "description": "Reminds the agent to update its todo_write list during long tool-heavy turns, and can complete leftover items when a turn ends normally.",
+  "version": "0.2.0",
+  "description": "Reminds the agent to update its todo_write list when it writes a progress note between tool calls, and can complete leftover items when a turn ends normally.",
   "author": "pcmid",
   "license": "MIT",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-todo-guard#readme",

@@ -5,11 +5,13 @@
  * tool-heavy turn can leave it showing its first item as in progress while the
  * work moves on. This plugin adds two mechanisms:
  *
- * 1. Mid-turn reminder (`tools/post-execute`): once an unfinished list has gone
- *    `stepThreshold` steps or `callThreshold` tool calls without a `todo_write`,
- *    one notice is attached to that step's results, at most one per step. The
- *    notice repeats the list verbatim, because `todo_write` replaces the whole
- *    list and the model must resend every item.
+ * 1. Mid-turn reminder (`tools/post-execute`): when a step's assistant message
+ *    carries text next to its tool calls, the agent is narrating its progress
+ *    ("Now the tests."), so while the list has unfinished items one notice is
+ *    attached to that step's results, at most one per step. The text and the
+ *    calls are one message, so the step's results are the first place after
+ *    the text. The notice repeats the list verbatim, because `todo_write`
+ *    replaces the whole list and the model must resend every item.
  * 2. Turn-end completion (`agent/turn-stopping`, off by default): when a turn
  *    ends normally after real work, leftover items are written back as
  *    `completed` in one final `todo/write`.
@@ -43,14 +45,10 @@ const TODO_TOOL = 'todo_write'
 const INTERACTIVE_TOOLS = new Set(['ask_user_question', 'exit_plan_mode'])
 
 /**
- * Every field is volatile: the settings form on the plugin's page edits them,
- * and a saved change reaches the running references without a reload.
+ * The field is volatile: the settings form on the plugin's page edits it, and
+ * a saved change reaches the running reference without a reload.
  */
 export const Config = z.object({
-  stepThreshold: z.natural().min(1).default(5).volatile()
-    .description('Remind after this many model steps without a todo_write while the list has unfinished items.'),
-  callThreshold: z.natural().min(1).default(10).volatile()
-    .description('Remind after this many tool calls without a todo_write while the list has unfinished items.'),
   autoCompleteOnTurnEnd: z.boolean().default(false).volatile()
     .description('When a turn ends normally after real work, mark the remaining items completed.'),
 })
@@ -62,6 +60,16 @@ export const Config = z.object({
  */
 export function hasUnfinished(todos) {
   return Array.isArray(todos) && todos.some(item => item.status !== 'completed')
+}
+
+/**
+ * Whether an assistant message carries text the agent wrote, not only tool
+ * calls or reasoning.
+ * @param content - the message's content blocks.
+ * @returns true when a text block holds more than whitespace.
+ */
+export function hasText(content) {
+  return content.some(block => block.type === 'text' && block.text.trim() !== '')
 }
 
 /**
@@ -106,8 +114,11 @@ export function createState() {
     todos: null,
     /** Non-`todo_write` tool calls since the first list of the turn. */
     workCalls: 0,
+    /** Tool steps and tool calls since the last `todo_write`, reported in the reminder. */
     stepsSince: 0,
     callsSince: 0,
+    /** The open step's assistant message carries text next to its tool calls. */
+    stepHasText: false,
     /** The open step called `todo_write`. */
     stepWroteTodos: false,
     /** The open step called an interactive tool. */
@@ -167,6 +178,7 @@ export function observe(state, event) {
       state.stepWroteTodos = false
       state.stepInteractive = false
       state.stepReminded = false
+      state.stepHasText = false
       break
     case 'step/end':
       state.openStep = null
@@ -178,6 +190,7 @@ export function observe(state, event) {
       const calls = event.data.message.content.filter(block => block.type === 'tool-call')
       if (calls.length === 0) break
       state.lastToolStepInteractive = false
+      state.stepHasText = hasText(event.data.message.content)
       state.stepsSince += 1
       observeCalls(state, calls.map(call => call.name))
       break
@@ -208,7 +221,7 @@ function withReminder(downstream, reminder) {
  * @param config - validated {@link Config}; each field is a live reference read with `.get()` at decision time.
  */
 export function apply(ctx, config) {
-  const { stepThreshold, callThreshold, autoCompleteOnTurnEnd } = config
+  const { autoCompleteOnTurnEnd } = config
   const states = new WeakMap()
 
   ctx.on('session/event', (session, event) => {
@@ -229,10 +242,9 @@ export function apply(ctx, config) {
     if (result.concludesTurn === true) return downstream
     const state = states.get(exec.agent.session)
     if (state === undefined || state.openStep === null) return downstream
+    if (!state.stepHasText) return downstream
     if (state.stepWroteTodos || state.stepInteractive || state.stepReminded) return downstream
     if (!hasUnfinished(state.todos)) return downstream
-    const due = state.stepsSince >= stepThreshold.get() || state.callsSince >= callThreshold.get()
-    if (!due) return downstream
 
     const reminder = createUserMessage({
       content: [{ type: 'text', text: reminderText(state.todos, state.stepsSince, state.callsSince) }],

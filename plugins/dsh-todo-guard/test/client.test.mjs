@@ -30,7 +30,7 @@ before(async () => {
   await import('../client.js')
 })
 
-const BASE = { stepThreshold: 5, callThreshold: 10, autoCompleteOnTurnEnd: false }
+const BASE = { autoCompleteOnTurnEnd: false }
 
 /** The shared configuration form of one namespace, applying mutations to its user layer. */
 function fakeScope({ user = {}, writable = true } = {}) {
@@ -87,8 +87,6 @@ function mount(scopeOptions) {
   return { plugin, scope, options, dictionaries, served, actions, render, t }
 }
 
-const valueOf = (html, field) => html.match(new RegExp(`id="plugin-config-todo-guard-${field}"[^>]*value="([^"]*)"`))?.[1]
-  ?? html.match(new RegExp(`value="([^"]*)"[^>]*id="plugin-config-todo-guard-${field}"`))?.[1]
 const saveDisabled = html => /<button[^>]*disabled=""[^>]*>保存<\/button>/.test(html)
 
 describe('settings form', { skip: primitivesDir === undefined && 'no built deepseek-harness checkout with ui-primitives' }, () => {
@@ -102,75 +100,47 @@ describe('settings form', { skip: primitivesDir === undefined && 'no built deeps
     assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort())
   })
 
-  it('shows the effective values with nothing to save', () => {
+  it('shows the switch with nothing to save, and no threshold fields', () => {
     const html = mount().render()
-    assert.match(html, /提醒前的步数/)
-    assert.match(html, /提醒前的工具调用次数/)
     assert.match(html, /回合结束时完成剩余任务/)
-    assert.equal(valueOf(html, 'stepThreshold'), '5')
-    assert.equal(valueOf(html, 'callThreshold'), '10')
+    assert.doesNotMatch(html, /提醒前|Threshold/)
     assert.match(html, /role="switch" aria-checked="false"/)
     assert.doesNotMatch(html, /已覆盖/)
     assert.ok(saveDisabled(html))
   })
 
-  it('stages an edit and writes it on save', async () => {
+  it('stages the switch and writes a boolean on save', async () => {
     const m = mount()
-    m.actions.edit('stepThreshold', '3')
+    m.actions.edit('autoCompleteOnTurnEnd', 'true')
     let html = m.render()
-    assert.equal(valueOf(html, 'stepThreshold'), '3')
+    assert.match(html, /role="switch" aria-checked="true"/)
     assert.match(html, /已覆盖/)
     assert.ok(!saveDisabled(html))
     assert.equal(m.scope.writes.length, 0, 'nothing is written before save')
     m.actions.save()
     await new Promise(resolve => setImmediate(resolve))
-    assert.deepEqual(m.scope.writes, [{ ops: [{ op: 'set', path: ['stepThreshold'], value: 3 }], revision: 1 }])
+    assert.deepEqual(m.scope.writes, [{ ops: [{ op: 'set', path: ['autoCompleteOnTurnEnd'], value: true }], revision: 1 }])
     html = m.render()
-    assert.equal(valueOf(html, 'stepThreshold'), '3')
+    assert.match(html, /role="switch" aria-checked="true"/)
     assert.ok(saveDisabled(html), 'clean after the Host accepted the write')
   })
 
-  it('blocks saving a threshold the Host would refuse', async () => {
-    for (const text of ['0', '2.5', '-1', 'abc']) {
-      const m = mount()
-      m.actions.edit('callThreshold', text)
-      const html = m.render()
-      assert.match(html, /请填写不小于 1 的整数/, text)
-      assert.ok(saveDisabled(html), text)
-      m.actions.save()
-      await new Promise(resolve => setImmediate(resolve))
-      assert.equal(m.scope.writes.length, 0, text)
-    }
-  })
-
-  it('stages the switch as a boolean write', async () => {
-    const m = mount()
-    m.actions.edit('autoCompleteOnTurnEnd', 'true')
-    assert.match(m.render(), /role="switch" aria-checked="true"/)
-    m.actions.save()
-    await new Promise(resolve => setImmediate(resolve))
-    assert.deepEqual(m.scope.writes[0].ops, [{ op: 'set', path: ['autoCompleteOnTurnEnd'], value: true }])
-  })
-
   it('resets an overridden field to its default', async () => {
-    const m = mount({ user: { stepThreshold: 3, autoCompleteOnTurnEnd: true } })
+    const m = mount({ user: { autoCompleteOnTurnEnd: true } })
     let html = m.render()
-    assert.equal(valueOf(html, 'stepThreshold'), '3')
-    assert.equal(html.match(/恢复默认/g).length, 2)
-    m.actions.resetField('stepThreshold')
+    assert.match(html, /role="switch" aria-checked="true"/)
+    assert.equal(html.match(/恢复默认/g).length, 1)
     m.actions.resetField('autoCompleteOnTurnEnd')
     html = m.render()
-    assert.equal(valueOf(html, 'stepThreshold'), '5')
     assert.match(html, /role="switch" aria-checked="false"/)
     m.actions.save()
     await new Promise(resolve => setImmediate(resolve))
-    assert.deepEqual(m.scope.writes[0].ops, [{ op: 'unset', path: ['stepThreshold'] }, { op: 'unset', path: ['autoCompleteOnTurnEnd'] }])
+    assert.deepEqual(m.scope.writes[0].ops, [{ op: 'unset', path: ['autoCompleteOnTurnEnd'] }])
   })
 
-  it('disables every control when settings are read-only', () => {
+  it('disables the switch when settings are read-only', () => {
     const html = mount({ writable: false }).render()
     assert.match(html, /本部署的设置为只读/)
-    assert.match(html, /id="plugin-config-todo-guard-stepThreshold"[^>]*disabled=""|disabled=""[^>]*id="plugin-config-todo-guard-stepThreshold"/)
     assert.match(html, /role="switch" aria-checked="false"[^>]*disabled=""/)
   })
 
