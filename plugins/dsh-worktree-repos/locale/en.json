@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Worktrees from nested repositories",
+    "description": "When a workspace is not a Git repository itself, a new session can pick a Git repository in its subdirectories and cut a worktree from one of its branches. The scan depth is set on the plugin's page and defaults to one level."
+  }
+}

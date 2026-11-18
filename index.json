@@ -74,11 +74,11 @@
       "versions": [
         {
           "version": "0.2.4",
-          "publishTimestamp": 1794990812,
+          "publishTimestamp": 1794991841,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "b207341840344fa38100f54615b9bde80212ff04",
+            "commit": "52fbbca7b6090e84e1b02ea29c8f24d45fb2c0af",
             "path": "plugins/dsh-codex-provider"
           },
           "engines": {
@@ -513,6 +513,49 @@
           },
           "engines": {
             "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@pcmid/dsh-worktree-repos",
+      "title": {
+        "en": "Worktrees from nested repositories",
+        "zh": "从子目录仓库切出 worktree"
+      },
+      "description": {
+        "en": "When a workspace is not a Git repository itself, a new session can pick a Git repository in its subdirectories and cut a worktree from one of its branches. The scan depth is set on the plugin's page and defaults to one level.",
+        "zh": "工作区本身不是 Git 仓库时，新会话可以在工作区的子目录里选一个 Git 仓库，再选分支切出 worktree。扫描深度在插件页设置，默认只扫一层。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzViNGJiNyIvPgogIDxwYXRoIGQ9Ik0xMCAxOWE0IDQgMCAwIDEgNC00aDkuNWw0LjUgNWgyMmE0IDQgMCAwIDEgNCA0djIxYTQgNCAwIDAgMS00IDRIMTRhNCA0IDAgMCAxLTQtNHoiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIzIiBzdHJva2UtbGluZWpvaW49InJvdW5kIi8+CiAgPHBhdGggZD0iTTI0IDMyaDdjMiAwIDMtLjUgNC41LTJsMy41LTMuNU0yNCAzMmg3YzIgMCAzIC41IDQuNSAybDMuNSAzLjUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLXdpZHRoPSIyLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgogIDxjaXJjbGUgY3g9IjIyIiBjeT0iMzIiIHI9IjMuNSIgZmlsbD0iI2ZmZmZmZiIvPgogIDxjaXJjbGUgY3g9IjQxLjUiIGN5PSIyNSIgcj0iMy41IiBmaWxsPSIjZmZmZmZmIi8+CiAgPGNpcmNsZSBjeD0iNDEuNSIgY3k9IjM5IiByPSIzLjUiIGZpbGw9IiNmZmZmZmYiLz4KPC9zdmc+Cg==",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-worktree-repos#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-worktree-repos"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1794984817,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "c77ce6d556ccc0033aab6bbd33cc68f395997592",
+            "path": "plugins/dsh-worktree-repos"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.1 <0.3.0-0"
           }
         }
       ]
