@@ -1,7 +1,7 @@
 {
   "name": "@pcmid/dsh-async-agents",
-  "version": "0.1.0",
-  "description": "Keeps the main agent of a session from blocking on background work: long shell commands move to background jobs, and the agent ends its turn instead of waiting for jobs or subagents.",
+  "version": "0.2.0",
+  "description": "Keeps an agent from blocking on background work: long shell commands move to background jobs, and the agent ends its turn instead of waiting for jobs or subagents. Covers the main agent of a session; on a DSH that keeps subagents loaded, also subagents that report to their parent, with a close_agent tool to unload idle ones.",
   "author": "pcmid",
   "license": "MIT",
   "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-async-agents#readme",
@@ -29,7 +29,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test test/async-agents.test.mjs"
+    "test": "node --test test/async-agents.test.mjs",
+    "test:e2e": "node test/e2e/run.mjs"
   },
   "dsh": {
     "bundle": {

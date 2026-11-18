@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Async agents",
-    "description": "Keeps the main agent of a session from blocking on background work. A shell command that is still running after 10 seconds (up to 60 when the agent asks for more) continues as a background job. The agent can no longer wait on a job or on a subagent; it is told to end its turn instead, and the completion notice starts its next turn. Subagents are not changed in this version. Turning the plugin off restores the original behavior right away."
+    "description": "Keeps an agent from blocking on background work. A shell command that is still running after 10 seconds (up to 60 when the agent asks for more) continues as a background job. The agent can no longer wait on a job or on a subagent; it is told to end its turn instead, and the completion notice starts its next turn. This applies to the main agent of a session. On a DSH version that keeps a subagent loaded while its background job runs, it also applies to subagents whose result goes to their parent, and these agents get a close_agent tool: it unloads an idle subagent to free its slot toward the subagent limit, which cancels the background jobs that subagent started and discards the messages still queued for it. On other DSH versions subagents are not changed. Turning the plugin off restores the original behavior right away."
   }
 }
