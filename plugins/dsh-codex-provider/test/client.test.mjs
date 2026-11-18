@@ -19,11 +19,11 @@ const React = require('react')
 const { render, fireEvent, waitFor, cleanup } = require('@testing-library/react')
 
 function load() {
-  let plugin, component, registration, dictionary
+  let plugin, component, registration, dictionary, speedComponent, speedRegistration
   runInNewContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: value => { plugin = value.factory(require) } } },
   })
-  const state = { snapshot: { status: 'ready', value: { providers: {} }, writable: true, revision: 1 }, accepted: true, mutations: [] }
+  const state = { snapshot: { status: 'ready', value: { providers: {} }, writable: true, revision: 1 }, accepted: true, mutations: [], speedCalls: [], speedError: null, modelSnapshot: { current: { provider: 'codex-provider', model: 'gpt-test' } } }
   const listeners = new Set()
   const scope = {
     getSnapshot: () => state.snapshot,
@@ -38,11 +38,24 @@ function load() {
   }
   plugin.apply({
     effect: callback => callback(),
+    inject(_keys, callback) { callback(this) },
+    modelDirectories: { directoryFor: () => ({ store: { subscribe: () => () => {},
+      getSnapshot: () => state.modelSnapshot } }) },
+    remote: { commands: { execute: async (_session, line) => {
+      state.speedCalls.push(line)
+      if (state.speedError) return { ok: false, error: { message: state.speedError } }
+      return { ok: true, value: { result: { kind: 'success' } } }
+    } } },
     locale: { register(_ns, values) { dictionary = values.zh }, bind: () => key => dictionary[key] },
     configForms: { get: () => scope, whileServed: (_names, callback) => callback() },
-    slots: { inject: (_name, callback) => callback(), register(spec, Component) { registration = spec; component = Component } },
+    slots: { inject: (_name, callback) => callback(), register(spec, Component) {
+      if (spec.name === 'conversation.input.model.options') { speedRegistration = spec; speedComponent = Component }
+      else { registration = spec; component = Component }
+    } },
   })
-  return { state, card: () => React.createElement(component, { ...registration.inject(), configured: false }) }
+  return { state, speed: props => React.createElement(speedComponent, { ...speedRegistration.inject('session-1'),
+    useProjection: () => ({ selected: 'ultrafast', lastUsed: { model: 'gpt-test', selected: 'ultrafast', actual: 'fast' } }),
+    locked: false, reportFailure: () => {}, ...props }), card: () => React.createElement(component, { ...registration.inject(), configured: false }) }
 }
 
 // The Models page markup around the slot: the generic editor, ending in its Cancel/Apply row.
@@ -80,5 +93,27 @@ test('on the add card an empty path enables the provider with codex from PATH', 
     fireEvent.click(view.getByRole('button', { name: '保存' }))
     await waitFor(() => assert.equal(closed, 1))
     assert.deepEqual(state.mutations[0].ops[0], { op: 'set', path: ['providers', 'codex-provider'], value: {} })
+  } finally { cleanup() }
+})
+
+test('speed menu distinguishes selection from effective speed and sends the shared command without optimistic selection', async () => {
+  const { state, speed } = load()
+  const failures = []
+  const view = render(speed({ reportFailure: message => failures.push(message) }))
+  try {
+    assert.equal(view.getByRole('menuitemradio', { name: 'Ultrafast' }).getAttribute('aria-checked'), 'true')
+    assert.match(view.getByText(/上次有效档位/).textContent, /上次有效档位: Fast/)
+    fireEvent.click(view.getByRole('menuitemradio', { name: '标准' }))
+    await waitFor(() => assert.deepEqual(state.speedCalls, ['/fast standard']))
+    await waitFor(() => assert.equal(view.getByRole('menuitemradio', { name: '标准' }).disabled, false))
+    assert.equal(view.getByRole('menuitemradio', { name: 'Ultrafast' }).getAttribute('aria-checked'), 'true', 'Only the saved projection changes selection')
+    state.speedError = 'offline'
+    fireEvent.click(view.getByRole('menuitemradio', { name: 'Fast' }))
+    await waitFor(() => assert.deepEqual(failures, ['offline']))
+    view.rerender(speed({ locked: true }))
+    assert.equal(view.getByRole('menuitemradio', { name: 'Fast' }).disabled, true)
+    state.modelSnapshot = { current: { provider: 'other', model: 'x' } }
+    view.rerender(speed({}))
+    assert.equal(view.queryByRole('group'), null)
   } finally { cleanup() }
 })

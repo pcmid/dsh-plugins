@@ -339,8 +339,7 @@ test('model catalog, reasoning efforts and the reported context window', async (
     const [model, fast] = await adapter.listModels(provider)
     assert.deepEqual([model.id, model.name, model.context.contextWindow], ['gpt-test', 'GPT Test', 128000])
     assert.deepEqual(model.reasoning.efforts.map(e => e.id), ['low', 'high'])
-    assert.deepEqual([fast.id, fast.name, fast.description], ['gpt-test@priority', 'GPT Test Fast', '1.5x speed'])
-    assert.deepEqual(fast.reasoning, model.reasoning)
+    assert.equal(fast, undefined, 'Only base models are listed')
     assert.equal((await adapter.resolveModel(provider, 'gpt-test')).reasoning.defaultEffort, 'high')
     assert.equal(f.instances.length, 1, 'The catalog is loaded once')
     await run(adapter, base)
@@ -379,13 +378,14 @@ test('the provider registers only while enabled and follows live settings change
   assert.equal(new CodexAdapter({ codexPath: '~/.local/share/mise/shims/codex' }).config.codexPath, join(homedir(), '.local/share/mise/shims/codex'))
   const registrations = []
   const listeners = {}
+  const cleanups = []
   const ctx = {
     llm: { registerAdapter(ids, adapter) {
       const entry = { ids, adapter, active: true }
       registrations.push(entry)
       return () => { entry.active = false }
     }, registerConfigurableProviders() {} },
-    inject() {}, effect: f => f(), on(event, listener) { listeners[event] = listener }, get() {},
+    inject() {}, effect: f => { const cleanup = f(); if (typeof cleanup === 'function') cleanups.push(cleanup) }, on(event, listener) { listeners[event] = listener }, get() {},
   }
   let value = {}
   apply(ctx, { ...Config({}), providers: { get: () => value } })
@@ -402,6 +402,13 @@ test('the provider registers only while enabled and follows live settings change
   value = {}
   listeners['loader/volatile-update']()
   assert.ok(!registrations[1].active && registrations[1].adapter.disposed)
+  value = { [name]: {} }
+  listeners['loader/volatile-update']()
+  const adapter = registrations[2].adapter
+  adapter.connect = fakes([]).connect
+  const connection = await adapter.open()
+  await Promise.all(cleanups.map(cleanup => cleanup()))
+  assert.ok(adapter.disposed && connection.isClosed, 'Unloading closes Codex through an owned effect')
 })
 
 test('the real DSH runtime registers, streams through and unloads the plugin', async () => {
