@@ -1,0 +1,3 @@
+- insert:
+    - id: agent-monitor
+      name: '@pcmid/dsh-agent-monitor'
