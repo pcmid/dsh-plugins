@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-codex-provider",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "Use your local Codex login and models as a DSH model provider; DSH runs the tools and each session keeps one Codex thread.",
   "author": "pcmid",
   "license": "MIT",
