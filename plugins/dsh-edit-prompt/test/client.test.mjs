@@ -37,7 +37,7 @@ function fakeForm(archiveSource) {
 }
 
 /** Apply the module to stand-in services and capture its registration. */
-function mount({ archiveSource = true, remote = {}, fork, prompt, rewind } = {}) {
+function mount({ archiveSource = true, remote = {}, fork, revert, prompt, rewind } = {}) {
   const calls = []
   const record = (name, value) => { calls.push([name, value]); return value }
   const registrations = []
@@ -88,7 +88,8 @@ function mount({ archiveSource = true, remote = {}, fork, prompt, rewind } = {})
         },
         projections: async (request) => {
           record('projections', request)
-          return request.sessionId === 'session-source'
+          const before = request.sessionId === 'session-source' && !calls.some(([name]) => name === 'revert')
+          return before
             ? ok({ kind: 'sequenced', asOfSeq: 40, values: { modelSelection: { lastUsed: null, next: { provider: 'p', model: 'm2', reasoningEffort: 'high' } } } })
             : ok({ kind: 'sequenced', asOfSeq: 6, values: {
               inbox: { 'next-turn': [{ id: 'm-old' }], 'next-step': [] },
@@ -97,6 +98,7 @@ function mount({ archiveSource = true, remote = {}, fork, prompt, rewind } = {})
         },
         selectModel: async (request) => { record('selectModel', request); return ok({ selected: request }) },
         updateQueue: async (request) => { record('updateQueue', request); return ok({ accepted: true }) },
+        ...(revert === undefined ? {} : { revert: async (request) => { record('revert', request); return revert(request) } }),
         ...remote,
       },
     },
@@ -134,7 +136,47 @@ describe('registration', () => {
   })
 })
 
-describe('resend', () => {
+/** A Host that reverts in place. */
+const reverts = async request => ok({ sessionId: request.sessionId })
+
+describe('resend in place', () => {
+  it('rewinds files, archives a copy, reverts before the Turn, clears kept input, keeps the model, and prompts the same conversation', async () => {
+    const { calls, face } = mount({ revert: reverts })
+    const result = await face.resendEdited({
+      seq: 11,
+      location: stepLocation(7),
+      content: [{ type: 'image', attachment: IMAGE }, { type: 'text', text: 'old' }],
+      text: 'new text',
+    })
+    assert.deepEqual(result, { ok: true })
+    const names = calls.map(([name]) => name)
+    assert.deepEqual(names, ['attachment', 'projections', 'rewind', 'fork', 'archive', 'revert', 'projections', 'updateQueue', 'selectModel', 'retain', 'submission', 'prompt', 'open', 'release'])
+    assert.deepEqual(calls[3][1], { sessionId: 'session-source', increaseTitle: true })
+    assert.deepEqual(calls[4][1], { id: 'session-child' })
+    assert.deepEqual(calls[5][1], { sessionId: 'session-source', atSeq: 6 })
+    assert.deepEqual(calls[7][1], { sessionId: 'session-source', itemId: 'm-old', action: { kind: 'remove' } })
+    assert.deepEqual(calls[8][1], { sessionId: 'session-source', provider: 'p', model: 'm2', reasoningEffort: 'high' })
+    assert.equal(calls[11][1].sessionId, 'session-source')
+    assert.equal(calls[12][1], 'session-source')
+  })
+
+  it('undoes the file rewind and reports a refused revert', async () => {
+    const { calls, face } = mount({ revert: async () => refused('session/agent-busy', 'session is running a turn') })
+    const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
+    assert.deepEqual(result, { ok: false, code: 'failed', detail: 'session is running a turn' })
+    assert.deepEqual(calls.filter(([name]) => name === 'undo').map(([, value]) => value), [{ restoreId: 'restore-1' }])
+    assert.equal(calls.some(([name]) => name === 'prompt'), false)
+  })
+
+  it('keeps the rewound files when the prompt fails after the revert', async () => {
+    const { calls, face } = mount({ revert: reverts, prompt: async () => refused('session/attachment-invalid', 'image too large') })
+    const result = await face.resendEdited({ seq: 11, location: stepLocation(7), content: [], text: 'x' })
+    assert.deepEqual(result, { ok: false, code: 'failed', detail: 'image too large' })
+    assert.equal(calls.some(([name]) => name === 'undo'), false)
+  })
+})
+
+describe('resend by fork (DSH without revert)', () => {
   it('rewinds files, forks before the Turn, clears inherited input, prompts the edit with images through an echo, and archives the original', async () => {
     const { calls, face } = mount()
     const result = await face.resendEdited({
@@ -269,9 +311,10 @@ describe('resend', () => {
 describe('rendering', () => {
   const t = (key, params) => params === undefined ? key : `${key}:${JSON.stringify(params)}`
 
-  function render({ access = true } = {}) {
-    const { component, face } = mount()
+  function render({ access = true, revert } = {}) {
+    const { component, face } = mount({ revert })
     const factoryCalls = []
+    const asked = []
     const markup = renderToStaticMarkup(React.createElement(component, {
       node: {
         kind: 'user',
@@ -280,14 +323,14 @@ describe('rendering', () => {
       },
       t,
       loadImage: () => {},
-      useAccess: () => access,
+      useAccess: (endpoint) => { asked.push(endpoint); return access },
       renderFactorySlot: (name, props) => {
         factoryCalls.push([name, props])
         return React.createElement('div', { 'data-factory': name }, props.content.text)
       },
       ...face,
     }))
-    return { markup, factoryCalls }
+    return { markup, factoryCalls, asked }
   }
 
   it('renders the content Factory, the clock, copy, and edit', { skip: reactDir === undefined }, () => {
@@ -303,9 +346,11 @@ describe('rendering', () => {
     assert.match(markup, /class="dsh-ep-time">\d\d:\d\d</)
   })
 
-  it('hides edit when the Session refuses forks', { skip: reactDir === undefined }, () => {
-    const { markup } = render({ access: false })
+  it('hides edit when the Session refuses the restart', { skip: reactDir === undefined }, () => {
+    const { markup, asked } = render({ access: false })
     assert.match(markup, /aria-label="copy"/)
     assert.doesNotMatch(markup, /aria-label="edit"/)
+    assert.deepEqual(asked, ['session/fork'])
+    assert.deepEqual(render({ revert: reverts }).asked, ['session/revert'])
   })
 })
