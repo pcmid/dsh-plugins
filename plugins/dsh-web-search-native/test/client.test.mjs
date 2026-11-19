@@ -62,6 +62,7 @@ function form(value, { writable = true, base = {} } = {}) {
 }
 
 const GROUPS = [
+  { id: 'codex-provider', name: 'Codex Provider', models: [{ id: 'gpt-test', name: 'GPT Test' }] },
   { id: 'pool', name: 'pool', models: [
     { id: 'gpt-6-luna', name: 'GPT-6 Luna', reasoning: { efforts: [{ id: 'low', name: 'low' }, { id: 'high', name: 'high' }] } },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
@@ -81,21 +82,16 @@ function page({ channel = {}, writable = true, directory, catalog } = {}) {
     configForms: { get: id => forms[id] },
     remote: {
       session: { modelCatalog: answer(catalog ?? { ok: true, value: { groups: GROUPS, failures: [] } }) },
-      llm: { listConfigurableProviders: answer(directory ?? { ok: true, value: [
-        { provider: 'pool', displayName: 'pool', settingsNs: 'llm', settingsPath: ['providers', 'pool'] },
-        { provider: 'ccmax', displayName: 'ccmax', settingsNs: 'llm', settingsPath: ['providers', 'ccmax'] },
-        { provider: 'declared-only', displayName: 'Declared', settingsNs: 'llm', settingsPath: [] },
-      ] }) },
+    },
+    connection: {
+      rpc: { call: (base, name, payload) => {
+        assert.deepEqual([base, name, payload], ['/api', 'pcmid/native-search/channels', {}])
+        return answer(directory ?? { ok: true, value: [
+          ['pool', 'openai-responses'], ['ccmax', 'anthropic-messages'], ['codex-provider', 'registered'],
+        ] })()
+      } },
     },
   }
-  // The page reads provider protocols from the route profiles; give it one served section.
-  const profiles = { providers: {
-    pool: { api: 'openai-responses', baseURL: 'https://pw.example/v1', apiKeyEnv: 'POOL_KEY' },
-    ccmax: { api: 'anthropic-messages', baseURL: 'https://api.example', apiKeyEnv: 'CC_KEY' },
-    declared: { api: 'openai-images' },
-  } }
-  const original = ctx.configForms.get
-  ctx.configForms.get = id => id === 'llm' ? form(profiles) : original(id)
   const controller = handlers.__page.createController(ctx)
   return { controller, forms, face: controller.face }
 }
@@ -111,10 +107,48 @@ test('the section reads the protocols of the providers that can search', async (
   channelHook(face).subscribe(() => {})
   await settle()
   const snapshot = channelHook(face).getSnapshot()
-  assert.deepEqual([...snapshot.apis.keys()].sort(), ['ccmax', 'pool'])
+  assert.deepEqual([...snapshot.apis.keys()].sort(), ['ccmax', 'codex-provider', 'pool'])
+  assert.equal(snapshot.apis.get('codex-provider'), 'registered')
   assert.equal(snapshot.apis.get('pool'), 'openai-responses')
   assert.equal(snapshot.apis.get('ccmax'), 'anthropic-messages')
   assert.equal(snapshot.modelsLoading, false)
+})
+
+test('a registered channel can be pinned without HTTP transport settings; unregistration removes the offer, not the pin', async () => {
+  let rows = [['codex-provider', 'registered']]
+  const { forms, face } = page({ directory: () => ({ ok: true, value: rows }) })
+  channelHook(face).subscribe(() => {})
+  await settle()
+  face.pickChannel('codex-provider')
+  face.pickModel('gpt-test')
+  await settle()
+  const saved = forms['web-search-native'].getSnapshot().value
+  assert.equal(saved.followSession, false)
+  assert.equal(saved.searchProvider, 'codex-provider')
+  assert.equal(saved.searchModel, 'gpt-test')
+  assert.equal(saved.searchTransport, undefined)
+  rows = []
+  face.retry()
+  await settle()
+  const snapshot = channelHook(face).getSnapshot()
+  assert.equal(snapshot.apis.has('codex-provider'), false)
+  assert.equal(snapshot.channel.provider, 'codex-provider')
+})
+
+test('without a local draft the page picks up a pin loaded or changed after mount', async () => {
+  const { face, forms } = page()
+  channelHook(face).subscribe(() => {})
+  const current = () => channelHook(face).getSnapshot().channel
+  assert.equal(current().follow, true)
+  await forms['web-search-native'].mutate([
+    { op: 'set', path: ['followSession'], value: false },
+    { op: 'set', path: ['searchProvider'], value: 'codex-provider' },
+    { op: 'set', path: ['searchModel'], value: 'gpt-test' },
+  ])
+  assert.equal(current().provider, 'codex-provider')
+  assert.equal(current().follow, false)
+  face.pickChannel('pool')
+  assert.equal(current().provider, 'pool', 'an unsaved choice is still a local draft')
 })
 
 test('following the conversation is the default and pins nothing', async () => {
@@ -158,6 +192,29 @@ test('a channel saves once its model is chosen, and each later choice saves too'
   const snapshot = channelHook(face).getSnapshot()
   assert.equal(snapshot.dirty, false)
   assert.equal(snapshot.write.saved, true)
+})
+
+test('a pending save cannot commit or discard a newer pin that still needs a model', async () => {
+  const { forms, face } = page()
+  channelHook(face).subscribe(() => {})
+  const form = forms['web-search-native']
+  const firstWrite = Promise.withResolvers()
+  const mutate = form.mutate
+  form.mutate = async ops => { await firstWrite.promise; return mutate(ops) }
+  face.pickChannel('pool')
+  face.pickModel('gpt-6-astra')
+  face.pickEffort('high')
+  face.pickChannel('codex-provider')
+  firstWrite.resolve()
+  await settle()
+  assert.equal(form.writes.length, 1)
+  const snapshot = channelHook(face).getSnapshot()
+  assert.equal(snapshot.channel.provider, 'codex-provider')
+  assert.equal(snapshot.channel.model, '')
+  assert.equal(snapshot.write.saved, false)
+  face.pickModel('gpt-test')
+  await settle()
+  assert.equal(form.getSnapshot().value.searchModel, 'gpt-test')
 })
 
 test('switching back to follow saves at once and clears the pinned channel', async () => {
@@ -208,6 +265,22 @@ test('a failed read is reported and keeps what the last good one showed', async 
   const snapshot = channelHook(face).getSnapshot()
   assert.equal(snapshot.modelsFailed, true)
   assert.deepEqual(snapshot.groups, GROUPS, 'the previous groups stay')
+})
+
+test('a registered provider whose model discovery failed can be retried without blocking other channels', async () => {
+  let groups = GROUPS.filter(g => g.id !== 'codex-provider')
+  const { face } = page({ catalog: () => ({ ok: true, value: { groups, failures: [] } }) })
+  channelHook(face).subscribe(() => {})
+  await settle()
+  face.pickChannel('codex-provider')
+  assert.equal(channelHook(face).getSnapshot().noModels, true)
+  face.pickChannel('pool')
+  assert.equal(channelHook(face).getSnapshot().noModels, false)
+  face.pickChannel('codex-provider')
+  groups = GROUPS
+  face.retry()
+  await settle()
+  assert.equal(channelHook(face).getSnapshot().noModels, false)
 })
 
 test('a rejected write keeps the draft for correction', async () => {

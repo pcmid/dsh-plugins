@@ -272,7 +272,8 @@ export class Conversation {
     let responseDone = this.responseDone
     const finish = function* (kind) {
       yield* blocks.endAll()
-      if (!blocks.count) throw new LlmError('Codex returned an empty response', EMPTY_RESPONSE_CODE)
+      // A completed native search may return sources without an assistant message.
+      if (!blocks.count && !request.search) throw new LlmError('Codex returned an empty response', EMPTY_RESPONSE_CODE)
       if (reported) yield { type: 'usage', usage }
       this.step++
       this.committed = request.keys
@@ -294,6 +295,7 @@ export class Conversation {
         return
       }
       const message = await this.next(signal)
+      signal.throwIfAborted()
       const p = message.params ?? {}
       if (message.method === 'connection/failed') throw p.error
       if ((p.turnId ?? p.turn?.id) !== this.turnId) continue
@@ -311,11 +313,13 @@ export class Conversation {
           yield* blocks.delta(`reasoning:${p.itemId}`, 'reasoning', p.delta, `content:${p.contentIndex}`)
           break
         case 'item/completed':
+          request.search?.item(p.item)
           if (p.item.type === 'agentMessage') yield* blocks.end(`text:${p.item.id}`, 'text', p.item.text)
           if (p.item.type === 'reasoning') yield* blocks.end(`reasoning:${p.item.id}`, 'reasoning', p.item.summary?.join('\n\n'))
           break
         case 'rawResponseItem/completed': {
           const item = p.item
+          request.search?.raw(item)
           // Input echoes (DSH messages Codex recorded) belong to DSH history, not to this response.
           if (item.type === 'message' && item.role !== 'assistant') break
           if (isOutputItem(item)) {

@@ -16,9 +16,9 @@
 - **模型**：这个渠道可选的模型。
 - **思考等级**：选定模型后出现，选项来自该模型自己的能力；不选则请求里不带等级，用模型自己的默认值。
 - **接口**：只有 OpenAI 协议（`openai-responses`）的渠道显示。`自动` 先用 `alpha/search`，失败时回退 `Responses`；手动选 `Alpha Search` 或 `Responses` 后不再回退。
-- **不支持的供应商**：协议不是 `anthropic-messages` 或 `openai-responses` 的供应商不出现在渠道列表里。
+- **Codex Provider**：启用支持原生搜索的 Codex Provider 后，它也会出现在渠道列表里。选“跟随会话”时，Codex 会话自动使用它；也可以把它固定为所有会话的搜索渠道。无需再填地址或 API key。
 
-地址、密钥、请求头都取自所选供应商在“模型”设置里的路由（`baseURL`、`apiKeyEnv`、`headers`），本插件不单独配置。DSH 内置目录里的供应商（例如默认的 `anthropic`）可以不写 `api` 和 `baseURL`：这时协议用内置目录里该供应商的模型共同使用的那个，地址用它的默认地址，和这个供应商自己的对话请求一致。`apiKeyEnv` 仍然必须写。
+对于内置的两种 HTTP 渠道，地址、密钥、请求头都取自所选供应商在“模型”设置里的路由（`baseURL`、`apiKeyEnv`、`headers`），本插件不单独配置。DSH 内置目录里的供应商（例如默认的 `anthropic`）可以不写 `api` 和 `baseURL`：这时协议用内置目录里该供应商的模型共同使用的那个，地址用它的默认地址，和这个供应商自己的对话请求一致。`apiKeyEnv` 仍然必须写。
 
 固定渠道时有一个后果需要注意：**即使当前会话用的是别的供应商，搜索请求也会发到固定渠道。** 例如会话在 ccmax，渠道固定在 pool，那么搜索计费落在 pool，且搜索内容会发往 pool。
 
@@ -36,6 +36,12 @@
 - **OpenAI Responses：** 默认先调 `alpha/search`（携带 `commands.search_query`），返回有效结果就直接使用；接口不支持或请求失败时回退到 Responses（携带 `web_search` 服务端工具和 `include: web_search_call.action.sources`）。一次失败会在内存里记住 10 分钟，这期间直接走 Responses。取消搜索不会触发回退，也不会被记成失败。
 
 `alpha/search` 的 `encrypted_output` 是不透明数据，始终忽略。返回给模型的答案会把接口私有的引用标记换成指向来源的链接。
+
+## 插件注册的渠道
+
+模型供应商插件可以可选注入 `nativeSearch` 服务，调用 `scope.nativeSearch.register(providerId, search)` 注册自己的实现。`providerId` 是 DSH 模型供应商 ID；`search({ model, query, reasoningEffort }, signal)` 返回 `{ content?, sources: [{ url, title?, snippet? }] }`。注册返回注销函数；供应商停用时应注销，不需要再向 `ctx.web` 注册第二个搜索提供方。
+
+Codex 渠道使用本机 Codex 登录，在独立的临时线程执行查询。默认 headless 环境不必启用 DSH 的 `credentials` 服务；需要该服务读取密钥的是 HTTP 渠道。聊天线程不开放 Codex 内置搜索；结果取自搜索事件，不从回答正文猜测来源。渠道出错不会改用其他供应商。`searchTransport` 和 HTTP 渠道特有的参数不适用于 Codex。
 
 ## 结果
 
@@ -62,7 +68,7 @@
 
 ## 费用
 
-每个查询都是一次按所选模型计费的请求（不带 thinking 参数时，默认就会思考的模型，例如 Claude 5.5，会按它的默认等级思考）：包括接口的搜索次数费用，以及作为输入 token 计费的搜索结果（在 `claude-haiku-5-5` 上实测约 1.4 万输入 token）。`web_search` 一次调用最多可并发 10 个查询；自动回退也可能产生额外费用。只发送查询和搜索提示，不复制整段会话。
+使用 Codex 渠道时，搜索消耗当前 Codex 登录的额度。使用 HTTP 渠道时，每个查询都是一次按所选模型计费的请求（不带 thinking 参数时，默认就会思考的模型，例如 Claude 5.5，会按它的默认等级思考）：包括接口的搜索次数费用，以及作为输入 token 计费的搜索结果（在 `claude-haiku-5-5` 上实测约 1.4 万输入 token）。`web_search` 一次调用最多可并发 10 个查询；自动回退也可能产生额外费用。只发送查询和搜索提示，不复制整段会话。
 
 ## 排查
 
@@ -75,5 +81,4 @@
 - **不改官方页面。** 官方的“网页搜索与获取”页仍然由 DSH 提供：标题、图标、搜索提供方和网页获取提供方都属于它。本插件只在它的内容下方加一节“搜索渠道”（`plugins.detail.section`），并且只在这一页显示。这一节没有保存按钮：选“跟随会话”立即生效，选了渠道后在选定模型时生效，之后改思考等级或接口也立即生效。停用本插件后那一节消失，官方页面本身不受影响。
 - **搜索渠道不在“网页搜索提供方”紧下方。** 官方页面内部没有给插件留插入位置，插件能加内容的地方只有整页内容下方。替换整页可以放回原位，但当前 DSH 的插件列表会把被替换的官方条目也列出来（它用 `slots.entries` 而不是 `entriesOfSlot`），列表里就会出现两张“网页搜索与获取”。
 - **自动探测只在内存里。** 重启后 `自动` 会重新先试 `alpha/search`。
-- **渠道下拉不列出没写 `api` 的内置供应商。** 页面在浏览器里运行，读不到 DSH 的内置模型目录，只能按路由里写明的 `api` 判断协议。这类供应商在“跟随会话”时可以正常搜索；要固定到它，请在它的路由里写上 `api`，或者直接在配置里设置 `followSession: false` 和 `searchProvider`。
 - **文案只有中文和英文**，其他语言显示英文。

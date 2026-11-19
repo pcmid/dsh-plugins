@@ -69,16 +69,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.3.0"
+        "latest": "0.4.0"
       },
       "versions": [
         {
-          "version": "0.3.0",
-          "publishTimestamp": 1795060058,
+          "version": "0.4.0",
+          "publishTimestamp": 1795071827,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "b0df10a2abb785771c43c75c8a7ff312e6a7b1d2",
+            "commit": "325b3fc2e9617c2e7df5c47909f746c0d15ce73e",
             "path": "plugins/dsh-codex-provider"
           },
           "engines": {
@@ -180,8 +180,8 @@
         "zh": "接口原生网页搜索"
       },
       "description": {
-        "en": "Backs the web_search tool with the model API's built-in web search, running on the conversation's provider with a per-provider search model. Supports Anthropic Messages and OpenAI Responses routes.",
-        "zh": "用模型接口自带的网页搜索为 web_search 工具提供后端，在会话所用的供应商上执行，每个供应商可指定自己的搜索模型。支持 Anthropic Messages 和 OpenAI Responses 路由。"
+        "en": "Backs the web_search tool with the model API's built-in web search, following the conversation or a pinned search channel and model. Supports Anthropic Messages, OpenAI Responses and registered channels such as Codex Provider.",
+        "zh": "用模型接口自带的网页搜索为 web_search 工具提供后端，跟随会话或固定搜索渠道和模型。支持 Anthropic Messages、OpenAI Responses 和已注册的渠道（如 Codex Provider）。"
       },
       "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzFmNWVmZiIvPgogIDxjaXJjbGUgY3g9IjI4IiBjeT0iMjgiIHI9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iNCIvPgogIDxlbGxpcHNlIGN4PSIyOCIgY3k9IjI4IiByeD0iNiIgcnk9IjE0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjE0IiB5MT0iMjgiIHgyPSI0MiIgeTI9IjI4IiBzdHJva2U9IiNmZmZmZmYiIHN0cm9rZS13aWR0aD0iMi41Ii8+CiAgPGxpbmUgeDE9IjM4LjUiIHkxPSIzOC41IiB4Mj0iNTAiIHkyPSI1MCIgc3Ryb2tlPSIjZmZmZmZmIiBzdHJva2Utd2lkdGg9IjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPgo8L3N2Zz4K",
       "author": "pcmid",
@@ -198,16 +198,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.6.0"
+        "latest": "0.7.0"
       },
       "versions": [
         {
-          "version": "0.6.0",
-          "publishTimestamp": 1794633227,
+          "version": "0.7.0",
+          "publishTimestamp": 1795072777,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "2f9a9d3f0dfa3758ddc677b8239ab05caf9c1405",
+            "commit": "5e757ce739cab61c2b5f8c16cf0167d4143c6463",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {

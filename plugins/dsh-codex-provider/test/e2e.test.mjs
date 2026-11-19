@@ -141,6 +141,31 @@ test('real Codex keeps one thread per session, pauses on DSH tools and rebuilds 
   }
 })
 
+test('real Codex opts into live search for one temporary thread only and forwards cited URLs', { timeout: 60000 }, async () => {
+  const url = 'https://iana.example/domains'
+  const answer = message('msg_search', 'IANA reserved them.')
+  answer.content[0].annotations = [{ type: 'url_citation', url, title: 'IANA', start_index: 0, end_index: 4 }]
+  const action = { type: 'web_search_call', id: 'ws_search', status: 'completed', action: { type: 'search', query: 'test' } }
+  const f = await fixture([[message('msg_1', 'Hi')], [action, answer], [message('msg_3', 'Back')]])
+  const adapter = new CodexAdapter({ codexPath: process.env.CODEX_BIN ?? 'codex', codexHome: f.codexHome, timeoutMs: 20000 })
+  const chat = { provider: 'codex-provider', model: 'fixture-model', sessionId: 'chat', messages: [user('private history')], tools }
+  try {
+    const first = await Array.fromAsync(adapter.stream(chat))
+    assert.deepEqual(await adapter.search({ model: chat.model, query: 'test' }), {
+      content: 'IANA reserved them.', sources: [{ url, title: 'IANA' }],
+    })
+    await Array.fromAsync(adapter.stream({ ...chat, messages: [...chat.messages, assistantOf(first, chat), user('next')] }))
+    const [before, search, after] = f.recorded.map(r => r.body)
+    assert.equal(before.prompt_cache_key, after.prompt_cache_key)
+    assert.notEqual(search.prompt_cache_key, before.prompt_cache_key)
+    assert.deepEqual(search.tools.map(t => t.type), ['web_search'])
+    assert.equal(search.tools[0].external_web_access, true)
+    assert.equal(before.tools.some(t => t.type === 'web_search'), false)
+    assert.equal(after.tools.some(t => t.type === 'web_search'), false)
+    assert.deepEqual(search.input.filter(i => i.role === 'user').map(inputText), ['test'])
+  } finally { await adapter.dispose(); await f.close() }
+})
+
 test('real Codex sends the selected tier and capability downgrades to the loopback API', { timeout: 60000 }, async () => {
   const f = await fixture([[message('speed_1', 'Ultra')], [message('speed_2', 'Fast')], [message('speed_3', 'Standard')]], {})
   const adapter = new CodexAdapter({ codexPath: process.env.CODEX_BIN ?? 'codex', codexHome: f.codexHome, timeoutMs: 20000 })

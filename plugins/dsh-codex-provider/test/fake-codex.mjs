@@ -90,6 +90,8 @@ export class FakeCodex {
       if (item.type === 'message') {
         if (!item.silent) this.emit(thread, 'item/agentMessage/delta', { ...at, itemId: item.id, delta: item.content[0].text })
         this.emit(thread, 'item/completed', { ...at, item: { type: 'agentMessage', id: item.id, text: item.content[0].text } })
+      } else if (item.type === 'webSearch') {
+        this.emit(thread, 'item/completed', { ...at, item })
       } else if (item.type === 'reasoning') {
         this.emit(thread, 'item/reasoning/summaryTextDelta', { ...at, itemId: item.id, delta: item.summary[0].text, summaryIndex: 0 })
         this.emit(thread, 'item/completed', { ...at, item: { type: 'reasoning', id: item.id, summary: [item.summary[0].text], content: [] } })
