@@ -75,6 +75,7 @@ function messagesStream(content, stopReason = 'end_turn') {
 function harness({ selection = { provider: 'pool', model: 'gpt-6-astra' }, routes = ROUTES, directory = {}, keys = {}, config = {}, caps = ROUTE_CAPS, respond } = {}) {
   const calls = []
   const ctx = {
+    get(key) { return this[key] },
     credentials: { resolve: async ref => ({ value: keys[ref] ?? 'secret' }) },
     agents: { currentInitiator: () => (selection === NONE ? undefined : { model: { current: () => selection } }) },
     llm: {
@@ -255,7 +256,8 @@ test('Cordis scopes backend registrations to their owner and exposes only channe
   const root = new Context()
   const web = [], changes = []
   let route, unbind
-  for (const key of inject) root.provide(key, key === 'web' ? { registerSearchProvider: value => web.push(value) } : stub.ctx[key])
+  // A stock headless profile provides these services, but not credentials.
+  for (const key of ['web', 'llm', 'agents', 'loader']) root.provide(key, key === 'web' ? { registerSearchProvider: value => web.push(value) } : stub.ctx[key])
   root.provide('connection', { fetch: { register: value => { route = value } } })
   const host = await root.plugin({ inject, apply: ctx => apply(ctx, Config({})) })
   const list = async () => {
@@ -266,6 +268,13 @@ test('Cordis scopes backend registrations to their owner and exposes only channe
     return new Map(result.value)
   }
   try {
+    assert.equal(web.length, 1, 'native search mounts without a credentials service')
+    assert.equal(await web[0].ready('pool'), false, 'HTTP still needs a credential')
+    await assert.rejects(web[0].search({ query: 'news' }), /credential POOL_KEY.*not set/)
+    const removeCredentials = root.provide('credentials', stub.ctx.credentials)
+    assert.equal(await web[0].ready('pool'), true, 'HTTP picks up a late credentials service')
+    await removeCredentials()
+    assert.equal(await web[0].ready('pool'), false)
     assert.equal(route.path, '/api/pcmid/native-search/channels')
     assert.deepEqual(route.methods, ['POST'])
     const http = new Map([['pool', 'openai-responses'], ['ccmax', 'anthropic-messages']])

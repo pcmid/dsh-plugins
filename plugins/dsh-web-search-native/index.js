@@ -26,11 +26,8 @@ import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 /** Cordis plugin name used by loader diagnostics. */
 export const name = 'web-search-native'
 
-/**
- * The web seam this provider registers into, plus the services that answer
- * which model is current, which route owns it, and what that route's key is.
- */
-export const inject = ['web', 'credentials', 'agents', 'llm', 'loader']
+// Registered backends own their auth; only HTTP routes consult the optional credentials service.
+export const inject = ['web', 'agents', 'llm', 'loader']
 
 /** Default Anthropic Messages API version header. */
 const DEFAULT_ANTHROPIC_VERSION = '2023-06-01'
@@ -625,7 +622,7 @@ export class NativeSearchProvider {
 
   async apiKey(route) {
     try {
-      const hit = await this.ctx.credentials.resolve(route.apiKeyRef)
+      const hit = await this.ctx.get('credentials')?.resolve(route.apiKeyRef)
       const value = typeof hit?.value === 'string' ? hit.value.trim() : ''
       return value === '' ? undefined : value
     } catch {

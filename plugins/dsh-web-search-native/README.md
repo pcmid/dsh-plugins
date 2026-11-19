@@ -41,7 +41,7 @@
 
 模型供应商插件可以可选注入 `nativeSearch` 服务，调用 `scope.nativeSearch.register(providerId, search)` 注册自己的实现。`providerId` 是 DSH 模型供应商 ID；`search({ model, query, reasoningEffort }, signal)` 返回 `{ content?, sources: [{ url, title?, snippet? }] }`。注册返回注销函数；供应商停用时应注销，不需要再向 `ctx.web` 注册第二个搜索提供方。
 
-Codex 渠道使用本机 Codex 登录，在独立的临时线程执行查询。聊天线程不开放 Codex 内置搜索；结果取自搜索事件，不从回答正文猜测来源。渠道出错不会改用其他供应商。`searchTransport` 和 HTTP 渠道特有的参数不适用于 Codex。
+Codex 渠道使用本机 Codex 登录，在独立的临时线程执行查询。默认 headless 环境不必启用 DSH 的 `credentials` 服务；需要该服务读取密钥的是 HTTP 渠道。聊天线程不开放 Codex 内置搜索；结果取自搜索事件，不从回答正文猜测来源。渠道出错不会改用其他供应商。`searchTransport` 和 HTTP 渠道特有的参数不适用于 Codex。
 
 ## 结果
 
