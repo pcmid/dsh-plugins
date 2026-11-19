@@ -112,16 +112,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.5.0"
+        "latest": "0.6.0"
       },
       "versions": [
         {
-          "version": "0.5.0",
-          "publishTimestamp": 1794558357,
+          "version": "0.6.0",
+          "publishTimestamp": 1795069861,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "a993443be4c6395c3eacb83e65d83f78a614eb06",
+            "commit": "df44fd6db56572a100289caa4c22f62dc9dd112c",
             "path": "plugins/dsh-model-defaults"
           },
           "engines": {
