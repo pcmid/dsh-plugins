@@ -69,16 +69,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.2.6"
+        "latest": "0.3.0"
       },
       "versions": [
         {
-          "version": "0.2.6",
-          "publishTimestamp": 1794998757,
+          "version": "0.3.0",
+          "publishTimestamp": 1795060058,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "528f2805ea7c090975362b0dc4483596a7233cf4",
+            "commit": "b0df10a2abb785771c43c75c8a7ff312e6a7b1d2",
             "path": "plugins/dsh-codex-provider"
           },
           "engines": {
