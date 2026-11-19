@@ -203,11 +203,11 @@
       "versions": [
         {
           "version": "0.7.0",
-          "publishTimestamp": 1795071827,
+          "publishTimestamp": 1795072777,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "325b3fc2e9617c2e7df5c47909f746c0d15ce73e",
+            "commit": "5e757ce739cab61c2b5f8c16cf0167d4143c6463",
             "path": "plugins/dsh-web-search-native"
           },
           "engines": {
