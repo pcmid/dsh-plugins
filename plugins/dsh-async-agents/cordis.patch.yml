@@ -1,0 +1,5 @@
+# Bundle patch of @pcmid/dsh-async-agents: agents stop blocking on background
+# work. The plugin takes no configuration.
+- insert:
+    - id: async-agents
+      name: '@pcmid/dsh-async-agents'

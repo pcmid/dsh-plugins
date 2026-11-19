@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Agent monitor",
+    "description": "Shows above the message box what each agent of the session is doing: working, waiting for background work, or idle."
+  }
+}

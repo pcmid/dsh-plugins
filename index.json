@@ -561,6 +561,92 @@
       ]
     },
     {
+      "name": "@pcmid/dsh-async-agents",
+      "title": {
+        "en": "Async agents",
+        "zh": "异步智能体"
+      },
+      "description": {
+        "en": "Keeps an agent from blocking on background work. A shell command that is still running after 10 seconds (up to 60 when the agent asks for more) continues as a background job. The agent can no longer wait on a job or on a subagent; it is told to end its turn instead, and the completion notice starts its next turn. This applies to the main agent of a session. On a DSH version that keeps a subagent loaded while its background job runs, it also applies to subagents whose result goes to their parent, and these agents get a close_agent tool: it unloads an idle subagent to free its slot toward the subagent limit, which cancels the background jobs that subagent started and discards the messages still queued for it. On other DSH versions subagents are not changed. Turning the plugin off restores the original behavior right away.",
+        "zh": "让智能体不再被后台工作卡住。Shell 命令运行超过 10 秒（智能体可要求最长 60 秒）仍未结束时，转为后台任务继续运行。智能体不能再等待后台任务或子智能体，而是按提示先结束当前回合，完成通知到达时开始下一回合。以上对会话的主智能体生效。如果所用的 DSH 版本会在子智能体的后台任务运行期间让它保持加载，还对结果交给父级的子智能体生效，并为这些智能体增加 close_agent 工具：卸载一个空闲的子智能体，释放它占用的子智能体名额，同时取消它启动的后台任务，并丢弃仍在排队等它处理的消息。在其他 DSH 版本上不改动子智能体。关闭插件后立即恢复原有行为。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iI2E2M2Q2ZSIvPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj4KICAgIDxwYXRoIGQ9Ik0xNCAyNGgzNE00MSAxNmw4IDgtOCA4IiBzdHJva2Utd2lkdGg9IjQuNSIvPgogICAgPHBhdGggZD0iTTIzIDI0djEwYTkgOSAwIDAgMCA5IDloNCIgc3Ryb2tlLXdpZHRoPSIzLjUiIG9wYWNpdHk9IjAuODUiLz4KICAgIDxjaXJjbGUgY3g9IjQ0IiBjeT0iNDMiIHI9IjUuNSIgc3Ryb2tlLXdpZHRoPSIzLjUiIG9wYWNpdHk9IjAuODUiLz4KICA8L2c+Cjwvc3ZnPgo=",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-async-agents#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-async-agents"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.2.0"
+      },
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1795001981,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "10096ebb29eeaef076d7be2385bed16ee70ce901",
+            "path": "plugins/dsh-async-agents"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
+      "name": "@pcmid/dsh-agent-monitor",
+      "title": {
+        "en": "Agent monitor",
+        "zh": "智能体监控"
+      },
+      "description": {
+        "en": "Shows above the message box what each agent of the session is doing: working, waiting for background work, or idle.",
+        "zh": "在输入框上方显示会话里每个智能体在做什么：运行中、等待后台工作，或空闲。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0Ij4KICA8cmVjdCB3aWR0aD0iNjQiIGhlaWdodD0iNjQiIHJ4PSIxNCIgZmlsbD0iIzBlNzQ5MCIvPgogIDxnIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZmZmZiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj4KICAgIDxwYXRoIGQ9Ik0yNyAxOWgyMk0zOCAzMmgxMSIgc3Ryb2tlLXdpZHRoPSI0LjUiLz4KICAgIDxwYXRoIGQ9Ik0zOCA0NWg3IiBzdHJva2Utd2lkdGg9IjQuNSIgb3BhY2l0eT0iMC42Ii8+CiAgICA8cGF0aCBkPSJNMTYgMjd2MTRhNCA0IDAgMCAwIDQgNE0xNiAzMmg0IiBzdHJva2Utd2lkdGg9IjIuNSIgb3BhY2l0eT0iMC43Ii8+CiAgICA8Y2lyY2xlIGN4PSIyNy41IiBjeT0iMzIiIHI9IjQuMjUiIHN0cm9rZS13aWR0aD0iMyIvPgogIDwvZz4KICA8Y2lyY2xlIGN4PSIxNiIgY3k9IjE5IiByPSI1IiBmaWxsPSIjZmZmZmZmIi8+CiAgPGNpcmNsZSBjeD0iMjcuNSIgY3k9IjQ1IiByPSI1IiBmaWxsPSIjZmZmZmZmIiBvcGFjaXR5PSIwLjYiLz4KPC9zdmc+Cg==",
+      "author": "pcmid",
+      "homepage": "https://github.com/pcmid/dsh-plugins/tree/main/plugins/dsh-agent-monitor#readme",
+      "repository": {
+        "url": "https://github.com/pcmid/dsh-plugins",
+        "directory": "plugins/dsh-agent-monitor"
+      },
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.1.0"
+      },
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1795012949,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "66d5c264b3921e7a20393e7b74a73c15c9b9e836",
+            "path": "plugins/dsh-agent-monitor"
+          },
+          "engines": {
+            "dsh": ">=0.2.2-rc.3 <0.3.0-0"
+          }
+        }
+      ]
+    },
+    {
       "name": "@vectorize-io/hindsight-coding-agents",
       "description": "Reflect-only Hindsight long-term memory for coding agents (harness-pluggable: opencode, …), with automatic background ingestion (no setup CLI).",
       "repository": {
