@@ -17,7 +17,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/plugins/dsh-codex-provid
 
 模型列表只显示基础模型，不再显示 Fast/Ultrafast 变体。在会话模型菜单选择 **Codex 速度**，或运行 `/fast`（切换标准/Fast）、`/fast on`、`/fast off`、`/fast standard|fast|ultrafast`（`ultra` 是 `ultrafast` 的别名）。选择按会话保存，恢复和分叉从成功命令日志重建；不会改写旧记录。旧会话的 `@priority` / `@ultrafast` 模型在未显式选择速度时仍作为兼容基线。
 
-Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每轮按 Codex `model/list` 的服务档位计算并传入 `turn/start`，标准档显式传 `null`，不受用户 Codex 配置 `service_tier` 影响。菜单区分所选档位与上次请求的有效档位；有效档位表示插件实际请求的档位，不保证后端计费或额度。较高速度可能消耗更多额度。两轮间切换速度保留线程；工具等待期间改变有效档位则从 DSH 历史重建。
+Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每轮按 Codex `model/list` 的服务档位计算并传入 `turn/start`，标准档显式传 `null`，不受用户 Codex 配置 `service_tier` 影响。菜单只能点当前模型支持的档位，选中的是下一次请求实际使用的档位：例如会话选了 Ultrafast、当前模型只支持 Fast，菜单勾选 Fast，Ultrafast 不可点；换回支持 Ultrafast 的模型后恢复为 Ultrafast。`/fast ultrafast` 在不支持的模型上仍会保存选择，并说明本次退到哪一档。较高速度可能消耗更多额度。两轮间切换速度保留线程；工具等待期间改变有效档位则从 DSH 历史重建。
 
 添加或 **编辑** 时只有一项 **codex 路径**（配置键 `codexPath`，可用 `~` 表示家目录）：插件用这个 Codex 可执行文件运行 `app-server --stdio`。留空时从 `PATH` 查找 `codex`；桌面应用找不到时填写完整路径，例如 ChatGPT 自带的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`。插件需要自己启动 app-server，才能用启动参数关掉 Codex 本会注入请求的内容，因此不支持连接已经在运行的 app-server。
 

@@ -8,8 +8,8 @@ window.__ModuleLoader__.load({
     const PATH = ['providers', 'codex-provider']
     const SLOT = '[data-slot="settings.models.provider-card"]'
     // Action labels follow the built-in Models editor (取消 / 保存).
-    const zh = { codexPath: 'codex 路径', cancel: '取消', apply: '保存', applying: '保存中…', failed: '保存失败，请重试。', speed: 'Codex 速度', standard: '标准', fast: 'Fast', ultrafast: 'Ultrafast', speedHint: '按模型支持情况使用所选档位或更低档位；较高速度可能消耗更多额度。', effective: '上次有效档位', speedFailed: '速度保存失败，请重试。' }
-    const en = { codexPath: 'Codex path', cancel: 'Cancel', apply: 'Apply', applying: 'Applying…', failed: 'Could not save. Please retry.', speed: 'Codex speed', standard: 'Standard', fast: 'Fast', ultrafast: 'Ultrafast', speedHint: 'Uses the selected speed or a lower supported tier. Higher speeds may use more quota.', effective: 'Last effective speed', speedFailed: 'Could not save speed. Please retry.' }
+    const zh = { codexPath: 'codex 路径', cancel: '取消', apply: '保存', applying: '保存中…', failed: '保存失败，请重试。', speed: 'Codex 速度', standard: '标准', fast: 'Fast', ultrafast: 'Ultrafast', speedFailed: '速度保存失败，请重试。' }
+    const en = { codexPath: 'Codex path', cancel: 'Cancel', apply: 'Apply', applying: 'Applying…', failed: 'Could not save. Please retry.', speed: 'Codex speed', standard: 'Standard', fast: 'Fast', ultrafast: 'Ultrafast', speedFailed: 'Could not save speed. Please retry.' }
     // The Models page renders a generic editor for providers it does not know, which can only point
     // at cordis.patch.yml. Its slot has no way to replace that editor, so this card takes its place:
     // it is shown only while the page shows that editor (Edit on the saved row, or the add card) and
@@ -87,17 +87,29 @@ ${SLOT}:has(.dsh-codex-provider) + div, div > div:has(+ ${SLOT} .dsh-codex-provi
           h('button', { type: 'button', className: 'dcp-primary', disabled, onClick: save }, t(busy ? 'applying' : 'apply'))))
     }
 
-    function SpeedControl({ useProjection, directory, locked, reportFailure, selectSpeed, t }) {
+    function SpeedControl({ useProjection, directory, locked, reportFailure, selectSpeed, loadSpeeds, t }) {
       const mode = useProjection('codexSpeed')
       const selection = useSyncExternalStore(directory.subscribe, directory.getSnapshot)
       const [pending, setPending] = useState(false)
+      const [supported, setSupported] = useState()
       const route = selection.current
-      if (!mode || route?.provider !== 'codex-provider') return null
+      const codex = route?.provider === 'codex-provider'
+      useEffect(() => {
+        if (!codex) return
+        let live = true
+        loadSpeeds().then(value => { if (live) setSupported(value) },
+          error => { if (live) reportFailure(error instanceof Error ? error.message : t('speedFailed')) })
+        return () => { live = false }
+      }, [codex])
+      if (!mode || !codex) return null
       const at = route.model.lastIndexOf('@')
       const model = at > 0 ? route.model.slice(0, at) : route.model
       const legacy = route.model.endsWith('@ultrafast') ? 'ultrafast' : route.model.endsWith('@priority') ? 'fast' : 'standard'
       const selected = mode.selected ?? legacy
-      const last = mode.lastUsed
+      // A speed the model lacks is disabled; the checked one is what the next request runs at.
+      const available = supported ? supported[model] ?? ['standard'] : []
+      const order = ['ultrafast', 'fast', 'standard']
+      const checked = order.slice(order.indexOf(selected)).find(speed => available.includes(speed)) ?? selected
       const change = async wanted => {
         setPending(true)
         try {
@@ -115,13 +127,10 @@ ${SLOT}:has(.dsh-codex-provider) + div, div > div:has(+ ${SLOT} .dsh-codex-provi
 .dcp-speed button { border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-md); padding: 4px 8px; background: var(--dsw-alias-bg-layer-1); color: inherit; font: inherit; }
 .dcp-speed button[aria-checked="true"] { background: var(--dsw-alias-interactive-bg-hover-solid); }
 .dcp-speed button:disabled { opacity: .4; }
-.dcp-speed p { margin: 6px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 `),
         h('div', { className: 'dcp-speed-row' }, h('span', null, t('speed')), h('span', { className: 'dcp-speeds', role: 'group', 'aria-label': t('speed') },
-          ...['standard', 'fast', 'ultrafast'].map(value => h('button', { key: value, type: 'button', role: 'menuitemradio',
-            'aria-checked': selected === value, disabled: locked || pending, onClick: () => change(value) }, t(value))))),
-        h('p', null, last?.model === model && last.selected === selected
-          ? `${t('effective')}: ${t(last.actual)}. ${t('speedHint')}` : t('speedHint')))
+          ...order.toReversed().map(value => h('button', { key: value, type: 'button', role: 'menuitemradio',
+            'aria-checked': checked === value, disabled: locked || pending || !available.includes(value), onClick: () => change(value) }, t(value))))))
     }
 
     return {
@@ -132,19 +141,26 @@ ${SLOT}:has(.dsh-codex-provider) + div, div > div:has(+ ${SLOT} .dsh-codex-provi
         const form = { subscribe: listener => scope.subscribe(listener), getSnapshot: () => scope.getSnapshot(),
           mutate: (ops, revision) => scope.mutate(ops, revision) }
         const t = ctx.locale.bind(NS)
-        ctx.inject(['remote', 'remote.commands', 'modelDirectories'], scope =>
+        let speedsRequest
+        ctx.inject(['remote', 'remote.commands', 'modelDirectories', 'connection'], scope => {
+          // One request per page; a failed one is retried the next time the menu opens.
+          const loadSpeeds = () => speedsRequest ??= scope.connection.rpc.call('/api', 'pcmid/codex-provider/speeds', {}).then(result => {
+            if (!result.ok) throw new Error(result.error?.message || t('speedFailed'))
+            return result.value
+          }).catch(error => { speedsRequest = undefined; throw error })
           scope.slots.inject('conversation.input.model.options', () => scope.slots.register({
             name: 'conversation.input.model.options', id: 'codex-provider.speed', locale: NS,
             inject: sessionId => {
               const store = scope.modelDirectories.directoryFor(sessionId).store
-              return { t, directory: { subscribe: listener => store.subscribe(listener), getSnapshot: () => store.getSnapshot() },
+              return { t, loadSpeeds, directory: { subscribe: listener => store.subscribe(listener), getSnapshot: () => store.getSnapshot() },
                 selectSpeed: async speed => {
                   const response = await scope.remote.commands.execute(sessionId, `/fast ${speed}`, [])
                   if (!response.ok) throw new Error(response.error.message)
                   return response.value?.result
                 } }
             },
-          }, SpeedControl)))
+          }, SpeedControl))
+        })
         ctx.effect(() => ctx.configForms.whileServed(['codex-provider'], () =>
           ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
             name: 'settings.models.provider-card', key: 'codex-provider', locale: NS,

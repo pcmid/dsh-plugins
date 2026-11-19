@@ -23,7 +23,7 @@ function load() {
   runInNewContext(readFileSync(new URL('../client.js', import.meta.url), 'utf8'), {
     window: { __ModuleLoader__: { load: value => { plugin = value.factory(require) } } },
   })
-  const state = { snapshot: { status: 'ready', value: { providers: {} }, writable: true, revision: 1 }, accepted: true, mutations: [], speedCalls: [], speedError: null, modelSnapshot: { current: { provider: 'codex-provider', model: 'gpt-test' } } }
+  const state = { snapshot: { status: 'ready', value: { providers: {} }, writable: true, revision: 1 }, accepted: true, mutations: [], speedCalls: [], speedError: null, modelSnapshot: { current: { provider: 'codex-provider', model: 'gpt-test' } }, speedLoads: 0, speeds: { 'gpt-test': ['standard', 'fast'], 'gpt-ultra': ['standard', 'fast', 'ultrafast'] } }
   const listeners = new Set()
   const scope = {
     getSnapshot: () => state.snapshot,
@@ -41,6 +41,11 @@ function load() {
     inject(_keys, callback) { callback(this) },
     modelDirectories: { directoryFor: () => ({ store: { subscribe: () => () => {},
       getSnapshot: () => state.modelSnapshot } }) },
+    connection: { rpc: { call: async (channel, endpoint) => {
+      assert.deepEqual([channel, endpoint], ['/api', 'pcmid/codex-provider/speeds'])
+      state.speedLoads++
+      return { ok: true, value: state.speeds }
+    } } },
     remote: { commands: { execute: async (_session, line) => {
       state.speedCalls.push(line)
       if (state.speedError) return { ok: false, error: { message: state.speedError } }
@@ -54,7 +59,7 @@ function load() {
     } },
   })
   return { state, speed: props => React.createElement(speedComponent, { ...speedRegistration.inject('session-1'),
-    useProjection: () => ({ selected: 'ultrafast', lastUsed: { model: 'gpt-test', selected: 'ultrafast', actual: 'fast' } }),
+    useProjection: () => ({ selected: 'ultrafast' }),
     locked: false, reportFailure: () => {}, ...props }), card: () => React.createElement(component, { ...registration.inject(), configured: false }) }
 }
 
@@ -96,22 +101,30 @@ test('on the add card an empty path enables the provider with codex from PATH', 
   } finally { cleanup() }
 })
 
-test('speed menu distinguishes selection from effective speed and sends the shared command without optimistic selection', async () => {
+test('speed menu offers only the model\'s speeds, checks the one in effect and sends the shared command', async () => {
   const { state, speed } = load()
   const failures = []
+  const radio = (view, name) => view.getByRole('menuitemradio', { name })
   const view = render(speed({ reportFailure: message => failures.push(message) }))
   try {
-    assert.equal(view.getByRole('menuitemradio', { name: 'Ultrafast' }).getAttribute('aria-checked'), 'true')
-    assert.match(view.getByText(/上次有效档位/).textContent, /上次有效档位: Fast/)
-    fireEvent.click(view.getByRole('menuitemradio', { name: '标准' }))
+    await waitFor(() => assert.equal(radio(view, 'Fast').disabled, false))
+    assert.equal(radio(view, 'Ultrafast').disabled, true, 'gpt-test has no Ultrafast')
+    assert.equal(radio(view, 'Fast').getAttribute('aria-checked'), 'true', 'Ultrafast runs as Fast here')
+    assert.equal(view.container.querySelector('p'), null, 'No hint text below the buttons')
+    state.modelSnapshot = { current: { provider: 'codex-provider', model: 'gpt-ultra' } }
+    view.rerender(speed({ reportFailure: message => failures.push(message) }))
+    assert.equal(radio(view, 'Ultrafast').disabled, false)
+    assert.equal(radio(view, 'Ultrafast').getAttribute('aria-checked'), 'true')
+    assert.equal(state.speedLoads, 1, 'Speeds are read once per page')
+    fireEvent.click(radio(view, '标准'))
     await waitFor(() => assert.deepEqual(state.speedCalls, ['/fast standard']))
-    await waitFor(() => assert.equal(view.getByRole('menuitemradio', { name: '标准' }).disabled, false))
-    assert.equal(view.getByRole('menuitemradio', { name: 'Ultrafast' }).getAttribute('aria-checked'), 'true', 'Only the saved projection changes selection')
+    await waitFor(() => assert.equal(radio(view, '标准').disabled, false))
+    assert.equal(radio(view, 'Ultrafast').getAttribute('aria-checked'), 'true', 'Only the saved projection changes selection')
     state.speedError = 'offline'
-    fireEvent.click(view.getByRole('menuitemradio', { name: 'Fast' }))
+    fireEvent.click(radio(view, 'Fast'))
     await waitFor(() => assert.deepEqual(failures, ['offline']))
     view.rerender(speed({ locked: true }))
-    assert.equal(view.getByRole('menuitemradio', { name: 'Fast' }).disabled, true)
+    assert.equal(radio(view, 'Fast').disabled, true)
     state.modelSnapshot = { current: { provider: 'other', model: 'x' } }
     view.rerender(speed({}))
     assert.equal(view.queryByRole('group'), null)

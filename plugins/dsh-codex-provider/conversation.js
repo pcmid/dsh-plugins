@@ -271,7 +271,7 @@ export class Conversation {
       this.committed = request.keys
       this.awaiting = kind === 'tool-calls' ? new Map(batch.map(id => [id, this.requested.get(id)])) : undefined
       yield { type: 'finish', reason: { kind },
-        replayState: { response: { codex: { thread: this.threadId, step: this.step, items, speed: request.speed, ...(nested.length ? { nested } : {}) } } } }
+        replayState: { response: { codex: { thread: this.threadId, step: this.step, items, ...(nested.length ? { nested } : {}) } } } }
     }.bind(this)
     while (true) {
       const ready = responseDone && batch.length && batch.every(id => this.requested.has(id))
