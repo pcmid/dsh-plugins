@@ -1,6 +1,6 @@
 import { LlmError, EMPTY_RESPONSE_CODE } from '@deepseek-ai/dsh-llm'
 import { declineServerRequest } from './app-server.js'
-import { isOutputItem, projectHistory, toolResultText } from './history.js'
+import { hasOutputImage, isOutputItem, prepareImages, projectHistory, toolResultItems } from './history.js'
 
 const INPUT_ROLES = new Set(['user', 'developer', 'system'])
 
@@ -160,6 +160,7 @@ export class Conversation {
     this.step = 0
     this.turnId = undefined
     this.turnActive = false
+    this.responseDone = false
     this.awaiting = undefined
     this.requested = new Map()
     this.dshCalls = new Set()
@@ -222,15 +223,18 @@ export class Conversation {
    * @param request - the prepared request.
    */
   async begin(plan, request) {
-    const items = projectHistory(plan.kind === 'start' ? request.messages : plan.extra, request.provider, this.names.toWire)
+    const messages = plan.kind === 'start' ? request.messages : plan.extra
+    const images = await prepareImages(plan.kind === 'tools' ? [...plan.results, ...messages] : messages, request)
+    const items = projectHistory(messages, request.provider, this.names.toWire, images)
+    const results = plan.kind === 'tools' ? plan.results.map(message => ({
+      id: message.toolCallId, result: { success: !message.isError, contentItems: toolResultItems(message, images) },
+    })) : undefined
     if (items.length) await this.connection.request('thread/inject_items', { threadId: this.threadId, items })
-    if (plan.kind === 'tools') {
+    if (results) {
       // Codex queues injected input during a turn and records it after these tool outputs.
-      for (const message of plan.results) {
-        this.connection.respond(this.awaiting.get(message.toolCallId), { result: {
-          success: !message.isError, contentItems: [{ type: 'inputText', text: toolResultText(message) }],
-        } })
-        this.requested.delete(message.toolCallId)
+      for (const { id, result } of results) {
+        this.connection.respond(this.awaiting.get(id), { result })
+        this.requested.delete(id)
       }
       this.awaiting = undefined
       return
@@ -238,6 +242,7 @@ export class Conversation {
     this.awaiting = undefined
     this.effort = request.effort
     this.serviceTier = request.serviceTier
+    this.responseDone = false
     // An explicit null runs the standard tier, also when the user's Codex config sets `service_tier`.
     const { turn } = await this.connection.request('turn/start', {
       threadId: this.threadId, input: [], serviceTier: request.serviceTier ?? null, ...(request.effort ? { effort: request.effort } : {}),
@@ -262,16 +267,20 @@ export class Conversation {
     let settled = 0
     const usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 }
     let reported = false
-    let responseDone = false
+    let imageOutput = false
+    // A running Code Mode script may await more DSH tools without asking the model again.
+    let responseDone = this.responseDone
     const finish = function* (kind) {
       yield* blocks.endAll()
       if (!blocks.count) throw new LlmError('Codex returned an empty response', EMPTY_RESPONSE_CODE)
       if (reported) yield { type: 'usage', usage }
       this.step++
       this.committed = request.keys
+      this.responseDone = responseDone
       this.awaiting = kind === 'tool-calls' ? new Map(batch.map(id => [id, this.requested.get(id)])) : undefined
       yield { type: 'finish', reason: { kind },
-        replayState: { response: { codex: { thread: this.threadId, step: this.step, items, ...(nested.length ? { nested } : {}) } } } }
+        replayState: { response: { codex: { thread: this.threadId, turn: this.turnId, step: this.step, items,
+          ...(nested.length ? { nested } : {}), ...(imageOutput ? { imageOutput } : {}) } } } }
     }.bind(this)
     while (true) {
       const ready = responseDone && batch.length && batch.every(id => this.requested.has(id))
@@ -312,7 +321,11 @@ export class Conversation {
           if (isOutputItem(item)) {
             // Codex echoes the DSH results it received; they are already DSH tool messages.
             if (batch.includes(item.call_id)) throw new Error(`Codex answered DSH tool call ${item.call_id} itself`)
-            if (!this.dshCalls.has(item.call_id)) items.push(item)
+            // Rebuild an image-bearing script output from durable DSH results, not inline bytes.
+            if (!this.dshCalls.has(item.call_id)) {
+              if (hasOutputImage(item)) imageOutput = true
+              else items.push(item)
+            }
             break
           }
           responseDone = false

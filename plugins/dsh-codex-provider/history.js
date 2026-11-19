@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { LlmError } from '@deepseek-ai/dsh-llm'
+import { LlmError, offloadedImageText } from '@deepseek-ai/dsh-llm'
 
 const hash = text => createHash('sha256').update(text).digest('hex')
 
@@ -40,20 +40,74 @@ export function toolNames(tools = []) {
     toDsh.set(wire, tool.name)
   }
   const specs = tools.map(tool => ({
-    type: 'function', name: toWire.get(tool.name), description: tool.description, inputSchema: tool.parameters,
+    type: 'function', name: toWire.get(tool.name), inputSchema: tool.parameters,
+    description: tool.name === 'read_image'
+      ? tool.description + '\nIn Codex code mode this returns a string. On success, pass its last line (the data:image/ URL) to image() and the preceding description to text(). On error, use text() for the error message.'
+      : tool.description,
   }))
   return { specs, toWire, toDsh }
 }
+
+const unsupported = (message, block) =>
+  new LlmError(`Codex Provider cannot send ${block.type} content in a ${message.role} message`, 'UNSUPPORTED_CONTENT')
 
 function text(message, allow = []) {
   const parts = []
   for (const block of message.content) {
     if (block.type === 'text') parts.push(block.text)
     else if (!allow.includes(block.type)) {
-      throw new LlmError(`Codex Provider cannot send ${block.type} content in a ${message.role} message`, 'UNSUPPORTED_CONTENT')
+      throw unsupported(message, block)
     }
   }
   return parts.join('\n')
+}
+
+/** Read only images being sent to Codex, once per request and attachment. */
+export async function prepareImages(messages, { readImage, resolveImageAccess }) {
+  const urls = new Map()
+  if (readImage) {
+    for (const message of messages) {
+      if (message.role !== 'user' && message.role !== 'tool') continue
+      for (const block of message.content) {
+        if (block.type !== 'image' || block.offloaded === true) continue
+        if (!block.attachment) throw unsupported(message, block)
+        const ref = block.attachment
+        if (!urls.has(ref.attachmentId)) {
+          const { mediaType, data } = await readImage(ref)
+          urls.set(ref.attachmentId, `data:${mediaType};base64,${Buffer.from(data).toString('base64')}`)
+        }
+      }
+    }
+  }
+  return { urls, resolveImageAccess }
+}
+
+/** Responses-shaped text and images, preserving their order. */
+function inputItems(message, { urls, resolveImageAccess } = {}) {
+  const items = []
+  let parts = []
+  const flush = () => {
+    if (parts.length) items.push({ type: 'input_text', text: parts.join('\n') })
+    parts = []
+  }
+  for (const block of message.content) {
+    if (block.type === 'text') {
+      parts.push(block.text)
+      continue
+    }
+    if (block.type !== 'image' || !block.attachment) throw unsupported(message, block)
+    const ref = block.attachment
+    if (block.offloaded === true) {
+      parts.push(offloadedImageText(ref, resolveImageAccess?.(ref)))
+      continue
+    }
+    const imageUrl = urls?.get(ref.attachmentId)
+    if (!imageUrl) throw unsupported(message, block)
+    flush()
+    items.push({ type: 'input_image', image_url: imageUrl })
+  }
+  flush()
+  return items.length ? items : [{ type: 'input_text', text: '' }]
 }
 
 /**
@@ -79,6 +133,11 @@ const OUTPUT_TYPES = new Set(['function_call_output', 'custom_tool_call_output',
 export const isCallItem = item => CALL_TYPES.has(item?.type) && typeof item.call_id === 'string'
 /** Whether a Responses item is a tool output. */
 export const isOutputItem = item => OUTPUT_TYPES.has(item?.type)
+const inlineImage = text => typeof text === 'string' && /data:image\/[^;,\s]+;base64,/i.test(text)
+/** Code mode's image() emits a block, but text() can print the same data URL as text. */
+export const hasOutputImage = item => Array.isArray(item.output)
+  ? item.output.some(part => part?.type === 'input_image' || inlineImage(part?.text))
+  : inlineImage(item.output)
 
 /**
  * The Codex output items recorded for an assistant message this provider produced, when they
@@ -98,6 +157,25 @@ export function recordedItems(message, provider) {
   return calls.every(block => recorded.has(block.id)) ? codex.items : undefined
 }
 
+/** A Code Mode script can consume DSH results from several steps before emitting one output. */
+function rebuildNestedImageTurns(messages, recorded) {
+  const imageResults = new Set(messages.filter(message => message.role === 'tool'
+    && message.content.some(block => block.type === 'image')).map(message => message.toolCallId))
+  const imageTurns = new Set()
+  const nested = new Map()
+  for (const message of recorded.keys()) {
+    const replay = message.source.replayState.response.codex
+    if (!replay.turn) continue
+    const turn = JSON.stringify([replay.thread, replay.turn])
+    const calls = Array.isArray(replay.nested) ? replay.nested : []
+    if (calls.length) nested.set(message, turn)
+    if (replay.imageOutput || calls.some(id => imageResults.has(id))) imageTurns.add(turn)
+  }
+  // Rebuild only assistant steps with calls inside the affected script turn. Other raw items can
+  // still replay; the call/output pairing below discards the now-unmatched script results.
+  for (const [message, turn] of nested) if (imageTurns.has(turn)) recorded.delete(message)
+}
+
 /**
  * Project DSH history to Responses items for `thread/inject_items`. Assistant messages from this
  * provider replay the exact items Codex produced, including encrypted reasoning; other assistant
@@ -105,14 +183,16 @@ export function recordedItems(message, provider) {
  * @param messages - DSH messages after the instructions.
  * @param provider - this provider route.
  * @param toWire - DSH tool name to Codex tool name.
+ * @param images - prepared request images and optional path resolver.
  * @returns Responses items where every tool call has an output and every output has a call.
  */
-export function projectHistory(messages, provider, toWire) {
+export function projectHistory(messages, provider, toWire, images) {
   const recorded = new Map(messages.flatMap(message => {
     const items = message.role === 'assistant' ? recordedItems(message, provider) : undefined
     return items ? [[message, items]] : []
   }))
-  let items = project(messages, recorded, toWire)
+  rebuildNestedImageTurns(messages, recorded)
+  let items = project(messages, recorded, toWire, images)
   // A recorded call whose output never arrived (a script still running when the thread was
   // lost) would be dropped with everything it produced; rebuild those messages from DSH blocks.
   const outputs = new Set(items.filter(isOutputItem).map(item => item.call_id))
@@ -123,14 +203,14 @@ export function projectHistory(messages, provider, toWire) {
       rebuilt = true
     }
   }
-  if (rebuilt) items = project(messages, recorded, toWire)
+  if (rebuilt) items = project(messages, recorded, toWire, images)
   // Responses rejects a call without an output and an output without a call.
   const calls = new Set(items.filter(isCallItem).map(item => item.call_id))
   const answered = new Set(items.filter(isOutputItem).map(item => item.call_id))
   return items.filter(item => (isCallItem(item) ? answered.has(item.call_id) : isOutputItem(item) ? calls.has(item.call_id) : true))
 }
 
-function project(messages, recorded, toWire) {
+function project(messages, recorded, toWire, images) {
   const items = []
   for (const message of messages) {
     switch (message.role) {
@@ -141,11 +221,14 @@ function project(messages, recorded, toWire) {
         break
       }
       case 'user':
-        items.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: text(message) }] })
+        items.push({ type: 'message', role: 'user', content: inputItems(message, images) })
         break
-      case 'tool':
-        items.push({ type: 'function_call_output', call_id: message.toolCallId, output: text(message) })
+      case 'tool': {
+        const content = inputItems(message, images)
+        items.push({ type: 'function_call_output', call_id: message.toolCallId,
+          output: content.length === 1 && content[0].type === 'input_text' ? content[0].text : content })
         break
+      }
       case 'assistant': {
         if (recorded.has(message)) {
           items.push(...recorded.get(message))
@@ -175,8 +258,10 @@ function project(messages, recorded, toWire) {
   return items
 }
 
-/** Text a DSH tool result sends back to Codex. */
-export const toolResultText = message => text(message)
+/** Dynamic tool replies use app-server's camelCase instead of Responses item fields. */
+export const toolResultItems = (message, images) => inputItems(message, images).map(item => item.type === 'input_text'
+  ? { type: 'inputText', text: item.text }
+  : { type: 'inputImage', imageUrl: item.image_url })
 
 /**
  * Identity of one DSH message's model-visible content, cached per message object.

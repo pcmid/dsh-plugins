@@ -4,7 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import {
-  APP_IDENTITY, CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, QUOTA_EXCEEDED_CODE,
+  APP_IDENTITY, CONTEXT_WINDOW_EXCEEDED_CODE, LlmAdapter, LlmError, QUOTA_EXCEEDED_CODE, resolveImageAttachmentAccess,
 } from '@deepseek-ai/dsh-llm'
 import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
@@ -112,10 +112,12 @@ export class CodexAdapter extends LlmAdapter {
    * @param config - resolved plugin config plus the selected `codexPath`.
    * @param connect - `(executable, args, options) => connection`, replaceable in tests.
    * @param modelsDev - optional `ModelsDev` cache of context windows; its value outranks the window Codex reports.
+   * @param resolveAttachments - look up the DSH attachment store when a request carries an image.
    */
-  constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options), modelsDev = undefined) {
+  constructor(config = {}, connect = (executable, args, options) => new AppServerConnection(executable, args, options), modelsDev = undefined, resolveAttachments = undefined) {
     super()
     this.modelsDev = modelsDev
+    this.resolveAttachments = resolveAttachments
     this.config = { models: [], timeoutMs: 600000, idleTimeoutMs: 1800000, ...config }
     // The executable is spawned without a shell, so expand a leading `~` here.
     const codexPath = config.codexPath?.trim() || 'codex'
@@ -140,7 +142,8 @@ export class CodexAdapter extends LlmAdapter {
     const contextWindow = this.config.contextWindow ?? this.modelsDev?.window(base) ?? this.contextWindows.get(base) ?? FALLBACK_CONTEXT_WINDOW
     const name = serviceTier === undefined ? metadata?.displayName ?? model
       : tier === undefined ? model : `${metadata.displayName} ${tier.name}`
-    return { provider, id: model, name, ...(tier?.description ? { description: tier.description } : {}), inputModalities: ['text'],
+    const inputModalities = metadata?.inputModalities?.includes('image') ? ['text', 'image'] : ['text']
+    return { provider, id: model, name, ...(tier?.description ? { description: tier.description } : {}), inputModalities,
       context: { contextWindow },
       ...(efforts.length ? { reasoning: {
         efforts: efforts.map(effort => ({ id: effort.reasoningEffort, name: effort.reasoningEffort, description: effort.description })),
@@ -160,12 +163,14 @@ export class CodexAdapter extends LlmAdapter {
 
   async listModels(provider) {
     await this.modelsDev?.load()
-    if (this.config.models.length) return [...new Set(this.config.models.map(id => splitServiceTier(id).model))].map(model => this.modelInfo(provider, model))
+    let models = [...new Set(this.config.models.map(id => splitServiceTier(id).model))]
     try {
-      return (await this.loadCatalog()).map(entry => this.modelInfo(provider, entry.model))
+      const catalog = await this.loadCatalog()
+      if (!models.length) models = catalog.map(entry => entry.model)
     } catch (error) {
-      throw toLlmError(error)
+      if (!models.length) throw toLlmError(error)
     }
+    return models.map(model => this.modelInfo(provider, model))
   }
 
   async loadCatalog(signal) {
@@ -264,13 +269,19 @@ export class CodexAdapter extends LlmAdapter {
     this.idleTimer.unref?.()
   }
 
-  prepare(options) {
+  prepare(options, signal) {
     const { instructions, messages } = splitInstructions(options)
     const names = toolNames(options.tools)
     const { model, serviceTier } = splitServiceTier(options.model)
     return {
       provider: options.provider, model, serviceTier, effort: options.reasoningEffort,
       instructions, names, messages, keys: messages.map(message => this.keys.of(message)),
+      readImage: ref => {
+        const store = this.resolveAttachments?.()
+        if (!store) throw new LlmError('Codex Provider needs the DSH attachment service to send images', 'UNSUPPORTED_CONTENT')
+        return store.readImageRequest(ref, this.imageRequestTarget(options.provider, model, ref), signal)
+      },
+      resolveImageAccess: this.resolveImageAccess,
       // The tier is not part of the thread: switching Fast on or off between turns keeps it.
       spec: threadSpec(model, instructions, names.specs),
     }
@@ -297,11 +308,11 @@ export class CodexAdapter extends LlmAdapter {
   }
 
   async *stream(options) {
-    const request = this.prepare(options)
     // Auxiliary calls (titles, summaries) never touch the session's thread.
     const key = options.purpose === undefined ? options.sessionId : undefined
     const timeout = AbortSignal.timeout(this.config.timeoutMs)
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
+    const request = this.prepare(options, signal)
     this.active++
     let conversation
     let owned = false
@@ -405,7 +416,11 @@ export function apply(ctx, config) {
     }
     current = undefined
     if (codexPath === undefined) return
-    const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev)
+    const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev, () => ctx.get('attachments'))
+    adapter.resolveImageAccess = ref => {
+      const store = ctx.get('attachments')
+      return store && resolveImageAttachmentAccess(store, path => ctx.get('fs')?.processPathFromHostPath(path), ref)
+    }
     adapter.sessionSpeed = id => {
       const session = ctx.get('sessions')?.get(id)
       return session && speeds ? speeds.stateOf(session).selected : undefined

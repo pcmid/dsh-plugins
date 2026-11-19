@@ -347,9 +347,50 @@ test('model catalog, reasoning efforts and the reported context window', async (
     f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
     assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 258400)
     assert.equal((await adapter.resolveModel(provider, 'gpt-test@priority')).context.contextWindow, 258400)
-    const fixed = new CodexAdapter({ models: ['custom'], contextWindow: 64000 }, () => { throw new Error('Must not start Codex') })
+    const fixed = new CodexAdapter({ models: ['custom'], contextWindow: 64000 }, () => { throw new Error('Offline') })
     assert.deepEqual((await fixed.listModels(provider)).map(m => [m.id, m.context.contextWindow]), [['custom', 64000]])
     assert.equal((await fixed.resolveModel(provider, 'custom')).id, 'custom')
+  } finally { await adapter.dispose() }
+})
+
+test('discovered and configured models only advertise images when Codex does', async () => {
+  for (const models of [[], ['vision@priority', 'text', 'legacy', 'unlisted']]) {
+    const { adapter } = setup([], { models })
+    try {
+      const codex = await adapter.open()
+      codex.models = [
+        { model: 'vision', inputModalities: ['text', 'image', 'audio'] },
+        { model: 'text', inputModalities: ['text'] },
+        { model: 'legacy' },
+      ]
+      const result = await adapter.listModels(provider)
+      assert.deepEqual(result.map(entry => entry.id), models.length ? ['vision', 'text', 'legacy', 'unlisted'] : ['vision', 'text', 'legacy'])
+      assert.deepEqual(result.map(entry => entry.inputModalities), result.map(entry => entry.id === 'vision' ? ['text', 'image'] : ['text']))
+      assert.deepEqual((await adapter.resolveModel(provider, 'vision@priority')).inputModalities, ['text', 'image'])
+    } finally { await adapter.dispose() }
+  }
+})
+
+test('an offloaded image replaces the old thread and never rereads its bytes', async () => {
+  const { adapter, codex } = setup([[message('m1', 'First')], [message('m2', 'Next')]])
+  const ref = { attachmentId: 'sha256:fixture', mediaType: 'image/png', width: 1, height: 2, bytes: 3 }
+  const block = { type: 'image', attachment: ref }
+  const original = { role: 'user', content: [block, block] }
+  const reads = []
+  adapter.resolveAttachments = () => ({ async readImageRequest(attachment, target, signal) {
+    reads.push({ attachment, target })
+    assert.ok(signal instanceof AbortSignal)
+    return { ...ref, data: Uint8Array.of(1, 2, 3) }
+  } })
+  try {
+    const first = await run(adapter, { ...base, messages: [original] })
+    assert.deepEqual(reads, [{ attachment: ref, target: { width: 1, height: 2, maxBytes: 3 } }])
+    const offloaded = { role: 'user', content: original.content.map(image => ({ ...image, offloaded: true })) }
+    await run(adapter, { ...base, messages: [offloaded, assistantOf(first), user('Continue')] })
+    assert.equal(codex().threads.size, 2)
+    assert.equal(reads.length, 1)
+    assert.match(JSON.stringify(codex().samples[1].input), /image omitted/)
+    assert.doesNotMatch(JSON.stringify(codex().samples[1].input), /data:image/)
   } finally { await adapter.dispose() }
 })
 
@@ -364,10 +405,10 @@ test('the models.dev window outranks the Codex report; the config overrides both
     f.instances[0].listeners.get('thread-1')({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', turnId: 'x', tokenUsage: { modelContextWindow: 258400 } } })
     assert.equal((await adapter.resolveModel(provider, 'gpt-test')).context.contextWindow, 400000, 'models.dev outranks the Codex report')
     assert.equal(loads, 2, 'Listing and resolving both check the cache')
-    const fixed = new CodexAdapter({ models: ['gpt-test', 'unlisted'], contextWindow: 64000 }, undefined, modelsDev)
-    assert.deepEqual((await fixed.listModels(provider)).map(m => m.context.contextWindow), [64000, 64000])
-    const listed = new CodexAdapter({ models: ['gpt-test', 'unlisted'] }, undefined, modelsDev)
-    assert.deepEqual((await listed.listModels(provider)).map(m => m.context.contextWindow), [400000, 128000])
+    adapter.config.models = ['gpt-test', 'unlisted']
+    assert.deepEqual((await adapter.listModels(provider)).map(m => m.context.contextWindow), [400000, 128000])
+    adapter.config.contextWindow = 64000
+    assert.deepEqual((await adapter.listModels(provider)).map(m => m.context.contextWindow), [64000, 64000])
   } finally { await adapter.dispose() }
 })
 
@@ -435,10 +476,13 @@ test('the real DSH runtime registers, streams through and unloads the plugin', a
     rmSync(home, { recursive: true, force: true })
   }
   assert.ok(!ctx.llm.listProviders().some(p => p.id === provider))
-  const { adapter } = setup([[call('a', 'read')]])
+  const { adapter, codex } = setup([[call('a', 'read')]])
   const unregister = ctx.llm.registerAdapter([provider], adapter)
-  const chunks = await Array.fromAsync(ctx.llm.stream({ ...base, tools: [{ ...tools[0], deferLoading: true }] }))
+  const picture = { type: 'image', attachment: { attachmentId: 'sha256:0123456789' } }
+  const chunks = await Array.fromAsync(ctx.llm.stream({ ...base, tools: [{ ...tools[0], deferLoading: true }],
+    messages: [...base.messages, { role: 'user', content: [picture] }] }))
   assert.equal(chunks.at(-1).reason.kind, 'tool-calls')
+  assert.match(codex().samples[0].input.at(-1).content[0].text, /accepts text only/)
   unregister()
   await adapter.dispose()
   await runtime.dispose()

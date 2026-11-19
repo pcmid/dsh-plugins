@@ -11,9 +11,10 @@ import { CodexAdapter } from '../index.js'
 // Runs the installed Codex against a loopback Responses fixture. No account or paid API call.
 const reasoning = { type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: 'Need both files.' }], encrypted_content: 'ENCRYPTED-1' }
 const call = (id, name, args) => ({ type: 'function_call', id: `fc_${id}`, call_id: `call_${id}`, name, arguments: JSON.stringify(args), status: 'completed' })
+const script = (id, input) => ({ type: 'custom_tool_call', id: `ctc_${id}`, call_id: `call_${id}`, name: 'exec', input, status: 'completed' })
 const message = (id, text) => ({ type: 'message', id, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] })
 
-async function fixture(outputs, speedCatalog = false) {
+async function fixture(outputs, catalog) {
   const recorded = []
   const server = createServer(async (req, res) => {
     let data = Buffer.concat(await Array.fromAsync(req))
@@ -37,8 +38,8 @@ async function fixture(outputs, speedCatalog = false) {
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const codexHome = await mkdtemp(join(tmpdir(), 'dsh-codex-e2e-'))
-  if (speedCatalog) await writeFile(join(codexHome, 'models.json'), JSON.stringify({ models: [{
-    slug: 'gpt-6.2-sol', display_name: 'GPT Fixture', description: 'Loopback speed fixture',
+  if (catalog) await writeFile(join(codexHome, 'models.json'), JSON.stringify({ models: [{
+    slug: 'gpt-6.2-sol', display_name: 'GPT Fixture', description: 'Loopback model fixture',
     default_reasoning_level: 'low', supported_reasoning_levels: [{ effort: 'low', description: 'Low' }],
     shell_type: 'shell_command', visibility: 'list', supported_in_api: true, priority: 1,
     additional_speed_tiers: ['fast', 'ultrafast'],
@@ -46,10 +47,10 @@ async function fixture(outputs, speedCatalog = false) {
     model_messages: { instructions_template: 'Fixture' },
     supports_reasoning_summaries: false, support_verbosity: false,
     truncation_policy: { mode: 'bytes', limit: 10000 }, supports_parallel_tool_calls: true,
-    experimental_supported_tools: [], context_window: 128000, input_modalities: ['text'],
+    experimental_supported_tools: [], context_window: 128000, input_modalities: ['text'], ...catalog,
   }] }))
   await writeFile(join(codexHome, 'config.toml'), [
-    ...(speedCatalog ? [`model_catalog_json=\"${join(codexHome, 'models.json')}\"`] : []),
+    ...(catalog ? [`model_catalog_json=\"${join(codexHome, 'models.json')}\"`] : []),
     'model_provider="fixture"', 'model="fixture-model"',
     '[model_providers.fixture]', 'name="Fixture"', 'wire_api="responses"',
     `base_url="http://127.0.0.1:${server.address().port}/v1"`, 'requires_openai_auth=false',
@@ -141,7 +142,7 @@ test('real Codex keeps one thread per session, pauses on DSH tools and rebuilds 
 })
 
 test('real Codex sends the selected tier and capability downgrades to the loopback API', { timeout: 60000 }, async () => {
-  const f = await fixture([[message('speed_1', 'Ultra')], [message('speed_2', 'Fast')], [message('speed_3', 'Standard')]], true)
+  const f = await fixture([[message('speed_1', 'Ultra')], [message('speed_2', 'Fast')], [message('speed_3', 'Standard')]], {})
   const adapter = new CodexAdapter({ codexPath: process.env.CODEX_BIN ?? 'codex', codexHome: f.codexHome, timeoutMs: 20000 })
   adapter.sessionSpeed = () => 'ultrafast'
   const options = { provider: 'codex-provider', model: 'gpt-6.2-sol', sessionId: 'speed', tools: [], messages: [user('Hello')] }
@@ -156,3 +157,121 @@ test('real Codex sends the selected tier and capability downgrades to the loopba
     assert.equal(new Set(f.recorded.map(r => r.body.prompt_cache_key)).size, 1)
   } finally { await adapter.dispose(); await f.close() }
 })
+
+// Different, valid 1 × 1 RGB PNGs. Codex decodes them before forwarding.
+const pngs = {
+  'user.png': 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+  'tool.png': 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYPgPAAEDAQAIicLsAAAAAElFTkSuQmCC',
+}
+const pngUrl = name => `data:image/png;base64,${pngs[name]}`
+const picture = name => ({ type: 'image', attachment: {
+  attachmentId: name, name, mediaType: 'image/png', width: 1, height: 1, bytes: Buffer.from(pngs[name], 'base64').length,
+} })
+const toolOutput = (input, name) => input.find(item => item.type === name && item.call_id === 'call_image')?.output
+const imageUrls = content => content.filter(part => part.type === 'input_image').map(part => part.image_url)
+const imageArgs = { file_path: 'tool.png' }
+const readImageTool = { name: 'read_image', description: 'Read an image file and return the image itself.',
+  parameters: { type: 'object', properties: { file_path: { type: 'string' } }, required: ['file_path'] } }
+const imageReadText = `<path>/fixture/tool.png</path>
+<type>image</type>
+<content>
+image/png image, 1x1 px, ${picture('tool.png').attachment.bytes} bytes
+</content>`
+const readImageCall = `await tools.read_image(${JSON.stringify(imageArgs)})`
+
+const readArgs = { path: 'notes.txt' }
+for (const [label, program] of [
+  ['ordinary tool', undefined],
+  ['code-mode read_image', String.raw`text(await tools.read(${JSON.stringify(readArgs)}));
+const r = ${readImageCall}; const i = r.lastIndexOf('\ndata:image/');
+if (i < 0) text(r); else { text(r.slice(0, i)); image(r.slice(i + 1)); }`],
+  ['code-mode text()', `text(${readImageCall});`],
+]) {
+  const sequential = label === 'code-mode read_image'
+  test(`real Codex sends and rebuilds user and tool images: ${label}`, { timeout: 60000 }, async () => {
+    const f = await fixture([
+      [program ? script('image', program) : call('image', readImageTool.name, imageArgs)],
+      [message('msg_images', 'Images checked.')], [message('msg_rebuilt', 'Rebuilt.')],
+    ], { input_modalities: ['text', 'image'], ...(program ? { tool_mode: 'code_mode_only' } : {}) })
+    const attachments = {
+      async readImageRequest(attachment) {
+        const data = Buffer.from(pngs[attachment.name], 'base64')
+        return { attachment, data, mediaType: 'image/png', width: 1, height: 1, bytes: data.length }
+      },
+    }
+    const makeAdapter = () => new CodexAdapter({
+      codexPath: process.env.CODEX_BIN ?? 'codex', codexHome: f.codexHome, timeoutMs: 20000,
+    }, undefined, undefined, () => attachments)
+    const adapter = makeAdapter()
+    let restarted
+    try {
+      const options = { provider: 'codex-provider', model: 'gpt-6.2-sol', sessionId: 'images',
+        tools: sequential ? [tools[0], readImageTool] : [readImageTool],
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'Inspect this picture.' }, picture('user.png')] }] }
+      assert.deepEqual((await adapter.resolveModel(options.provider, options.model)).inputModalities, ['text', 'image'])
+
+      const history = [...options.messages]
+      let step = await Array.fromAsync(adapter.stream(options))
+      if (sequential) {
+        assert.equal(step.at(-1).reason.kind, 'tool-calls')
+        const calls = blocksOf(step).filter(block => block.type === 'tool-call')
+        assert.deepEqual(calls.map(c => [c.name, JSON.parse(c.arguments)]), [['read', readArgs]])
+        history.push(assistantOf(step, options), { role: 'tool', toolCallId: calls[0].id,
+          content: [{ type: 'text', text: 'Notes checked.' }] })
+        step = await Array.fromAsync(adapter.stream({ ...options, messages: history }))
+        assert.equal(f.recorded.length, 1, 'The same Codex script waits for a second DSH tool')
+      }
+      assert.equal(step.at(-1).reason.kind, 'tool-calls')
+      const calls = blocksOf(step).filter(block => block.type === 'tool-call')
+      assert.deepEqual(calls.map(c => [c.name, JSON.parse(c.arguments)]), [[readImageTool.name, imageArgs]])
+
+      const content = [{ type: 'text', text: imageReadText }, picture('tool.png')]
+      if (!program) content.push({ type: 'text', text: 'after' })
+      history.push(assistantOf(step, options), { role: 'tool', toolCallId: calls[0].id, content })
+      const second = await Array.fromAsync(adapter.stream({ ...options, messages: history }))
+      assert.equal(blocksOf(second).at(-1).text, 'Images checked.')
+      assert.ok(!JSON.stringify(second.at(-1).replayState).includes(pngs['tool.png']), 'Replay metadata must not duplicate tool image bytes')
+
+      const [initial, continued] = f.recorded.map(r => r.body)
+      assert.deepEqual(imageUrls(initial.input.find(i => i.role === 'user').content), [pngUrl('user.png')])
+      assert.equal(continued.prompt_cache_key, initial.prompt_cache_key)
+      const output = toolOutput(continued.input, program ? 'custom_tool_call_output' : 'function_call_output')
+      if (!program) {
+        assert.deepEqual(output.map(part => part.image_url ?? part.text), [imageReadText, pngUrl('tool.png'), 'after'])
+      } else if (sequential) {
+        const execTool = initial.tools.find(tool => tool.name === 'exec')
+        assert.match(execTool.description, /pass its last line \(the data:image\/ URL\) to image\(\) and the preceding description to text\(\)/)
+        assert.deepEqual(imageUrls(output), [pngUrl('tool.png')])
+        assert.ok(output.some(part => part.type === 'input_text' && part.text === 'Notes checked.'))
+        assert.ok(output.some(part => part.type === 'input_text' && part.text === imageReadText))
+      } else {
+        assert.deepEqual(imageUrls(output), [])
+        assert.ok(output.some(part => part.text?.includes(pngUrl('tool.png'))), 'Codex stringifies the image when the script calls text()')
+      }
+
+      restarted = makeAdapter()
+      const rebuilt = await Array.fromAsync(restarted.stream({ ...options,
+        messages: [...history, assistantOf(second, options), user('Look again.')] }))
+      assert.equal(blocksOf(rebuilt).at(-1).text, 'Rebuilt.')
+      const rebuiltRequest = f.recorded[2].body
+      assert.notEqual(rebuiltRequest.prompt_cache_key, initial.prompt_cache_key)
+      assert.deepEqual(imageUrls(rebuiltRequest.input.filter(item => item.role === 'user').flatMap(item => item.content)), [pngUrl('user.png')])
+      const rebuiltOutput = rebuiltRequest.input.filter(item => Array.isArray(item.output)).flatMap(item => item.output)
+      assert.deepEqual(imageUrls(rebuiltOutput), [pngUrl('tool.png')])
+      assert.ok(rebuiltOutput.some(part => part.type === 'input_text' && part.text === imageReadText))
+      if (sequential) {
+        const rebuiltCalls = rebuiltRequest.input.filter(item => item.type === 'function_call')
+        assert.deepEqual(rebuiltCalls.map(item => item.name), ['read', 'read_image'])
+        assert.ok(rebuiltRequest.input.some(item => item.type === 'function_call_output'
+          && item.call_id === rebuiltCalls[0].call_id && item.output === 'Notes checked.'))
+        const rebuiltImage = rebuiltRequest.input.find(item => item.type === 'function_call_output'
+          && item.call_id === rebuiltCalls[1].call_id)
+        assert.deepEqual(imageUrls(rebuiltImage.output), [pngUrl('tool.png')])
+      }
+    } finally {
+      await adapter.dispose()
+      await restarted?.dispose()
+      await f.close()
+    }
+  })
+}

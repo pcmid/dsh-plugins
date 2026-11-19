@@ -46,7 +46,7 @@ Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每�
 2. 每个 DSH 会话对应一个 ephemeral Codex 线程。DSH 系统提示词作为线程的 base instructions，DSH 工具按原名作为 `dynamicTools` 传入。Codex 不接受的名字（如 `exec`、`exec_command`、`mcp__*`）会改写：`mcp__a__b` 变为 `mcp_a__b`，其余加稳定的哈希后缀。
 3. 模型调用 DSH 工具时，插件把这批调用作为本次 DSH 步骤的结果交回 Harness，Codex 的这一轮停在未答复的 `item/tool/call` 请求上。DSH 照常执行工具；下一次 DSH 请求用真实结果答复这些请求，同一轮继续生成。上一轮结束后的新用户消息追加到同一线程。因此模型跨步骤保留历史、加密推理和 prompt cache 身份，不需要重放。
 4. 当前 Codex 模型使用 code mode：模型在 `exec` 脚本里调用 DSH 工具。同一脚本同时发起的调用（`Promise.all`）作为一批交给 DSH，结果返回后脚本继续执行。
-5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度或服务档位变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。其他供应商的消息按文本和工具调用块重建。
+5. 每一步把 Codex 的原始输出项（包括加密推理、脚本及其输出）记录在 assistant 消息的私有重放元数据里。请求不能严格接上线程时（上下文压缩、历史被编辑或重试、工具列表/系统提示词/模型变化、工具调用中途推理强度或服务档位变化、进程重启、空闲线程被释放），插件新建线程，用 DSH 历史和这些记录重建。工具返回的图片不把 base64 再存一份到重放元数据，重建时从 DSH 附件引用读取；DSH 标记为已卸载的图片只保留文字提示。其他供应商的消息按文本和工具调用块重建。
 
 辅助请求（标题、摘要等带 `purpose` 的请求）使用单独的临时线程，结束后立即释放。取消、单步超时、消费方提前结束或出错时，中断这一轮并丢弃线程，下一次请求重建。
 
@@ -59,7 +59,7 @@ app-server 进程用配置覆盖关闭了 Codex 本会注入模型请求的内�
 ## 当前边界
 
 - 这是实验性 provider。`dynamicTools`、`experimentalRawEvents` 和 `rawResponseItem/completed` 是 app-server 的实验性或内部接口，可能随 Codex 版本变化。协议对不上时插件报错，不做猜测。
-- 当前只声明文本输入。图片和文件由 DSH 先转换为文本或附件提示；送到插件的其他非文本块会被拒绝。其他供应商的推理摘要不作为文本重放。
+- 图片输入以 Codex `model/list` 返回的 `inputModalities` 为准：支持 `image` 的模型可以接收用户发送的图片和 DSH 工具返回的图片。未声明图片能力的模型仍按纯文本处理。音频不在支持范围内，普通文件仍由 DSH 转为附件提示。其他供应商的推理摘要不作为文本重放。
 - `reasoningEffort` 会传给 Codex。新线程以 DSH 的推理强度作为请求级强度启动（`thread/start` 的 `model_reasoning_effort`），不沿用用户 Codex 配置里的值。同一线程在两轮之间改变推理强度时，线程保留，Codex 只追加一条 `configuration_update`，以保住 prompt cache：调低立即生效，调高只部分生效（实测从 low 调到 xhigh，思考量约相当于 high）。app-server 没有对应的 `temperature`、`maxTokens`、`stop` 参数，这些 DSH 参数不生效。
 - code mode 下，DSH 工具运行超过脚本的让出时间（约 30 秒）时，Codex 会向模型返回 `Script running`，模型可能用 `wait` 轮询。每次轮询是一次小的模型请求，其输出出现在下一个 DSH 步骤的开头。
 - code mode 的 `exec` 里除 DSH 工具外，仍有 Codex 自带的 `apply_patch`、MCP resource 工具和 `clock__curr_time`。
