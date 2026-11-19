@@ -48,6 +48,7 @@ window.__ModuleLoader__.load({
       chooseModel: '选择模型',
       chooseHint: '选择后生效',
       effortDefault: '默认',
+      effortNotSaved: '当前会话已切换，但未能记住这个模型的思考等级。',
       effortAria: '{label}的推理强度',
       unavailable: '{model}（不可用）',
       loading: '加载中',
@@ -78,6 +79,7 @@ window.__ModuleLoader__.load({
       chooseModel: 'Choose a model',
       chooseHint: 'Takes effect once chosen',
       effortDefault: 'Default',
+      effortNotSaved: 'The session switched, but its reasoning effort could not be saved for this model.',
       effortAria: '{label} reasoning effort',
       unavailable: '{model} (unavailable)',
       loading: 'Loading',
@@ -196,6 +198,64 @@ ${SECTION} > ul { margin-top: 0; }
 
     function routeKey(provider, model) {
       return JSON.stringify([provider, model]);
+    }
+
+    /** Only user-facing selectors share this directory; programmatic fork/restore RPCs must stay untouched. */
+    function rememberComposerEffort(ctx, t) {
+      const models = ctx.modelDirectories;
+      const form = ctx.configForms.get('model-defaults');
+      const directoryFor = models.directoryFor;
+      const mounted = new Map();
+      let saving;
+
+      function attach(id, directory) {
+        if (mounted.has(directory)) return directory;
+        const scope = ctx.sessions.scope(id);
+        const select = directory.select;
+        if (!scope || typeof select !== 'function') return directory;
+        const release = scope.effect(() => {
+          let active = true;
+          directory.select = async (choice) => {
+            const { current, groups } = directory.store.getSnapshot();
+            const reasoning = findModel(groups, choice.provider, choice.model)?.reasoning;
+            const same = current?.provider === choice.provider && current.model === choice.model;
+            const key = routeKey(choice.provider, choice.model);
+            if (form.getSnapshot().status === 'loading') await ctx.configForms.describe().ensure();
+            // On a quick switch back, read after the preceding preference write has settled.
+            if (!same && saving) await saving;
+            const saved = form.getSnapshot().value?.effortByModel?.[key];
+            const effort = choice.reasoningEffort;
+            const restore = !same && saved !== undefined && reasoning?.efforts.some(level => level.id === saved);
+            const result = await select.call(directory, restore ? { ...choice, reasoningEffort: saved } : choice);
+            if (active && result.ok && same && effort !== (current.reasoningEffort ?? reasoning?.defaultEffort)) {
+              const path = ['effortByModel', key];
+              const write = form.mutate([effort === undefined ? { op: 'unset', path } : { op: 'set', path, value: effort }])
+                .catch(() => false);
+              saving = write;
+              if (!await write && active) ctx.contextMenus.notify(t('effortNotSaved'), false);
+              if (saving === write) saving = undefined;
+            }
+            return result;
+          };
+          return () => {
+            active = false;
+            delete directory.select;
+            mounted.delete(directory);
+          };
+        }, 'model-defaults: composer reasoning effort');
+        mounted.set(directory, release);
+        return directory;
+      }
+
+      models.directoryFor = function (id) { return attach(id, directoryFor.call(this, id)); };
+      // A hot install must cover composers that already hold their directory.
+      for (const { id, origin } of Object.values(ctx.sessions.list.getSnapshot().byId)) {
+        if (origin !== 'subagent' && ctx.sessions.binding(id)) models.directoryFor(id);
+      }
+      return async () => {
+        delete models.directoryFor;
+        await Promise.all([...mounted.values()].map(release => release()));
+      };
     }
 
     function selectionOf(value) {
@@ -835,6 +895,9 @@ ${SECTION} > ul { margin-top: 0; }
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'model-defaults: dictionaries');
         const controller = createController(ctx);
         ctx.effect(() => () => { controller.dispose(); }, 'model-defaults: form subscriptions');
+        ctx.inject(['modelDirectories', 'contextMenus'], (child) => {
+          child.effect(() => rememberComposerEffort(child, t), 'model-defaults: per-model composer effort');
+        });
         // The teamwork switch follows the Host's agent teamwork service.
         ctx.inject(['remote.agentTeams'], (child) => {
           child.effect(() => {

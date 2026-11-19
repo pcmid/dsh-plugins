@@ -22,6 +22,8 @@ export const name = 'model-defaults'
 export const Config = z.object({
   agentTeams: z.boolean().default(false).volatile()
     .description('Start new sessions with agent teamwork on. Sessions already started keep their own choice.'),
+  effortByModel: z.dict(z.string()).default({}).volatile()
+    .description('Last reasoning effort picked in the composer, keyed by [provider, model].'),
 })
 
 /**
