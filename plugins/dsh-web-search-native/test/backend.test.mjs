@@ -1,14 +1,17 @@
 /**
  * The native search provider's transport and parsing, and its per-provider
- * search model, without mounting Cordis or reaching the network.
+ * search model and Cordis registration, without reaching the network.
  */
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
 import {
   Config,
   NativeSearchProvider,
   alphaBody,
   alphaEndpoint,
+  apply,
+  inject,
   buildPrompt,
   collectAlpha,
   cleanCitations,
@@ -245,6 +248,95 @@ test('a conversation without a usable provider or key is reported, not silently 
   assert.equal(await harness({ selection: { provider: 'images', model: 'x' } }).provider.ready('images'), false)
   assert.equal(await harness().provider.ready('pool'), true)
   assert.equal(await harness().provider.ready('ccmax'), true)
+})
+
+test('Cordis scopes backend registrations to their owner and exposes only channel ids and kinds', async () => {
+  const { provider: stub } = harness()
+  const root = new Context()
+  const web = [], changes = []
+  let route, unbind
+  for (const key of inject) root.provide(key, key === 'web' ? { registerSearchProvider: value => web.push(value) } : stub.ctx[key])
+  root.provide('connection', { fetch: { register: value => { route = value } } })
+  const host = await root.plugin({ inject, apply: ctx => apply(ctx, Config({})) })
+  const list = async () => {
+    const { type, rpcId, result } = await (await route.fetch(new Request('http://local/', {
+      method: 'POST', body: JSON.stringify({ type: 'client-request', rpcId: 'r1', payload: {} }),
+    }))).json()
+    assert.deepEqual([type, rpcId, result.ok], ['server-response', 'r1', true])
+    return new Map(result.value)
+  }
+  try {
+    assert.equal(route.path, '/api/pcmid/native-search/channels')
+    assert.deepEqual(route.methods, ['POST'])
+    const http = new Map([['pool', 'openai-responses'], ['ccmax', 'anthropic-messages']])
+    assert.deepEqual(await list(), http)
+    root.on('web/providers-changed', () => { changes.push('changed') })
+    const consumer = await root.plugin({ inject: ['nativeSearch'], apply(ctx) {
+      ctx.nativeSearch.register('codex-provider', async () => ({ sources: [] }))
+      unbind = ctx.nativeSearch.register('pool', async () => ({ sources: [] }))
+    } })
+    try {
+      assert.deepEqual(await list(), new Map([...http, ['pool', 'registered'], ['codex-provider', 'registered']]))
+      assert.equal(web.length, 1, 'registered channels do not add DSH web providers')
+      assert.equal(await web[0].ready('codex-provider'), true)
+      assert.throws(() => root.nativeSearch.register('pool', () => {}), /already registered/)
+      await unbind()
+      assert.deepEqual(await list(), new Map([...http, ['codex-provider', 'registered']]))
+    } finally { await consumer.dispose() }
+    assert.deepEqual(await list(), http, 'unloading the consumer withdraws its channel')
+    assert.equal(changes.length, 4, 'one notification for every registration and disposal')
+    assert.equal(await web[0].ready('codex-provider'), false)
+  } finally { await host.dispose() }
+  assert.equal(root.get('nativeSearch'), undefined)
+})
+
+test('registered channels own the followed or pinned search, independent of HTTP, with the same result limits', async () => {
+  const seen = []
+  const signal = new AbortController().signal
+  const followed = harness({ selection: { provider: 'custom', model: 'chat', reasoningEffort: 'high' } })
+  const pinned = harness({ config: { ...PINNED, answer: false, searchReasoningEffort: 'low' }, selection: NONE })
+  for (const [h, id] of [[followed, 'custom'], [pinned, 'pool']]) {
+    h.provider.routeOf = () => assert.fail('registered backends never inspect HTTP routes or credentials')
+    h.provider.backends.set(id, async (target, abort) => {
+      seen.push(target)
+      assert.equal(abort, signal)
+      return { content: 'summary', sources: [{ url: 'https://a.example' }, { url: 'https://b.example' }] }
+    })
+    assert.equal(await h.provider.ready(), true)
+    assert.equal(await h.provider.ready(id), true)
+    const result = await h.provider.search({ query: 'news', maxResults: 1 }, signal)
+    assert.deepEqual(result, { ...(h === followed ? { content: 'summary' } : {}), sources: [{ url: 'https://a.example' }], truncated: true })
+    assert.equal(h.calls.length, 0)
+  }
+  assert.deepEqual(seen, [
+    { model: 'chat', query: 'news', reasoningEffort: 'high' },
+    { model: 'gpt-6-luna', query: 'news', reasoningEffort: 'low' },
+  ])
+  const missing = harness({ config: { ...PINNED, searchModel: '' } }).provider
+  missing.backends.set('pool', () => assert.fail('missing model'))
+  assert.equal(await missing.ready('ccmax'), false)
+  await assert.rejects(missing.search({ query: 'news' }), /has no search model/)
+})
+
+test('registered search never retries failed, empty, or cancelled results on HTTP', async () => {
+  const { provider, calls } = harness()
+  const controller = new AbortController()
+  const q = { query: 'news' }
+  provider.backends.set('pool', () => { throw new Error('backend failed') })
+  await assert.rejects(provider.search(q), /backend failed/)
+  provider.backends.set('pool', async () => ({ content: 'not evidence', sources: [] }))
+  await assert.rejects(provider.search(q), /returned no search results/)
+  let runs = 0
+  provider.backends.set('pool', async (_target, signal) => {
+    runs++
+    assert.equal(signal, controller.signal)
+    controller.abort(new Error('cancelled'))
+    return { sources: [{ url: 'https://a.example' }] }
+  })
+  await assert.rejects(provider.search(q, controller.signal), /cancelled/)
+  await assert.rejects(provider.search(q, controller.signal), /cancelled/)
+  assert.equal(runs, 1)
+  assert.equal(calls.length, 0)
 })
 
 test('an OpenAI provider searches with alpha and reports its structured sources', async () => {

@@ -191,6 +191,62 @@ test('sessions, auxiliary calls and concurrent requests use separate threads', a
   } finally { await adapter.dispose() }
 })
 
+const query = { model: 'gpt-test', query: 'Which domain is reserved?', reasoningEffort: 'low' }
+const source = { url: 'https://iana.example/reserved', title: 'Reserved', snippet: 'Reserved domains', ref_id: 'turn0search0' }
+const webSearch = results => ({ type: 'webSearch', results })
+
+test('native search isolates the query and dynamic tools; sources and private citations come from search events', async () => {
+  const url = source.url
+  const { f, adapter, codex } = setup([[message('m0', 'Chat')],
+    [webSearch([source, { url, ref_id: 'turn0search1' }, { url: 'file:///etc/passwd' }, { url: 'https://' }]),
+      message('m1', 'Answer citeturn0search1unknown')],
+    [webSearch([source])]])
+  try {
+    await run(adapter, base)
+    const result = await adapter.search(query)
+    assert.deepEqual(result, { content: `Answer [turn0search1](<${url}>)`, sources: [{ url, title: source.title, snippet: source.snippet }] })
+    assert.equal(f.instances.length, 1, 'Shares the conversation app-server')
+    const [chat, search] = codex().threads.values()
+    assert.equal(chat.params.config?.web_search, undefined)
+    assert.ok(codex().args.includes('web_search="disabled"'))
+    assert.equal(search.params.ephemeral, true)
+    assert.deepEqual(search.params.config, { web_search: 'live', model_reasoning_effort: 'low' })
+    assert.equal(search.effort, 'low')
+    assert.deepEqual(codex().samples[1].tools, [])
+    assert.deepEqual(texts(codex().samples[1]), [query.query])
+    assert.equal(chat.unsubscribed, false)
+    assert.equal(search.unsubscribed, true)
+    assert.deepEqual(await adapter.search(query), { sources: result.sources }, 'Search may return sources without an answer')
+  } finally { await adapter.dispose() }
+})
+
+test('native search rejects no search, unverified links, upstream failure and cancellation', async () => {
+  const { adapter, codex } = setup([[message('no-search', source.url)], [webSearch([]), message('no-sources', source.url)],
+    Object.assign([], { error: { message: 'upstream down', codexErrorInfo: 'internalServerError' } }), Object.assign([], { hang: true })])
+  try {
+    await assert.rejects(adapter.search(query), /without executing web search/)
+    await assert.rejects(adapter.search(query), /no HTTP\(S\) sources/)
+    await assert.rejects(adapter.search(query), { code: 'SERVER' })
+    const controller = new AbortController()
+    const pending = adapter.search(query, controller.signal)
+    while (codex().samples.length < 4) await new Promise(resolve => setImmediate(resolve))
+    controller.abort()
+    await assert.rejects(pending, { name: 'AbortError' })
+    assert.equal(codex().threads.get('thread-4').interrupted, 1)
+    assert.ok([...codex().threads.values()].every(t => t.unsubscribed))
+    assert.equal(adapter.active, 0)
+  } finally { await adapter.dispose() }
+})
+
+test('native search never treats a paused tool-call step as a completed turn', async () => {
+  const adapter = new CodexAdapter()
+  adapter.run = async function* (_, search) {
+    search.item(webSearch([source]))
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  }
+  await assert.rejects(adapter.search(query), /did not complete its turn/)
+})
+
 test('cancellation, timeout and early return interrupt the turn and drop the thread', async () => {
   for (const mode of ['abort', 'timeout', 'return']) {
     const { adapter, codex } = setup([Object.assign([], { hang: true }), [message('m1', 'Fresh')]], { timeoutMs: mode === 'timeout' ? 50 : 60000 })
@@ -418,6 +474,14 @@ test('the provider registers only while enabled and follows live settings change
   assert.equal(new CodexAdapter({ codexPath: '/opt/codex cli' }).config.codexPath, '/opt/codex cli')
   assert.equal(new CodexAdapter({ codexPath: '~/.local/share/mise/shims/codex' }).config.codexPath, join(homedir(), '.local/share/mise/shims/codex'))
   const registrations = []
+  const searchHandlers = new Set()
+  let mountSearch
+  const service = { register(id, handler) {
+    assert.equal(id, name)
+    assert.equal(searchHandlers.size, 0)
+    searchHandlers.add(handler)
+    return () => searchHandlers.delete(handler)
+  } }
   const listeners = {}
   const cleanups = []
   const ctx = {
@@ -426,28 +490,48 @@ test('the provider registers only while enabled and follows live settings change
       registrations.push(entry)
       return () => { entry.active = false }
     }, registerConfigurableProviders() {} },
-    inject() {}, effect: f => { const cleanup = f(); if (typeof cleanup === 'function') cleanups.push(cleanup) }, on(event, listener) { listeners[event] = listener }, get() {},
+    inject(keys, callback) {
+      if (keys.includes('nativeSearch')) mountSearch = () => {
+        let cleanup
+        callback({ nativeSearch: service, effect: f => { cleanup = f() } })
+        return cleanup
+      }
+    }, effect: f => { const cleanup = f(); if (typeof cleanup === 'function') cleanups.push(cleanup) }, on(event, listener) { listeners[event] = listener }, get() {},
   }
   let value = {}
   apply(ctx, { ...Config({}), providers: { get: () => value } })
+  const leave = mountSearch()
+  assert.equal(searchHandlers.size, 0, 'An installed but disabled provider has no search channel')
   assert.equal(registrations.length, 0, 'Installing the bundle must not start Codex')
   value = { [name]: {} }
   listeners['loader/volatile-update']()
   assert.deepEqual([registrations.length, registrations[0].ids, registrations[0].adapter.config.codexPath], [1, [name], 'codex'])
   listeners['loader/volatile-update']()
   assert.equal(registrations.length, 1, 'An unrelated update keeps the adapter')
+  const [first] = searchHandlers
+  assert.equal(typeof first, 'function')
   value = { [name]: { codexPath: '/usr/local/bin/codex' } }
   listeners['loader/volatile-update']()
   assert.deepEqual(registrations.map(r => [r.active, r.adapter.config.codexPath]), [[false, 'codex'], [true, '/usr/local/bin/codex']])
   assert.ok(registrations[0].adapter.disposed)
+  assert.equal(searchHandlers.size, 1)
+  assert.ok(!searchHandlers.has(first), 'Replacing the adapter also replaces the search handler')
   value = {}
   listeners['loader/volatile-update']()
   assert.ok(!registrations[1].active && registrations[1].adapter.disposed)
+  assert.equal(searchHandlers.size, 0)
   value = { [name]: {} }
   listeners['loader/volatile-update']()
+  leave()
+  assert.equal(searchHandlers.size, 0, 'Withdrawing just the optional service leaves chat intact')
+  assert.ok(registrations[2].active)
+  const unmount = mountSearch()
+  assert.equal(searchHandlers.size, 1, 'Late service joins the enabled adapter')
   const adapter = registrations[2].adapter
   adapter.connect = fakes([]).connect
   const connection = await adapter.open()
+  unmount()
+  assert.equal(searchHandlers.size, 0)
   await Promise.all(cleanups.map(cleanup => cleanup()))
   assert.ok(adapter.disposed && connection.isClosed, 'Unloading closes Codex through an owned effect')
 })

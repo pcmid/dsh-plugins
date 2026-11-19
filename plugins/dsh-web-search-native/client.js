@@ -25,8 +25,6 @@ window.__ModuleLoader__.load({
     const HOSTED_ITEM = 'web-search'
     /** This bundle's entry id, which holds the search channel. */
     const ENTRY = 'web-search-native'
-    /** Route protocols whose providers can run native search. */
-    const SUPPORTED_APIS = new Set(['anthropic-messages', 'openai-responses'])
     /** Config field holding the pinned channel's provider. */
     const CHANNEL_PROVIDER = 'searchProvider'
     /** The route protocol whose providers also choose a request form. */
@@ -49,7 +47,8 @@ window.__ModuleLoader__.load({
       transportAuto: '自动',
       transportAlpha: 'Alpha Search',
       transportResponses: 'Responses',
-      modelsFailed: '无法读取模型列表',
+      modelsFailed: '无法读取搜索渠道或模型。',
+      noModels: '这个渠道暂无可用模型。',
       retry: '重试',
       readOnly: '本部署的设置为只读。',
       saving: '保存中…',
@@ -73,7 +72,8 @@ window.__ModuleLoader__.load({
       transportAuto: 'Automatic',
       transportAlpha: 'Alpha Search',
       transportResponses: 'Responses',
-      modelsFailed: 'Couldn\u2019t load the model list.',
+      modelsFailed: 'Couldn\u2019t load search channels or models.',
+      noModels: 'No models are available for this channel.',
       retry: 'Retry',
       readOnly: 'This deployment stores settings read-only.',
       saving: 'Saving\u2026',
@@ -126,29 +126,6 @@ window.__ModuleLoader__.load({
       return raw.replace(/[^a-zA-Z0-9_-]/g, '')
     }
 
-    /** Walk a settings value along a provider's `settingsPath`. */
-    function atPath(value, path) {
-      let node = value
-      for (const key of path) {
-        if (typeof node !== 'object' || node === null) return undefined
-        node = node[key]
-      }
-      return node
-    }
-
-    /** Which providers run native search, and with which protocol. */
-    function supportedApis(directory, valueOf) {
-      const rows = new Map()
-      for (const entry of directory) {
-        const value = valueOf(entry.settingsNs)
-        if (value === undefined) continue
-        const profile = entry.settingsPath.length === 0 ? value : atPath(value, entry.settingsPath)
-        const api = typeof profile === 'object' && profile !== null ? profile.api : undefined
-        if (typeof api === 'string' && SUPPORTED_APIS.has(api)) rows.set(entry.provider, api)
-      }
-      return rows
-    }
-
     /**
      * The section state: the search channel staged over this bundle's entry and
      * the one save that writes it. The provider menus above belong to the
@@ -169,7 +146,7 @@ window.__ModuleLoader__.load({
       let disposed = false
       const listeners = new Set()
       const models = { status: 'idle', groups: [], generation: 0 }
-      const directory = { status: 'idle', rows: [], generation: 0 }
+      const directory = { status: 'idle', apis: new Map(), generation: 0 }
 
       /**
        * This bundle's stored search channel.
@@ -187,11 +164,8 @@ window.__ModuleLoader__.load({
         }
       }
 
-      /** The staged channel, seeded from the stored one the first time it is readable. */
-      const stagedChannel = () => {
-        channel ??= storedChannel()
-        return channel
-      }
+      // Until the user edits, follow the live form (including the first load of a saved pin).
+      const stagedChannel = () => channel ?? storedChannel()
 
       const projection = () => {
         const saved = storedChannel()
@@ -201,11 +175,12 @@ window.__ModuleLoader__.load({
           readOnly: !own.getSnapshot().writable,
           write: { ...write },
           dirty: JSON.stringify(picking) !== JSON.stringify(saved),
-          modelsFailed: models.status === 'error',
+          modelsFailed: models.status === 'error' || directory.status === 'error',
+          noModels: !picking.follow && directory.apis.has(picking.provider) && models.status === 'ready'
+            && !models.groups.some(group => group.id === picking.provider && group.models.length),
           modelsLoading: models.status === 'idle' || models.status === 'loading',
           groups: models.groups,
-          // The providers a channel can name, which the shipped page above already lists.
-          apis: supportedApis(directory.rows, ns => ctx.configForms.get(ns).getSnapshot().value),
+          apis: directory.apis,
           channel: picking,
         }
       }
@@ -246,8 +221,8 @@ window.__ModuleLoader__.load({
         () => ctx.remote.session.modelCatalog(),
         value => { models.groups = value.groups })
       const loadDirectory = () => read(directory,
-        () => ctx.remote.llm.listConfigurableProviders(),
-        value => { directory.rows = value })
+        () => ctx.connection.rpc.call('/api', 'pcmid/native-search/channels', {}),
+        value => { directory.apis = new Map(value) })
 
       const load = () => {
         loadModels()
@@ -256,7 +231,7 @@ window.__ModuleLoader__.load({
 
       const reset = () => {
         channel = undefined
-        write = { saving: false, failed: false, saved: false }
+        write = { saving: write.saving, failed: false, saved: false }
         publish()
       }
 
@@ -292,22 +267,16 @@ window.__ModuleLoader__.load({
         return next.follow || (next.provider !== '' && next.model !== '')
       }
 
-      /** A choice made while a save is running, written once that save settles. */
-      let queued = false
-
       /** Store each complete choice as soon as it is made; the section has no save button. */
       const commit = () => {
-        publish()
-        if (!complete()) return
-        if (write.saving) {
-          queued = true
-          return
-        }
-        void save()
+        if (write.saving) return publish()
+        write = { saving: false, failed: false, saved: false }
+        if (channel && complete()) void save()
+        else publish()
       }
 
       const save = async () => {
-        if (write.saving) return
+        const submitted = channel
         clearTimeout(savedTimer)
         write = { saving: true, failed: false, saved: false }
         publish()
@@ -322,13 +291,8 @@ window.__ModuleLoader__.load({
         }
         if (disposed) return
         write = { saving: false, failed: !ok, saved: ok }
-        if (queued) {
-          // A later choice supersedes this one: write it rather than resetting the draft.
-          queued = false
-          publish()
-          void save()
-          return
-        }
+        // Do not save an unfinished channel/model selection or clear it on an older write's success.
+        if (channel !== submitted) return commit()
         // A rejected write keeps its draft so the person can correct it.
         if (ok) channel = undefined
         publish()
@@ -497,9 +461,7 @@ window.__ModuleLoader__.load({
       const known = available.find(candidate => candidate.id === channel.model)
       const modelLabel = known?.name ?? fill(t('modelUnavailable'), 'model', channel.model)
       const modelOptions = [
-        ...channel.model === '' ? [] : [known === undefined
-          ? { value: channel.model, label: fill(t('modelUnavailable'), 'model', channel.model) }
-          : { value: channel.model, label: known.name }],
+        ...channel.model && !known ? [{ value: channel.model, label: modelLabel }] : [],
         ...available.map(candidate => ({ value: candidate.id, label: candidate.name })),
       ]
       const efforts = known?.reasoning?.efforts ?? []
@@ -601,14 +563,11 @@ window.__ModuleLoader__.load({
             disabled: disabled || state.modelsLoading,
             onSelect: props.pickChannel,
           })),
-        // Following the conversation needs nothing else: it uses that conversation's model and effort.
-        state.channel.follow
-          ? null
-          : state.modelsFailed
-            ? h('p', { className: `${PREFIX}-notice`, role: 'alert' },
-              h('span', { className: `${PREFIX}-failure` }, t('modelsFailed')),
+        state.modelsFailed || state.noModels
+          ? h('p', { className: `${PREFIX}-notice`, role: 'alert' },
+              h('span', { className: `${PREFIX}-failure` }, state.modelsFailed ? t('modelsFailed') : t('noModels')),
               h('button', { type: 'button', className: `${PREFIX}-button`, onClick: props.retry }, t('retry')))
-            : h(ChannelFields, {
+          : state.channel.follow ? null : h(ChannelFields, {
               t,
               state,
               provider: state.channel.provider,
@@ -626,9 +585,9 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.session', 'remote.llm'],
+      inject: ['slots', 'locale', 'configForms', 'remote', 'remote.session', 'connection'],
       // The section's own state machine, so its tests can drive it without React.
-      __page: { createController, supportedApis, atPath },
+      __page: { createController },
       apply(ctx) {
         const t = ctx.locale.bind(NS)
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'native-search: dictionaries')

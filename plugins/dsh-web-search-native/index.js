@@ -4,21 +4,22 @@
  * Every `ctx.web.search()` call becomes one model request that carries the
  * API's own search capability, on the provider and model the initiating
  * Agent's conversation is using, or on one pinned provider and model. The
- * chosen route's protocol picks the request form: `anthropic-messages` sends
+ * provider's registered backend runs the search when present. Otherwise the
+ * route's protocol picks the request form: `anthropic-messages` sends
  * the server-side `web_search` tool the way Claude Code's WebSearch tool does
  * (same system prompt, query message, `max_uses`, streamed reply, and no
  * `thinking`, effort, or forced `tool_choice`), `openai-responses` searches
  * through the OpenAI search endpoints. The route also supplies the endpoint,
- * credential, headers, and output cap. The request names no thinking or
- * reasoning effort unless the pinned channel configures one explicitly, so the
- * model's own defaults apply. A provider whose route runs neither protocol
- * answers not ready, which withdraws the built-in `web_search` tool for its
- * model steps.
+ * credential, headers, and output cap. HTTP requests name no reasoning effort
+ * unless the pinned channel configures one explicitly. Registered backends
+ * receive the selected model's effort. A provider with neither a backend nor
+ * a supported HTTP route answers not ready for its model steps.
  *
  * @module @pcmid/dsh-web-search-native
  */
 
 import { randomUUID } from 'node:crypto'
+import { Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { getBuiltinModels } from '@earendil-works/pi-ai/providers/all'
 
@@ -417,19 +418,49 @@ export function assembleMessage() {
   }
 }
 
+/** Host extension point; each registration is an effect of the calling plugin. */
+class NativeSearch extends Service {
+  constructor(ctx, backends) {
+    super(ctx, 'nativeSearch')
+    this.backends = backends
+  }
+
+  /** Register a search({ model, query, reasoningEffort }, signal) -> { content?, sources } callback. */
+  register(provider, search) {
+    if (typeof provider !== 'string' || !provider.trim() || typeof search !== 'function') {
+      throw new TypeError('nativeSearch.register requires a provider id and a search function')
+    }
+    if (this.backends.has(provider)) throw new Error(`nativeSearch: provider "${provider}" already registered`)
+    const changed = () => {
+      for (const listener of this.ctx.events.dispatch('emit', ['web/providers-changed'])) {
+        void Promise.resolve().then(listener).catch(error => this.ctx.logger.warn(error))
+      }
+    }
+    return this.ctx.effect(() => {
+      this.backends.set(provider, search)
+      changed()
+      return () => {
+        this.backends.delete(provider)
+        changed()
+      }
+    }, 'nativeSearch.register()')
+  }
+}
+
 /** Search provider that runs native web search on the initiating Agent's route. */
 export class NativeSearchProvider {
   constructor(ctx, config) {
     this.ctx = ctx
     this.config = config
     this.id = config.providerId
+    this.backends = new Map()
     this.title = '接口原生搜索'
     this.description = {
       en: 'Runs the model API\'s built-in web search, either on the conversation\'s own provider and model or on '
-        + 'one pinned provider and model for every search. Each query is one model request billed at that model\'s '
-        + 'rate, including search fees and result tokens. Supports Anthropic Messages and OpenAI Responses routes.',
+        + 'one pinned provider and model for every search. Each search uses that provider\'s quota or billing. '
+        + 'Supports registered search backends, Anthropic Messages, and OpenAI Responses.',
       zh: '调用接口自带的网页搜索：按会话所用的供应商和模型执行，或固定一个供应商和模型供所有搜索使用。'
-        + '每个查询是一次按该模型计费的请求，含搜索费用和结果 token。支持 Anthropic Messages 和 OpenAI Responses 路由。',
+        + '每次搜索消耗相应供应商的额度或按其规则计费。支持已注册的搜索渠道、Anthropic Messages 和 OpenAI Responses。',
     }
     /** Provider keys whose `alpha/search` failed recently, so auto transport skips straight to Responses. */
     this.alphaFailures = new Map()
@@ -456,12 +487,9 @@ export class NativeSearchProvider {
    */
   async ready(llmProvider) {
     const pinned = this.pinnedProvider
-    if (pinned !== '') {
-      const route = this.routeOf(pinned)
-      return route !== undefined && (await this.apiKey(route)) !== undefined
-    }
-    const provider = llmProvider ?? this.currentSelection()?.provider
+    const provider = pinned || (llmProvider ?? this.currentSelection()?.provider)
     if (provider === undefined) return false
+    if (this.backends.has(provider)) return !pinned || !!this.config.searchModel.get()
     const route = this.routeOf(provider)
     if (route === undefined) return false
     return (await this.apiKey(route)) !== undefined
@@ -472,68 +500,36 @@ export class NativeSearchProvider {
     return this.ctx.agents.currentInitiator()?.model.current()
   }
 
-  /**
-   * The search target for the conversation's provider.
-   * @returns the provider, the model its searches run on, that model's effort,
-   * the OpenAI request form, and the route and key that reach it.
-   * @throws when no conversation initiated this search, or when its provider
-   * cannot run native search.
-   */
+  /** Resolve the model first: a registered backend owns its transport and credentials. */
   async target() {
     const pinned = this.pinnedProvider
-    if (pinned !== '') return this.pinnedTarget(pinned)
-    const selection = this.currentSelection()
+    const selection = pinned
+      ? { provider: pinned, model: this.config.searchModel.get(), reasoningEffort: this.config.searchReasoningEffort.get() || undefined }
+      : this.currentSelection()
     if (selection === undefined) {
       throw new Error(`${this.id}: web search follows the conversation that initiated it, and none did; pin a provider to search without one`)
     }
-    const route = this.routeOf(selection.provider)
-    if (route === undefined) {
-      throw new Error(`${this.id}: provider "${selection.provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API} (set on the route or used by its built-in catalog), a baseURL, and an apiKeyEnv`)
-    }
-    const apiKey = await this.apiKey(route)
-    if (apiKey === undefined) {
-      throw new Error(`${this.id}: credential ${route.apiKeyRef} of provider "${selection.provider}" is not set`)
-    }
-    return {
-      provider: selection.provider,
-      model: selection.model,
-      effort: undefined,
-      transport: 'auto',
-      route,
-      apiKey,
-    }
-  }
+    const { provider, model, reasoningEffort } = selection
+    const label = `${pinned ? 'pinned ' : ''}provider "${provider}"`
+    if (pinned && !model) throw new Error(`${this.id}: ${label} has no search model; choose one, or follow the conversation`)
+    const backend = this.backends.get(provider)
+    if (backend) return { provider, model, effort: reasoningEffort, backend }
 
-  /**
-   * The search target of the pinned provider, which does not depend on the
-   * conversation that started the search.
-   * @param provider - the configured provider id.
-   * @returns its model, effort, request form, route, and key.
-   * @throws when the provider cannot search, has no model chosen, names a
-   * model it no longer lists, or has no key.
-   */
-  async pinnedTarget(provider) {
     const route = this.routeOf(provider)
     if (route === undefined) {
-      throw new Error(`${this.id}: pinned provider "${provider}" cannot run native web search; it needs api: ${MESSAGES_API} or ${RESPONSES_API} (set on the route or used by its built-in catalog), a baseURL, and an apiKeyEnv`)
+      throw new Error(`${this.id}: ${label} cannot run native web search; register a search backend or configure an ${MESSAGES_API} or ${RESPONSES_API} route with a baseURL and an apiKeyEnv`)
     }
     const apiKey = await this.apiKey(route)
-    if (apiKey === undefined) {
-      throw new Error(`${this.id}: credential ${route.apiKeyRef} of pinned provider "${provider}" is not set`)
-    }
-    const model = this.config.searchModel.get()
-    if (model === '') {
-      throw new Error(`${this.id}: pinned provider "${provider}" has no search model; choose one, or follow the conversation`)
-    }
+    if (apiKey === undefined) throw new Error(`${this.id}: credential ${route.apiKeyRef} of ${label} is not set`)
     const listed = route.profile.models ?? []
-    if (listed.length > 0 && !listed.some(entry => entry.id === model)) {
-      throw new Error(`${this.id}: pinned provider "${provider}" no longer lists model "${model}"; choose another, or follow the conversation`)
+    if (pinned && listed.length > 0 && !listed.some(entry => entry.id === model)) {
+      throw new Error(`${this.id}: ${label} no longer lists model "${model}"; choose another, or follow the conversation`)
     }
     return {
       provider,
       model,
-      effort: this.config.searchReasoningEffort.get() || undefined,
-      transport: this.config.searchTransport.get(),
+      effort: pinned ? reasoningEffort : undefined,
+      transport: pinned ? this.config.searchTransport.get() : 'auto',
       route,
       apiKey,
     }
@@ -548,18 +544,33 @@ export class NativeSearchProvider {
    * undefined when the route runs neither supported protocol, has no
    * endpoint, or names no `apiKeyEnv`. Other adapters' routes have no profile here.
    */
-  routeOf(provider) {
-    const row = this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider)
-    if (row === undefined) return undefined
-    const owner = [...this.ctx.loader.entries()]
-      .find(entry => entry.options.id === row.settingsNs && entry.options.name === ROUTE_OWNER_PACKAGE)
-    const profile = owner?.fiber?.effectiveConfig?.providers?.get()?.[provider]
+  routeOf(provider, row = this.ctx.llm.listConfigurableProviders().find(entry => entry.provider === provider), profiles = this.httpProfiles()) {
+    if (!row) return undefined
+    const profile = profiles.get(row.settingsNs)?.[provider]
     if (profile === undefined) return undefined
     const api = profile.api ?? catalogApi(provider)
     if (api !== MESSAGES_API && api !== RESPONSES_API) return undefined
     const baseURL = profile.baseURL || row.defaultBaseURL
     if (!baseURL || !profile.apiKeyEnv) return undefined
     return { api, baseURL, apiKeyRef: profile.apiKeyEnv, headers: profile.headers ?? {}, profile }
+  }
+
+  httpProfiles() {
+    return new Map([...this.ctx.loader.entries()]
+      .filter(entry => entry.options.name === ROUTE_OWNER_PACKAGE)
+      .map(entry => [entry.options.id, entry.fiber?.effectiveConfig?.providers?.get()]))
+  }
+
+  /** Current settings choices; no credential lookup or model discovery. */
+  channels() {
+    const rows = new Map([...this.backends.keys()].map(id => [id, 'registered']))
+    const profiles = this.httpProfiles()
+    for (const row of this.ctx.llm.listConfigurableProviders()) {
+      if (rows.has(row.provider)) continue
+      const route = this.routeOf(row.provider, row, profiles)
+      if (route) rows.set(row.provider, route.api)
+    }
+    return [...rows]
   }
 
   /**
@@ -702,8 +713,16 @@ export class NativeSearchProvider {
   }
 
   async search(request, signal) {
+    signal?.throwIfAborted()
     const target = await this.target()
-    this.ctx.logger.info(`native web search on ${target.provider}/${target.model} via ${target.route.api}${this.pinnedProvider === '' ? ' (following the conversation)' : ' (pinned)'}`)
+    signal?.throwIfAborted()
+    this.ctx.logger.info(`native web search on ${target.provider}/${target.model} via ${target.backend ? 'registered backend' : target.route.api}${this.pinnedProvider === '' ? ' (following the conversation)' : ' (pinned)'}`)
+    if (target.backend) {
+      const collected = await target.backend({ model: target.model, query: request.query, reasoningEffort: target.effort }, signal)
+      signal?.throwIfAborted()
+      if (!collected.sources.length) throw new Error(`${this.id}: ${target.provider}/${target.model} returned no search results`)
+      return this.finalize(request, collected)
+    }
 
     const collected = target.route.api === MESSAGES_API
       ? await this.searchMessages(target, request, signal)
@@ -821,5 +840,19 @@ export function apply(ctx, config) {
   if (config.allowedDomains.length > 0 && config.blockedDomains.length > 0) {
     throw new Error('web-search-native: allowedDomains and blockedDomains cannot both be set')
   }
-  ctx.web.registerSearchProvider(new NativeSearchProvider(ctx, config))
+  const provider = new NativeSearchProvider(ctx, config)
+  new NativeSearch(ctx, provider.backends)
+  ctx.web.registerSearchProvider(provider)
+  ctx.inject(['connection'], scope => {
+    scope.connection.fetch.register({
+      path: '/api/pcmid/native-search/channels', methods: ['POST'], requestBody: 'buffered',
+      fetch: async request => {
+        const rpcId = (await request.json().catch(() => null))?.rpcId
+        let result
+        try { result = { ok: true, value: provider.channels() } }
+        catch (error) { result = { ok: false, error: { code: 'internal', message: error?.message || 'Could not list search channels', details: {} } } }
+        return Response.json({ type: 'server-response', rpcId: typeof rpcId === 'string' ? rpcId : 'invalid-request', result })
+      },
+    })
+  })
 }

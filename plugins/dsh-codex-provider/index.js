@@ -10,6 +10,7 @@ import { AppServerConnection, CodexRpcError } from './app-server.js'
 import { CodexTurnError, Conversation, planContinuation } from './conversation.js'
 import { MessageKeys, splitInstructions, threadSpec, toolNames } from './history.js'
 import { ModelsDev } from './models-dev.js'
+import { SearchResults } from './search.js'
 import { legacySpeed, registerSpeed, resolveSpeed, splitServiceTier, supportedSpeeds } from './speed.js'
 export { splitServiceTier } from './speed.js'
 
@@ -297,7 +298,9 @@ export class CodexAdapter extends LlmAdapter {
       // The thread's effort is the request-level baseline. Without it the baseline comes from the
       // user's Codex config, and `turn/start` effort only adds a `configuration_update` item on top,
       // which lowers the effort but raises it only part of the way.
-      ...(request.effort ? { config: { model_reasoning_effort: request.effort } } : {}),
+      ...(request.effort || request.search ? { config: {
+        ...(request.effort && { model_reasoning_effort: request.effort }), ...(request.search && { web_search: 'live' }),
+      } } : {}),
     })
     return new Conversation(connection, thread.id, request, (model, window) => this.contextWindows.set(model, window))
   }
@@ -307,12 +310,29 @@ export class CodexAdapter extends LlmAdapter {
     if (key !== undefined && this.conversations.get(key) === conversation) this.conversations.delete(key)
   }
 
-  async *stream(options) {
+  /** A standalone auxiliary turn on the same login, never on the caller's chat thread. */
+  async search({ model, query, reasoningEffort }, signal) {
+    const search = new SearchResults()
+    const options = { provider: name, model, reasoningEffort, signal, purpose: 'web-search',
+      system: 'Use native web search for the query. After searching, give a brief answer citing the results.',
+      messages: [{ role: 'user', content: [{ type: 'text', text: query }] }] }
+    for await (const chunk of this.run(options, search)) {
+      if (chunk.type !== 'finish') continue
+      if (chunk.reason.kind !== 'stop') throw new Error('Codex search did not complete its turn')
+      return search.result()
+    }
+    throw new Error('Codex search ended without a completed turn')
+  }
+
+  stream(options) { return this.run(options) }
+
+  async *run(options, search) {
     // Auxiliary calls (titles, summaries) never touch the session's thread.
     const key = options.purpose === undefined ? options.sessionId : undefined
     const timeout = AbortSignal.timeout(this.config.timeoutMs)
     const signal = options.signal ? AbortSignal.any([options.signal, timeout]) : timeout
     const request = this.prepare(options, signal)
+    request.search = search
     this.active++
     let conversation
     let owned = false
@@ -340,6 +360,7 @@ export class CodexAdapter extends LlmAdapter {
       }
       conversation.busy = true
       clearTimeout(conversation.idleTimer)
+      signal.throwIfAborted()
       await conversation.begin(plan, request)
       for await (const chunk of conversation.read(request, signal)) {
         if (chunk.type === 'finish') finished = true
@@ -385,6 +406,20 @@ export function apply(ctx, config) {
   // The route exists only while the Models page has enabled the provider; a changed
   // app-server path replaces the adapter and its app-server process.
   let current
+  let refreshSearch
+  ctx.inject(['nativeSearch'], scope => {
+    let unregister
+    refreshSearch = () => {
+      unregister?.()
+      const adapter = current?.adapter
+      unregister = adapter && scope.nativeSearch.register(name, adapter.search.bind(adapter))
+    }
+    refreshSearch()
+    scope.effect(() => () => {
+      refreshSearch = undefined
+      unregister?.()
+    })
+  })
   let speeds
   ctx.inject(['sessionProjections', 'commands', 'sessions'], async scope => {
     speeds = await registerSpeed(scope, () => current?.adapter)
@@ -415,7 +450,7 @@ export function apply(ctx, config) {
       void current.adapter.dispose()
     }
     current = undefined
-    if (codexPath === undefined) return
+    if (codexPath === undefined) { refreshSearch?.(); return }
     const adapter = new CodexAdapter({ ...options, codexPath }, undefined, modelsDev, () => ctx.get('attachments'))
     adapter.resolveImageAccess = ref => {
       const store = ctx.get('attachments')
@@ -426,6 +461,7 @@ export function apply(ctx, config) {
       return session && speeds ? speeds.stateOf(session).selected : undefined
     }
     current = { codexPath, adapter, unregister: ctx.llm.registerAdapter([name], adapter) }
+    refreshSearch?.()
   }
   sync()
   ctx.on('loader/volatile-update', sync)

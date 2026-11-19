@@ -50,6 +50,12 @@ Ultrafast 不受模型支持时退到 Fast，再不支持则用标准档。每�
 
 辅助请求（标题、摘要等带 `purpose` 的请求）使用单独的临时线程，结束后立即释放。取消、单步超时、消费方提前结束或出错时，中断这一轮并丢弃线程，下一次请求重建。
 
+## 与原生网页搜索联动
+
+启用 Codex Provider 和提供 `nativeSearch` 服务的「接口原生搜索」插件后，DSH 的 `web_search` 可以跟随 Codex 会话，也可把 Codex 固定为搜索渠道。搜索由当前 Codex 登录执行并消耗对应额度，不需要向另一个插件提供凭据。未安装或停用原生搜索插件不影响聊天。
+
+一次查询在同一个 app-server 的独立临时线程中执行：只传查询和所选模型、思考等级，不带聊天历史或 DSH 工具。仅此线程开启 `web_search: live`，不改变普通线程及本机 Codex 配置。返回值优先使用 Codex 搜索事件中的来源（URL、标题、摘要），也接受上游的结构化 URL 引用；不从回答正文猜来源。未执行搜索、没有可信 HTTP(S) 来源、上游报错或取消时，不返回成功结果。
+
 ## 不让 Codex 加进请求的内容
 
 app-server 进程用配置覆盖关闭了 Codex 本会注入模型请求的内容：Codex 的权限、apps、协作模式和 skills 说明，环境上下文，AGENTS.md；原生 shell、`view_image`、sleep、多代理、goals、浏览器、computer use、图像生成和 `request_user_input` 工具；网页搜索；apps、插件、hooks 和 memories；以及用户 Codex 配置里的全部 MCP 服务器。多代理用 `agents.enabled=false` 关闭：模型元数据（如 `multi_agent_version: "v2"`）会绕过 `features.multi_agent`，否则模型仍会收到 `collaboration` 工具（`spawn_agent` 等）和 `<multi_agent_role>` 说明。Codex 的状态和日志写入临时目录，只有认证来自 `CODEX_HOME`。审批和交互输入请求回绝给 Codex。上下文压缩由 DSH 负责，Codex 的自动压缩关闭。

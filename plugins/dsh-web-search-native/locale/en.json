@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Native web search",
-    "description": "Backs the web_search tool with the model API's built-in web search, running on the conversation's provider with a per-provider search model. Supports Anthropic Messages and OpenAI Responses routes."
+    "description": "Backs the web_search tool with the model API's built-in web search, following the conversation or a pinned search channel and model. Supports Anthropic Messages, OpenAI Responses and registered channels such as Codex Provider."
   }
 }
