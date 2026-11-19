@@ -43,6 +43,12 @@ test('the plugin declares one volatile teamwork switch, off by default', () => {
   assert.equal(Config({ agentTeams: true }).agentTeams.get(), true)
 })
 
+test('composer effort memory is a volatile profile dictionary separate from the default selection', () => {
+  const saved = { '["p","a/b"]': 'high' }
+  assert.deepEqual(Config({}).effortByModel.get(), {})
+  assert.deepEqual(Config({ effortByModel: saved }).effortByModel.get(), saved)
+})
+
 test('a saved default is kept when the composer picks another model', async () => {
   const defaults = service(SEEDED)
   const dispose = keepDefaultFromSessionSwitches(defaults, () => {})
