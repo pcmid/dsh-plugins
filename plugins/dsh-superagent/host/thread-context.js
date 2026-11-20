@@ -1,41 +1,63 @@
-// Private source adapter: no browser route, chat discovery, resource downloads, or model calls.
-import {postText,renderTextMentions} from './mention-text.js'
+// Private source adapter: no browser route, chat discovery, URL fetches or model calls. Images are
+// listed by reference here and downloaded only when a seat receives them.
+import {imageKey,imageMarker,postImages,postText,renderTextMentions} from './mention-text.js'
 
 const messages='/open-apis/im/v1/messages', maxContext=262144
 const q=JSON.stringify, mid=s=>typeof s==='string' && /^om_[\w-]{1,128}$/.test(s), tid=s=>typeof s==='string' && /^omt_[\w-]{1,128}$/.test(s)
 const time=t=>Number.isSafeInteger(Number(t)) && Number(t)>0
 const noParents='((.root_id // "")=="" and (.parent_id // "")=="")'
 const meta='{chat_id,message_id,thread_id,root_id,parent_id,upper_message_id,create_time,update_time,updated,deleted,msg_type,sender:(.sender|{id,id_type,sender_type,tenant_key})}'
-const human='.deleted==false and (.msg_type=="text" or .msg_type=="post") and .sender.sender_type=="user" and .sender.id_type=="open_id" and (.sender.id | strings | test("^ou_[a-zA-Z0-9_-]{1,128}$"))'
+const human='.deleted==false and (.msg_type=="text" or .msg_type=="post" or .msg_type=="image") and .sender.sender_type=="user" and .sender.id_type=="open_id" and (.sender.id | strings | test("^ou_[a-zA-Z0-9_-]{1,128}$"))'
+const validKey='(strings|test("^img_[A-Za-z0-9_-]{1,256}$"))'
 const speech='(. as $m | (.body.content|fromjson?) as $b | if .msg_type=="text" then $b.text else '+
   '($b.content|arrays|select(all(.[]; type=="array"))) as $lines | [($b.title|strings),($lines[]|map('+
   'if .tag=="text" or .tag=="code_block" then (.text|strings) elif .tag=="a" then '+
   '(.text // "") as $l | (.href // "") as $h | if $l!="" and $h!="" and $l!=$h then "["+$l+"]("+$h+")" elif $l!="" then $l else $h end '+
   'elif .tag=="at" and (.user_id|type)=="string" then .user_id as $id | (.user_name // first($m.mentions[]?|select(.key==$id)|.name) // "") as $n | '+
   'if $n!="" then "@"+$n else $id end else "" end)|join("")|select(length>0))]|join([10]|implode) end | strings|select(test("[^[:space:]]")))'
-// Only speech-bearing parts survive. Never run a plain-text tokenizer over flattened links or code.
+// Only speech-bearing parts and image references survive. Never run a plain-text tokenizer over flattened links or code.
 const cleanPost='{title:(.title | strings // ""),content:[.content[]|map('+
   'if (.tag=="text" or .tag=="code_block") and (.text|type)=="string" then {tag,text} '+
   'elif .tag=="a" then {tag,text:(.text|strings // ""),href:(.href|strings // "")} '+
+  'elif .tag=="img" and (.image_key|'+validKey+') then {tag,image_key} '+
   'elif .tag=="at" and (.user_id|type)=="string" then {tag,user_id:(if (.user_name|strings // ""|test("[^[:space:]]")) and (.user_id|test("^@_user_[0-9]+$")|not) then "" else .user_id end),user_name:(.user_name|strings // "")} else empty end)]}'
+// An image message carries only its image reference; one without a valid key is dropped.
+const imageRow='{image:((.body.content|fromjson?)|.image_key|select('+validKey+'))}'
 const sameRoot=root=>'.message_id=='+q(root)+' and '+noParents
 const rootRow=(r,root)=>r.message_id===root && !r.root_id && !r.parent_id
 const flatRow=r=>!r.thread_id && !r.root_id && !r.parent_id
 const sameThread=(r,root,container)=>r.thread_id===container && (r.root_id===root || rootRow(r,root))
-const textual=r=>r.deleted===false && ['text','post'].includes(r.msg_type) && r.sender?.sender_type==='user' &&
+const textual=r=>r.deleted===false && ['text','post','image'].includes(r.msg_type) && r.sender?.sender_type==='user' &&
   r.sender.id_type==='open_id' && /^ou_[\w-]{1,128}$/.test(r.sender.id)
 const order=(a,b)=>a.at-b.at || a.id.localeCompare(b.id)
+// One entry per image, at its first appearance.
+export const distinctImages=list=>{
+  const seen=new Set()
+  return list.filter(i=>!seen.has(i.key) && seen.add(i.key))
+}
+const parsed=row=>{try {return JSON.parse(row.body?.content)} catch {return undefined}}
+// The image keys a verified row carries, in reading order.
+function rowImages(row) {
+  if (row?.msg_type==='image') {
+    const key=row.image ?? parsed(row)?.image_key
+    return imageKey(key) ? [key] : []
+  }
+  return row?.msg_type==='post' ? postImages(row.post ?? parsed(row)) : []
+}
 
 export function createThreadReader({api,config,pageCursor,mentionScope,check,checkPrivate,failure}) {
   const {recipientId,tenantId}=config
   const isMe='.id_type=="open_id" and .id=='+q(recipientId)+' and .tenant_key=='+q(tenantId)
-  const display=speech+' as $s | (.body.content|fromjson?) as $b | '+
-    '([if .msg_type=="text" then $s|scan("@_user_[A-Za-z0-9_]+") else $b.content[][]|select(.tag=="at")|.user_id|strings end | select(test("^@_user_[0-9]+$"))] | unique) as $keys | '+
+  // A rich-text message with images but no words still counts; an empty one is dropped inside the CLI.
+  const display='(first('+speech+') // "") as $s | (.body.content|fromjson?) as $b | '+
+    '([if .msg_type=="text" then $s|scan("@_user_[A-Za-z0-9_]+") else $b.content[]?[]?|objects|select(.tag=="at")|.user_id|strings end | select(test("^@_user_[0-9]+$"))] | unique) as $keys | '+
     '[.mentions[]? | .key as $k | select(($k|type)=="string" and ($keys|index($k))!=null) | '+
     '{key,name:(.name|strings // "")} + (if '+isMe+' then {id,id_type,tenant_key} else {} end)] as $mentions | '+
-    '(if .msg_type=="text" then {speech:$s} else {post:($b|'+cleanPost+'),speechSize:($s|length)} end) + {mentions:$mentions} + '+
+    '(if .msg_type=="text" then {speech:$s} else ($b|select(.content|arrays|all(.[]; type=="array"))|{post:'+cleanPost+'}) + {speechSize:($s|length)} end) as $c | '+
+    'select($s!="" or ([$c.post.content[]?[]?|select(.tag=="img")]|length)>0) | $c + {mentions:$mentions} + '+
     '(if ($keys|length)>0 and (.sender|'+isMe+') and (.sender.sender_name|type)=="string" then {sender:(.sender|{id,id_type,sender_type,tenant_key,sender_name})} else {} end)'
-  const fields=meta+' + ('+display+')'
+  const content='(if .msg_type=="image" then '+imageRow+' else ('+display+') end)'
+  const fields=meta+' + '+content
   const bad=(message='无法核实完整的飞书话题或分页。')=>failure(message,'invalid-response','history')
   const tooLarge=()=>failure('飞书上下文过大，未提交不完整的内容办理。','context-too-large','history')
   function scope(chatId,group) {
@@ -50,12 +72,14 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     }
   }
   function rowText(row) {
+    // An image message reads as its marker only.
+    if (row.msg_type==='image') return rowImages(row).map(imageMarker)[0] ?? null
     const binding=mentionScope(row)
     const mentions=row.mentions ?? []
     if (typeof row.speech==='string') return renderTextMentions(row.speech,mentions,binding)
-    // Recheck raw adapter responses too. No image/file expansion, URL fetches or arbitrary post fields.
-    let b=row.post
-    if (!b) try {b=JSON.parse(row.body?.content)} catch {return null}
+    // Recheck raw adapter responses too. No file expansion, URL fetches or arbitrary post fields.
+    const b=row.post ?? parsed(row)
+    if (!b) return null
     return row.msg_type==='post' ? postText(b,mentions,binding) : typeof b?.text==='string' ? renderTextMentions(b.text,mentions,binding) : null
   }
   async function get(group,path,params,projection) {
@@ -101,28 +125,30 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
       const want=container ? '((.thread_id // "")=="" or .thread_id=='+q(container)+')' : 'true'
       const filter=s.jq+' and '+sameRoot(root)+' and '+want
       const project='('+meta+') + (if ('+human+' and '+(container?'true':'(.thread_id // "" | test("^omt_[a-zA-Z0-9_-]{1,128}$"))')+
-        ') then (('+display+') // {}) else {} end)'
+        ') then (('+content+') // {}) else {} end)'
       anchor=(await one(group,root,filter,project)).find(r=>s.ok(r) && rootRow(r,root) && (!container || !r.thread_id || r.thread_id===container))
       if (!container && !anchor) throw bad('无法核实原消息是否属于独立飞书话题。')
       container??=containerOf(anchor)
     }
     const found=new Map()
     let length=0
-    const put=(id,at,sender,text)=>{
+    const put=(id,at,sender,text,images=[])=>{
       if (found.has(id) || typeof text!=='string' || !text.trim()) return
       length+=text.length+(found.size?1:0)
       if(length>maxContext) throw tooLarge()
-      found.set(id,{id,at,sender,text})
+      found.set(id,{id,at,sender,text,images})
     }
+    // The request's own images; its text already carries their markers.
+    const requestImages=rowImages(target)
     if (container) {
       // The archived request wins over an edited copy in a subsequent root or thread listing.
-      put(messageId,at,event.senderId,event.text)
-      if (anchor && textual(anchor) && time(anchor.create_time)) put(root,Number(anchor.create_time),anchor.sender.id,rowText(anchor))
+      put(messageId,at,event.senderId,event.text,requestImages)
+      if (anchor && textual(anchor) && time(anchor.create_time)) put(root,Number(anchor.create_time),anchor.sender.id,rowText(anchor),rowImages(anchor))
       const region='.thread_id=='+q(container)+' and (.root_id=='+q(root)+' or ('+sameRoot(root)+'))'
       const items=()=>'[.data.items[]|select('+s.jq+' and '+human+' and .message_id!='+q(messageId)+' and ('+region+'))|'+fields+']'
       await pages(group,{container_id_type:'thread',container_id:container,sort_type:'ByCreateTimeAsc',page_size:50},items,rows=>{
         for(const r of rows) if (s.ok(r) && textual(r) && time(r.create_time) && r.message_id!==messageId && sameThread(r,root,container))
-          put(r.message_id,Number(r.create_time),r.sender.id,rowText(r))
+          put(r.message_id,Number(r.create_time),r.sender.id,rowText(r),rowImages(r))
       })
       // Only a verified root (including an explicit deleted/non-text root) or the same root
       // in the validated thread listing establishes completeness; an empty lookup cannot.
@@ -142,7 +168,7 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
             const t=Number(r.create_time), u=Number(r.update_time)
             if (!time(t) || t<since || t>=at || (r.updated===true || r.update_time && u!==0) && !(time(u) && u<at) ||
               t<=cutoff && r.mentions?.some(m=>m?.id===recipientId)) continue
-            put(r.message_id,t,r.sender.id,rowText(r))
+            put(r.message_id,t,r.sender.id,rowText(r),rowImages(r))
             if (found.size>=count) return true
           }
         })
@@ -158,6 +184,10 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     const context=turns.length ? JSON.stringify(turns) : ''
     if (context.length>maxContext) throw tooLarge()
     event.workerContext=context
+    // Every image the request and its conversation show, by reference, in conversation order.
+    const shown=[...found.values()].sort(order).flatMap(f=>f.images.map(key=>({messageId:f.id,key,at:f.at})))
+    if (!found.has(messageId)) shown.push(...requestImages.map(key=>({messageId,key,at})))
+    event.workerImages=distinctImages(shown)
     return found
   }
   async function readReply({source,messageId,requesterId,questionId,originalText},original,grant,group,live) {
@@ -193,7 +223,9 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
         const text=rowText(r)
         if (typeof text!=='string' || !text.trim()) continue
         if (text.length>65536) throw tooLarge()
-        reply={chatId,threadId:root,messageId:r.message_id,senderId:requesterId,parentId:questionId,at:Number(r.create_time),text}
+        const images=distinctImages(rowImages(r).map(key=>({messageId:r.message_id,key,at:Number(r.create_time)})))
+        reply={chatId,threadId:root,messageId:r.message_id,senderId:requesterId,parentId:questionId,at:Number(r.create_time),text,
+          ...(images.length ? {workerImages:images} : {})}
         return true
       }
     })
@@ -206,6 +238,7 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
       const seen=snapshot.get(reply.messageId)
       if (seen?.sender!==requesterId || seen.at!==reply.at || seen.text!==reply.text) return null
       reply.workerContext=event.workerContext
+      if (event.workerImages.length) reply.workerImages=event.workerImages
     }
     return reply
   }

@@ -396,6 +396,14 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
       signal?.throwIfAborted()
       if(current()!==rec) fail('scope-changed')
     },
+    // Images a seat is about to receive, read under the job's current grant.
+    async loadImages(source,refs,signal,requesterId) {
+      const {rec,checkGrant}=jobScope(source,signal)
+      const images=await rec.source.images({source,refs,requesterId},checkGrant)
+      signal?.throwIfAborted()
+      if(current()!==rec) fail('scope-changed')
+      return images
+    },
     async deliverReviewed(job) {
       try {
         const {rec,checkGrant}=jobScope(job?.source,job?.signal)

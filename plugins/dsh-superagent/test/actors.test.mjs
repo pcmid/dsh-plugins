@@ -40,7 +40,12 @@ async function fixture(t,priorApproval) {
   // Other registered DSH workspaces the Router may choose from; SuperAgent's own is listed once created.
   const places = new Map()
   const f = {requested:[],prompts:[],nativeRequests:[],oneShots:[],globalTools:[],registrations:[],lookups:[],archives:[],worker:answer('First draft.'),
-    control:route('develop'),approved:[]}
+    control:route('develop'),approved:[],modelInfo:[]}
+  // DSH stores each prompt image as an attachment; with `offload`, the model surface later shows it as a placeholder.
+  const admit = b => b.type === 'image' && b.data !== undefined && !f.rawImages ? {type:'image',attachment:{attachmentId:'att-'+createHash('sha256').update(b.data).digest('hex').slice(0,12),
+    mediaType:b.mediaType,bytes:Buffer.from(b.data,'base64').length,width:1,height:1}} : b
+  const shown = m => f.offload && m.role === 'user' && m.content.some(b=>b.type === 'image') ?
+    {...m,content:m.content.map(b=>b.type === 'image' ? {...b,offloaded:true} : b)} : m
   if(priorApproval)hooks.set('approval/request',[priorApproval])
   const ctx = { get:key=>services[key],on(event,fn,prepend=false) {
     const rows = hooks.get(event) || [];if(prepend)rows.unshift(fn);else rows.push(fn);hooks.set(event,rows)
@@ -67,7 +72,12 @@ async function fixture(t,priorApproval) {
       }},
     workingDirectory:{get:s=>s.header.cwd},agents:{get:id=>agents.get(id)},
     llm:{async resolveCallConfig(route,signal){signal.throwIfAborted();return route},
+      // A model's input modalities; undefined when the provider does not say.
+      async resolveModelInfo(provider,model){f.modelInfo.push([provider,model]);return {...f.modalities && {inputModalities:f.modalities}}},
       stream(req){f.oneShots.push(req);return f.directStream || chunks(f.control)}},
+    attachments:{imageLimits:{maxImageBytes:1024,maxImagesPerMessage:4,maxMessageImageBytes:4096,maxImagePixels:1e6,maxImageDimension:1024,
+      mediaTypes:['image/png','image/jpeg','image/gif','image/webp']},
+      async validateImage({data}){if(data.includes('CORRUPT')) throw Error('cannot decode')}},
     sessionController:{
       create(req){
         const {sessionId,agentPreset='workspace-default'} = req, home = services.workspaceRegistry.get(req.workspaceId)
@@ -133,7 +143,7 @@ async function fixture(t,priorApproval) {
             const turn=f.turn=(f.turn||0)+1
             emit('turn/start',{turn})
             if(f.ackOnly) return
-            const user={id:'u'+turn,role:'user',source:{kind:'user',rpcId:req.requestId},content:req.content}
+            const user={id:'u'+turn,role:'user',source:{kind:'user',rpcId:req.requestId},content:req.content.map(admit)}
             if(f.sideCall) {
               const invoke=hooks.get('llm/stream')[0]
               const result=invoke({purpose:'compaction',sessionId,provider:'aux',model:'summary',tools:[]},()=>42)
@@ -146,14 +156,14 @@ async function fixture(t,priorApproval) {
             emit('system/message',{turn,step:1,message:system})
             for(const m of admitted){emit('user/message',m);history.push(m)}
             const replay=(f.compact ? admitted : history).map(m=>f.replacePrior && m.id===f.replacePrior ? {...m,content:[block('substituted history')]} : m)
-            surface=[system,...(f.moreSystem ? [{role:'system',source:{kind:'system-prompt'},content:[block('extra native section')]}]:[]),...replay]
+            surface=[system,...(f.moreSystem ? [{role:'system',source:{kind:'system-prompt'},content:[block('extra native section')]}]:[]),...replay.map(shown)]
             stop=new AbortController()
             const loopSignal=stop.signal
             try {
               let reason='completed'
               for(let step=1; ; step++) {
                 if(budget--<=0){reason='aborted';break}
-                if(step>1)surface=[system,...history]
+                if(step>1)surface=[system,...history.map(shown)]
                 const schemas=[...scope.tools.values()].map(({name,description,parameters})=>({name,description,parameters}))
                 const options={sessionId,...route,signal:loopSignal,tools:[...(f.toolSchemas || []),...schemas],messages:surface.slice()}
                 if(f.fakeSurface) options.messages.push({role:'user',source:{kind:'made-up'},content:[block('not the native surface')]})
@@ -199,7 +209,7 @@ async function fixture(t,priorApproval) {
         assert.equal(req.mode,'queue');signal.throwIfAborted()
         if(f.failPrompt) throw Error('private provider diagnostics')
         if (f.stall) return new Promise(()=>{})
-        f.prompts.push({sessionId:req.sessionId,requestId:req.requestId,text:req.content[0].text})
+        f.prompts.push({sessionId:req.sessionId,requestId:req.requestId,text:req.content[0].text,content:req.content})
         agents.get(req.sessionId).prompt(req)
         return {accepted:true}
       },
@@ -1073,4 +1083,92 @@ test('worker supplements must be well-formed, from the requester or a participan
   assert.equal(f.requested.length,0);assert.equal(f.nativeRequests.length,0)
   const out=await f.actors.work({...base,supplements:Array(20).fill(one)})
   assert.equal(out.answer,'First draft.');assert.equal(inputOf(f.nativeRequests[0]).supplements.length,20)
+})
+
+// Images of the conversation: each one follows the seat's text under its marker, as DSH stores it.
+const marker = key => '[图片 #'+createHash('sha256').update(key).digest('hex').slice(0,6)+']'
+const png = name => Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),Buffer.from(name)])
+const jpeg = name => Buffer.concat([Buffer.from([0xff,0xd8,0xff,0xe0]),Buffer.from(name)])
+const gif = name => Buffer.from('GIF89a'+name,'latin1')
+const webp = name => Buffer.concat([Buffer.from('RIFF'),Buffer.alloc(4),Buffer.from('WEBP'+name)])
+const shot = (n,at=n) => ({messageId:'om_s'+n,key:'img_'+n,at})
+// A job whose conversation shows these images; the loader records which ones each seat asked for.
+const showing = (f,refs,bytes=r=>png(r.key)) => ({...base,workerImages:refs,loadImages:async wanted=>{f.loaded.push(wanted.map(r=>r.key));return wanted.map(bytes)}})
+// What a prompt carried after its text: [marker, media type, bytes] per image.
+const attached = p => p.content.slice(1).reduce((out,b,i,all)=>i % 2 ? out : [...out,[b.text,all[i+1].mediaType,Buffer.from(all[i+1].data,'base64')]],[])
+
+test('the Router and the worker get the conversation’s images after their text, under the images’ markers',async t=>{
+  const f=await fixture(t);f.loaded=[]
+  const job=showing(f,[shot(1),shot(2)])
+  assert.deepEqual(await f.actors.decide(job),{action:'work',role:'develop'})
+  assert.equal((await f.actors.work(job)).answer,'First draft.')
+  assert.deepEqual(f.modelInfo,[['offline','director'],['offline','coder']])
+  assert.deepEqual(f.loaded,[['img_2','img_1'],['img_2','img_1']],'newest first')
+  assert.equal(f.prompts.length,2)
+  for(const p of f.prompts) {
+    assert.match(p.text,/A marker such as \[图片 #[0-9a-f]{6}\] stands for an image/)
+    assert.deepEqual(attached(p),[[marker('img_1'),'image/png',png('img_1')],[marker('img_2'),'image/png',png('img_2')]])
+  }
+  // The model sees DSH's stored message: the same texts, each image as an attachment.
+  for(const r of f.nativeRequests) {
+    const asked=r.messages.findLast(m=>m.role==='user' && m.source.kind==='user').content
+    assert.deepEqual(asked.slice(1).map(b=>b.type==='image' ? typeof b.attachment.attachmentId : b.text),[marker('img_1'),'string',marker('img_2'),'string'])
+  }
+  // A recorded message that is not DSH's stored form of the prompt is not this seat's request.
+  f.rawImages=true
+  await assert.rejects(f.actors.work({...job,messageId:'om_raw'}),denied)
+  assert.equal(f.nativeRequests.length,2)
+})
+
+test('a model without image input, a missing attachment service or a missing loader leave the text alone',async t=>{
+  const f=await fixture(t);f.loaded=[]
+  const job=showing(f,[shot(1)])
+  f.modalities=['text']
+  await f.actors.decide(job)
+  f.modalities=['text','image']
+  await f.actors.work(job)
+  f.modalities=undefined
+  const {attachments}=f.services
+  delete f.services.attachments
+  await f.actors.work({...job,messageId:'om_no_service'})
+  f.services.attachments=attachments
+  await f.actors.work({...job,messageId:'om_no_loader',loadImages:undefined})
+  assert.deepEqual(f.prompts.map(p=>p.content.length),[1,3,1,1]);assert.deepEqual(f.loaded,[['img_1']])
+})
+
+test('only the newest images within DSH’s limits are sent; unreadable, unsupported or oversized ones keep just their marker',async t=>{
+  const f=await fixture(t), limits=f.services.attachments.imageLimits;f.loaded=[]
+  limits.maxImagesPerMessage=2
+  await f.actors.work(showing(f,[1,2,3,4,5].map(n=>shot(n))))
+  assert.deepEqual(f.loaded,[['img_5','img_4']]);assert.deepEqual(attached(f.prompts[0]).map(([m])=>m),[marker('img_4'),marker('img_5')])
+  // Newest first: the corrupt image fails DSH validation, and the oldest no longer fits the message budget.
+  Object.assign(limits,{maxImagesPerMessage:10,maxImageBytes:30,maxMessageImageBytes:40,mediaTypes:['image/png','image/jpeg','image/webp']})
+  const bytes={img_8:png('CORRUPT'),img_7:webp('img_7'),img_6:null,img_5:Buffer.from('not an image'),img_4:gif('img_4'),
+    img_3:png('img_3'+'x'.repeat(30)),img_2:jpeg('img_2'),img_1:png('img_1xx')}
+  f.loaded=[]
+  await f.actors.work({...showing(f,[1,2,3,4,5,6,7,8].map(n=>shot(n)),r=>bytes[r.key]),messageId:'om_limits'})
+  assert.deepEqual(f.loaded,[['img_8','img_7','img_6','img_5','img_4','img_3','img_2','img_1']])
+  assert.deepEqual(attached(f.prompts[1]),[[marker('img_2'),'image/jpeg',bytes.img_2],[marker('img_7'),'image/webp',bytes.img_7]])
+  // A loader that does not answer for each requested image fails the seat.
+  await assert.rejects(f.actors.work({...showing(f,[shot(1)]),messageId:'om_short',loadImages:async()=>[]}),denied)
+})
+
+test('a continuing worker is sent only images its session has not received; an offloaded image keeps its receipts valid',async t=>{
+  const f=await fixture(t);f.loaded=[];f.offload=true
+  f.worker=ask('Which screenshot?')
+  const asked=await f.actors.work(showing(f,[shot(1)]))
+  assert.equal(asked.question,'Which screenshot?')
+  assert.ok(f.nativeRequests[0].messages.some(m=>m.content.some(b=>b.type==='image' && b.offloaded)),'the model saw a placeholder')
+  f.hooks.clear();f.actors=createActors(f.ctx,{workspacePath:f.workspace.path}) // Only the session log tells what was sent.
+  f.worker=answer('The second one.')
+  const done=await f.actors.work({...showing(f,[shot(1),shot(2)]),...follow(asked),previousQuestion:asked.question,requesterReply:marker('img_2')})
+  assert.deepEqual([done.answer,done.sessionId],['The second one.',asked.sessionId])
+  // A merged message continues the same session; again only its new image is sent.
+  f.worker=answer('Updated.')
+  const more=await f.actors.work({...showing(f,[shot(1),shot(2),shot(3)]),continueWork:true,previousWorkspaceId:f.workspace.id,
+    supplements:[{from:'requester',text:marker('img_3')}]})
+  assert.deepEqual([more.answer,more.sessionId],['Updated.',asked.sessionId])
+  assert.deepEqual(f.loaded,[['img_1'],['img_2'],['img_3']])
+  assert.deepEqual(f.prompts.map(p=>attached(p).map(([m])=>m)),[[marker('img_1')],[marker('img_2')],[marker('img_3')]])
+  assert.equal(f.requested.length,1)
 })

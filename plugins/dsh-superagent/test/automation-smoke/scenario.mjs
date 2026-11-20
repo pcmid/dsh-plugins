@@ -15,6 +15,7 @@ import { failBeforeExit,retryAfterRestart } from './retries.mjs'
 import { mergeAfterRestart,mergeBeforeExit } from './merge.mjs'
 import { ignoreAfterRestart,ignoreBeforeExit } from './ignore.mjs'
 import { memberAfterRestart,memberBeforeExit } from './member.mjs'
+import { imagesRound } from './images.mjs'
 import { chatId,clarificationId,declineId,fakeFeishu,firstId,followupId,foreignMessageId,messageId,otherDM,peerSelfId,privateMessageId,questionId,receiptId,root,selfChatId,selfMessageId,selfReceiptId,source } from './feishu.mjs'
 import { answer,forbiddenAnswer,ownerAsk,probes,resultNames,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
 
@@ -472,6 +473,7 @@ export async function verify(ctx,provider,workspacePath) {
       await checkSoftStops(ctx,app,provider,transport)
       console.log('PASS result tools: only the active seat saw its result tools, invalid answer returned an error and was corrected in one turn; both same-step submissions succeeded and only the last question/answer was retained for release. An ordinary tail call ran without an extra send or repeated execution on cold continuation.')
       await legacyRound(ctx,workspacePath,actors)
+      await imagesRound(ctx,provider,actors)
       assert.ok(provider.emptyRouter,'the default Router reached the native provider')
       assert.equal((await ctx.sessionPersistence.stat(provider.emptyRouter)).header.agentPreset,'default-fixture')
       console.log('PASS automation: release; cold native worker resumed the confirmed question only on its original requester’s unmentioned reply; independent final approval, rejected question had zero sends; recovered receipt did not loop. Owner self-mentions in notes and opted-in P2P ran without clicks; plain owner DMs were ignored and peer-initiated messages still required separate admission. Every outgoing answer was released separately.')

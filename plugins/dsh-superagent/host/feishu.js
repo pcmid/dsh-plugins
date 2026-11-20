@@ -1,6 +1,9 @@
 import { execFile } from 'node:child_process'
+import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { createThreadReader } from './thread-context.js'
-import { legacyPostText, postText, renderTextMentions } from './mention-text.js'
+import { imageKey, legacyPostText, postText, renderTextMentions } from './mention-text.js'
 import { validAdmissionScope } from './admission.js'
 import { replyScopes } from './auth.js'
 import { cliExecutable } from './cli-path.js'
@@ -19,6 +22,7 @@ const failure = (detail,reason,stage,larkCode) => Object.assign(new SourceFailur
 const malformed = stage => failure('飞书返回的数据不足以核实来源。','invalid-response',stage)
 const validText = text => typeof text==='string' && text.length<=65536 && !!text.trim()
 const positiveTime = at => Number.isSafeInteger(at) && at>0
+const maxImageBytes = 50*1024*1024
 // Feishu search rejects fractional seconds. Widen only the wire range; admission uses the exact milliseconds.
 const searchTime = (ms,round) => new Date(round(ms/1000)*1000).toISOString().replace('.000Z','Z')
 const groupName = group => typeof group?.name==='string' && group.name.trim().slice(0,256)
@@ -35,10 +39,10 @@ function errorEnvelope(stream) {
   if (start>0) { const value=json(stream.slice(start)); if (value?.ok===false && value.error) return value }
 }
 
-async function runCli(cliPath, args, input = '', cliDir) {
+async function runCli(cliPath, args, input = '', cliDir, cwd) {
   // Never surface CLI stdout/stderr: either stream can contain private information.
   return new Promise((resolve,reject) => {
-    const child = execFile(cliExecutable(cliPath), args, {timeout:30_000,maxBuffer:4*1024*1024,windowsHide:true,
+    const child = execFile(cliExecutable(cliPath), args, {timeout:30_000,maxBuffer:4*1024*1024,windowsHide:true,...(cwd ? {cwd} : {}),
       env:{...process.env,...(cliDir ? {LARKSUITE_CLI_CONFIG_DIR:cliDir} : {}),LARKSUITE_CLI_NO_UPDATE_NOTIFIER:'1',LARKSUITE_CLI_NO_SKILLS_NOTIFIER:'1'}}, (err,stdout,stderr) => {
       const out=json(stdout), diagnostic=errorEnvelope(stderr)
       // lark-cli auth check exits 1 for a verified missing scope, not just for process failures.
@@ -460,6 +464,24 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     checkPrivate(group)
     return row
   }
+  // One image of a verified job conversation, as bytes. The CLI writes into a private directory that is
+  // removed afterwards; a recalled message or a refused download leaves only the image's marker.
+  async function download(messageId,key) {
+    const dir=await realpath(await mkdtemp(join(tmpdir(),'superagent-image-')))
+    try {
+      check()
+      let out
+      try {
+        out=await run(['--profile',profile,'im','+messages-resources-download','--message-id',messageId,'--file-key',key,
+          '--type','image','--output','image','--as','user','--format','json'],undefined,cliDir,dir)
+      } catch { return null }
+      check()
+      if (out?.ok!==true || out.identity!=='user' || typeof out.data?.saved_path!=='string') return null
+      const path=await realpath(out.data.saved_path).catch(()=>null), info=path && await stat(path)
+      if (!info || dirname(path)!==dir || !info.isFile() || info.size>maxImageBytes) return null
+      return await readFile(path)
+    } finally { await rm(dir,{recursive:true,force:true}) }
+  }
   function inGrant(grant,{messageId,threadId,at}) {
     return positiveTime(at) && at>config.automationSince && (at>(grant.approvedAt ?? 0) ||
       grant.triggers?.some(t=>t.messageId===messageId && t.threadId===threadId && t.at===at))
@@ -478,6 +500,20 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         const original=await verifyOriginalForQuestion(input,grant,group)
         live()
         return original ? readReply(input,original,grant,group,live) : null
+      },checkGrant)
+    },
+    // Images of a job's conversation, under the job's current grant; null for each one not obtained.
+    async images({source,requesterId,refs},checkGrant) {
+      if (!automated || source?.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
+        !matches(message,source.threadId) || !Array.isArray(refs) || refs.length>100 ||
+        !refs.every(r=>matches(message,r?.messageId) && imageKey(r.key)) || typeof checkGrant!=='function') throw malformed('message')
+      return guarded({...source,...(matches(person,requesterId) ? {senderId:requesterId} : {})},async (grant,group)=>{
+        const out=[]
+        for (const r of refs) {
+          checkGrant(grant);checkPrivate(group)
+          out.push(await download(r.messageId,r.key))
+        }
+        return out
       },checkGrant)
     },
     async groupName(chatId) {

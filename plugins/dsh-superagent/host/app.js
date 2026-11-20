@@ -14,7 +14,8 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
   const guarded=fn=>async input=>{
     await channel.assertAutomation(input.source,input.signal,input.requesterId)
     input.signal?.throwIfAborted()
-    return fn(input)
+    // A seat reads the conversation's images itself, once it knows which ones it still needs.
+    return fn({...input,loadImages:refs=>channel.loadImages(input.source,refs,input.signal,input.requesterId)})
   }
   const loop=automationStore && actors && createLoop({...automationStore,onChange:changed,isReleaseRequired:cases.isReleaseRequired,
     decide:guarded(actors.decide), work:guarded(actors.work),
@@ -39,7 +40,7 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
       const {team,roleModels}=await cases.teamSettings()
       const source={...item.source,...(event.privatePeerId ? {privatePeerId:event.privatePeerId,privateChatsSince:event.privateChatsSince} : {})}
       await loop.enqueue({caseId:item.id,messageId:event.messageId,text:item.messages[index].text,requesterId:event.senderId,
-        source,team,roleModels,workerContext:event.workerContext ?? ''})
+        source,team,roleModels,workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {})})
     }
     changed()
     return item

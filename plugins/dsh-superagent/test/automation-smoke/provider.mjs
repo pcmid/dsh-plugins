@@ -80,7 +80,8 @@ function* batch(...calls) {
 }
 const tool=(id,name,input)=>batch([id,name,input])
 const callTool=(id,label)=>tool(id,workerTool,{label})
-const models=['global','director','worker']
+// The image scenario's text-only model declares its input; the others leave it unknown.
+const models=['global','director','worker','text-only']
 function* result(text,kind='stop') {
   yield {type:'block-start',index:0,blockType:'text'}
   yield {type:'text-delta',index:0,text}
@@ -103,7 +104,7 @@ export class Offline extends LlmAdapter {
       [mergeCase.final.text]:[open(work,'replied',a.late)]}[text] ?? []
   }
   async listModels(provider){return models.map(id=>({provider,id,name:id}))}
-  async resolveModel(provider,id){assert.ok(models.includes(id));return {provider,id,name:id}}
+  async resolveModel(provider,id){assert.ok(models.includes(id));return {provider,id,name:id,...id==='text-only' && {inputModalities:['text']}}}
   async *stream(options) {
     try {
       const messages=options.messages,data=JSON.stringify(messages)
@@ -163,6 +164,9 @@ export class Offline extends LlmAdapter {
         /^SUPERAGENT_(DECIDE|WORK)\n/.test(m.content[0].text))?.content[0].text:prompt
       const stage=/^SUPERAGENT_(DECIDE|WORK)\b/.exec(original)?.[1]
       const input=JSON.parse(original.slice(original.lastIndexOf('\n')+1))
+      // The image scenario answers its own requests (see images.mjs).
+      const pictured=this.imageTurn?.({stage,options,input,canonical:messages[userIndex]})
+      if(pictured){this.calls.push(stage);yield* tool(randomUUID(),...pictured);return}
       const soft=softStops.find(p=>p.request===input.request)
       if(nudged) {
         assert.ok(soft,'unexpected automatic continuation')
