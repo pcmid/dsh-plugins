@@ -32,7 +32,20 @@ try {
     row('agent-preset',{id:workerPreset,plugins:[row('persona',{prefix:workerPersona}),{name:join(root,'test/automation-smoke/worker-tool.mjs')}]},'preset-fixture-developer'),
     {id:'fixture',name:join(root,'test/automation-smoke/fixture.mjs')})
   // Let the native profile loader mount the shipped preset declarations. Only the fixture may start the Host.
-  const declarations=readFileSync(join(root,'cordis.patch.yml'),'utf8')
+  // This minimal Host has no shell, search, web, skill or compaction services, so the shipped presets keep
+  // only their persona here; their tool plugins are checked on the full Desktop Host.
+  const personaOnly=text=>{
+    let skip=false
+    return text.split('\n').filter(line=>{
+      const indent=line.search(/\S/)
+      if(indent===10 && line.trimStart().startsWith('- ')) skip=!/^ {10}- id: persona$/.test(line)
+      else if(indent>=0 && indent<10) skip=false
+      return !skip
+    }).join('\n')
+  }
+  const declarations=personaOnly(readFileSync(join(root,'cordis.patch.yml'),'utf8'))
+  assert.equal((declarations.match(/^ {10}- id: persona$/gm) ?? []).length,3,'each shipped preset keeps its persona')
+  assert.doesNotMatch(declarations,/dsh-tool-|dsh-skill-|cordis:group|!!js/)
   const patch='- insert: '+JSON.stringify(rows)+'\n'+declarations+'\n- id: pcmid-superagent\n  disabled: true\n'
   const patchPath=join(profile,'cordis.patch.yml')
   writeFileSync(patchPath, patch)

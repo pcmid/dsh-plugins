@@ -57,8 +57,10 @@ export function apply(ctx) {
         if(process.env.SMOKE_PHASE==='prepare') assert.deepEqual(await ready.sessionPersistence.list(), [])
         assert.equal(ready.agentDefaultModel.currentSelection().model, 'global')
         // Match model inputs against the actual persona text shipped by this package.
-        const {load}=createRequire(process.env.SMOKE_INSTALL)('js-yaml')
-        const rows=load(readFileSync(new URL('../../cordis.patch.yml',import.meta.url),'utf8')).flatMap(op=>op.insert || [])
+        const {load,Type,DEFAULT_SCHEMA}=createRequire(process.env.SMOKE_INSTALL)('js-yaml')
+        // The Loader evaluates `!!js` expressions; here they only need to parse.
+        const schema=DEFAULT_SCHEMA.extend([new Type('tag:yaml.org,2002:js',{kind:'scalar',construct:source=>({__jsExpr:source})})])
+        const rows=load(readFileSync(new URL('../../cordis.patch.yml',import.meta.url),'utf8'),{schema}).flatMap(op=>op.insert || [])
         for(const role of ['lead','develop','answer']) {
           const row=rows.find(r=>r.name==='@deepseek-ai/dsh-agent-preset' && r.config?.id==='superagent-'+role)
           assert.ok(row,'missing shipped preset: '+role)

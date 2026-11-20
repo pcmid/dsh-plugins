@@ -189,7 +189,8 @@ export class Offline extends LlmAdapter {
         'only this seat’s result tools and its selected ordinary preset tools are callable')
       if(stage==='WORK')assert.ok(!options.tools.some(t=>t.name===retiredTool),'a worker has no stop result')
       if(emptyRouter)this.emptyRouter=options.sessionId
-      else assert.ok(systems.includes(role==='develop'?workerPersona:this.personas[role]),'normal preset persona is assembled by DSH: '+role)
+      // DSH fills the persona's {{model}} placeholder with the routed model.
+      else assert.ok((role==='develop'?workerPersona:this.personas[role]).split('{{model}}').every(part=>systems.includes(part)),'normal preset persona is assembled by DSH: '+role)
       assert.ok(!data.includes(sibling),'an unrelated Feishu thread is not admitted')
       if(input.request===request)assert.ok(!data.includes('Edited after display.'),'the selected request uses its admitted, not edited version')
       if(stage==='DECIDE' && !nudged && !afterTool) {
