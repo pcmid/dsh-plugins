@@ -647,6 +647,44 @@
       ]
     },
     {
+      "name": "@pcmid/dsh-superagent",
+      "title": {
+        "en": "SuperAgent",
+        "zh": "SuperAgent"
+      },
+      "description": {
+        "en": "Route authorized Feishu requests to DSH agents and deliver their replies to the original threads.",
+        "zh": "判断已授权的飞书请求，分派给 DSH 助手办理，将助手的答复交回原话题。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCIgZmlsbD0ibm9uZSI+PHJlY3QgeD0iMyIgeT0iMyIgd2lkdGg9IjU4IiBoZWlnaHQ9IjU4IiByeD0iMTYiIGZpbGw9IiMyNzM3NEYiLz48cGF0aCBkPSJNNDMgMTdIMjZhOSA5IDAgMCAwIDAgMThoMTFhNiA2IDAgMSAxIDAgMTJIMTkiIHN0cm9rZT0iI0U4RjNGRiIgc3Ryb2tlLXdpZHRoPSI1IiBzdHJva2UtbGluZWNhcD0icm91bmQiLz48Y2lyY2xlIGN4PSI0NSIgY3k9IjE3IiByPSI0IiBmaWxsPSIjODZDOEYyIi8+PC9zdmc+Cg==",
+      "author": "pcmid",
+      "metadata": {
+        "category": "tools",
+        "keywords": [],
+        "labels": [
+          "own"
+        ]
+      },
+      "dist-tags": {
+        "latest": "0.8.0"
+      },
+      "versions": [
+        {
+          "version": "0.8.0",
+          "publishTimestamp": 1795138428,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/pcmid/dsh-plugins",
+            "commit": "946d7226a672c74913d4fb7c1178348b5f59a93b",
+            "path": "plugins/dsh-superagent"
+          },
+          "engines": {
+            "dsh": "0.2.2-rc.3"
+          }
+        }
+      ]
+    },
+    {
       "name": "@vectorize-io/hindsight-coding-agents",
       "description": "Reflect-only Hindsight long-term memory for coding agents (harness-pluggable: opencode, …), with automatic background ingestion (no setup CLI).",
       "repository": {
@@ -660,9 +698,7 @@
           "external"
         ]
       },
-      "dist-tags": {
-        "latest": "0.8.7"
-      },
+      "dist-tags": {},
       "versions": [
         {
           "version": "0.8.7",
