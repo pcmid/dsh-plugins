@@ -671,11 +671,11 @@
       "versions": [
         {
           "version": "0.8.0",
-          "publishTimestamp": 1795151710,
+          "publishTimestamp": 1795194300,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "0c5f3a31dfea73e86a42b530b5bffb9619f935ff",
+            "commit": "4c57dab5bc5322bcbeb4c54389e36091a4ce6ea8",
             "path": "plugins/dsh-superagent"
           },
           "engines": {
