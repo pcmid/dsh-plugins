@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SuperAgent",
+    "description": "判断已授权的飞书请求，分派给 DSH 助手办理，将助手的答复交回原话题。"
+  }
+}

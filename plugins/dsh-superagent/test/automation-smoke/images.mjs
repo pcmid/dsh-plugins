@@ -1,0 +1,111 @@
+import assert from 'node:assert/strict'
+import { Buffer } from 'node:buffer'
+import { crc32,deflateSync } from 'node:zlib'
+import { createLoop } from '../../host/loop.js'
+import { imageMarker } from '../../host/mention-text.js'
+import { openStore } from '../../host/store.js'
+
+// A valid 1x1 RGB PNG, so DSH's real attachment store decodes and admits it.
+const signature=Buffer.from('89504e470d0a1a0a','hex')
+function chunk(type,data) {
+  const body=Buffer.concat([Buffer.from(type,'latin1'),data]),out=Buffer.alloc(body.length+8)
+  out.writeUInt32BE(data.length,0);body.copy(out,4);out.writeUInt32BE(crc32(body),body.length+4)
+  return out
+}
+const png=rgb=>Buffer.concat([signature,chunk('IHDR',Buffer.from([0,0,0,1,0,0,0,1,8,2,0,0,0])),
+  chunk('IDAT',deflateSync(Buffer.from([0,...rgb]))),chunk('IEND',Buffer.alloc(0))])
+const since=Date.now()-60_000
+const image=(name,bytes,offset,messageId='om_images_request')=>({ref:{messageId,key:'img_fixture_'+name,at:since+offset},bytes})
+// Oldest first. Only red and blue are images; the others are unreadable, not images, or fail DSH's decoder.
+const red=image('red',png([255,0,0]),0),text=image('text',Buffer.from('not an image'),1)
+const broken=image('broken',Buffer.concat([signature,Buffer.from('truncated')]),2),gone=image('gone',null,3)
+const blue=image('blue',png([0,0,255]),4,'om_images_reply')
+const bytesOf=new Map([red,text,broken,gone,blue].map(i=>[i.ref.key,i.bytes])),keys=list=>list.map(i=>i.ref.key)
+
+const source={kind:'feishu',tenantId:'demo',recipientId:'ou_fixture',scopeId:'c'.repeat(64),chatId:'oc_images',threadId:'om_images_root'}
+const team={lead:'superagent-lead',develop:'',answer:'superagent-answer'}
+const models=model=>({lead:{provider:'offline',model:model ?? 'director'},answer:{provider:'offline',model:model ?? 'worker'}})
+const seeing={caseId:'images-case',messageId:'om_images_request',requesterId:'ou_images',source,team,roleModels:models(),
+  text:'Fixture image: what does '+imageMarker(red.ref.key)+' show?',workerImages:[red,text,broken,gone].map(i=>i.ref)}
+const blind={caseId:'images-blind',messageId:'om_images_blind',requesterId:'ou_images',source:{...source,threadId:'om_images_blind'},team,
+  roleModels:models('text-only'),text:'Fixture image: answer from text about '+imageMarker(red.ref.key)+'.',workerImages:[red.ref]}
+const question='Fixture image: which part do you mean?',answers={seeing:'Fixture image: red, then blue.',blind:'Fixture image: answered from text alone.'}
+
+// One SuperAgent prompt: its text, then each new image's marker and its admitted attachment.
+function promptWith(content,stage,shown) {
+  assert.match(content[0]?.type==='text' && content[0].text,new RegExp('^SUPERAGENT_'+stage+'\n'))
+  assert.equal(content.length,1+2*shown.length,JSON.stringify(content))
+  return shown.map((img,i)=>{
+    const [marker,block]=content.slice(1+2*i)
+    assert.deepEqual(marker,{type:'text',text:imageMarker(img.ref.key)})
+    assert.equal(block.type,'image',JSON.stringify(block))
+    assert.match(block.attachment?.attachmentId ?? '',/^sha256:[0-9a-f]{64}$/,JSON.stringify(block))
+    assert.equal(block.attachment.mediaType,'image/png')
+    return block.attachment.attachmentId
+  })
+}
+// The seat's SuperAgent prompts as DSH recorded them; every turn completed.
+async function prompts(ctx,id) {
+  await ctx.sessionPersistence.flush()
+  const log=await ctx.sessionPersistence.open(id,'read')
+  try {
+    const {events}=await log.read()
+    assert.ok(events.filter(e=>e.type==='turn/end').every(e=>e.data.reason.kind==='completed'))
+    return events.filter(e=>e.type==='user/message' && e.data.source.kind==='user').map(e=>e.data.content)
+  } finally {await log.close()}
+}
+
+export async function imagesRound(ctx,provider,actors) {
+  const requests=[],loads=[],sent=[],calls=provider.calls.length
+  // The offline model answers these requests and records what each native request carried.
+  provider.imageTurn=({stage,options,input,canonical})=>{
+    if(!input.request.startsWith('Fixture image:'))return
+    requests.push({stage,sessionId:options.sessionId,model:options.model,content:canonical.content,
+      images:options.messages.flatMap(m=>m.content.filter(b=>b.type==='image').map(b=>b.attachment?.attachmentId))})
+    if(stage==='DECIDE')return ['superagent_route',{role:'answer'}]
+    if(input.request===blind.text)return ['superagent_answer',{answer:answers.blind}]
+    return input.requesterReply ? ['superagent_answer',{answer:answers.seeing}] : ['superagent_ask_requester',{question}]
+  }
+  const loader=stage=>refs=>{loads.push([stage,refs.map(r=>r.key)]);return Promise.resolve(refs.map(r=>bytesOf.get(r.key)))}
+  const store=await openStore({open:spec=>ctx.storageDomain.open({...spec,name:'images_fixture_'+spec.name})})
+  const loop=createLoop({...store.automationStore,isReleaseRequired:()=>false,
+    decide:j=>actors.decide({...j,loadImages:loader('decide')}),work:j=>actors.work({...j,loadImages:loader('work')}),
+    deliver:async d=>{sent.push(d.text);return {chatId:d.source.chatId,inReplyTo:d.messageId,messageId:'om_images_receipt_'+sent.length}}})
+  try {
+    await loop.enqueue(seeing);await loop.drain()
+    const [waiting]=await loop.waitingQuestions(source)
+    assert.equal(waiting?.messageId,seeing.messageId,JSON.stringify(await loop.snapshot()))
+    // The requester's reply brings a new image; the worker continues its own session.
+    assert.ok(await loop.resumeQuestion(waiting,{chatId:source.chatId,threadId:source.threadId,senderId:seeing.requesterId,parentId:waiting.questionId,
+      messageId:'om_images_reply',at:blue.ref.at,text:'Fixture image: the blue one.',workerImages:[blue.ref]}))
+    await loop.drain()
+    await loop.enqueue(blind);await loop.drain()
+    assert.ifError(provider.error)
+    const rows=await loop.snapshot(),row=id=>rows.find(r=>r.messageId===id)
+    assert.deepEqual([seeing,blind].map(j=>[row(j.messageId)?.status,row(j.messageId)?.answer]),
+      [['delivered',answers.seeing],['delivered',answers.blind]],JSON.stringify(rows))
+    assert.deepEqual(sent,[question,answers.seeing,answers.blind])
+    assert.deepEqual(provider.calls.slice(calls),['DECIDE','WORK','WORK','DECIDE','WORK'])
+
+    // Each seat loaded its images newest first, never one it had already received; the text-only model loaded none.
+    const first=keys([gone,broken,text,red])
+    assert.deepEqual(loads,[['decide',first],['work',first],['work',keys([blue,gone,broken,text])]])
+    const seats=await actors.seats(seeing),blindSeats=await actors.seats(blind)
+    const [routed]=await prompts(ctx,seats.routerSessionId),[asked,resumed]=await prompts(ctx,seats.workerSessionId)
+    const [routerRed]=promptWith(routed,'DECIDE',[red]),[workerRed]=promptWith(asked,'WORK',[red]),[workerBlue]=promptWith(resumed,'WORK',[blue])
+    assert.equal(routerRed,workerRed,'the same image is the same content-addressed attachment')
+    assert.notEqual(workerBlue,workerRed)
+    for(const id of Object.values(blindSeats))(await prompts(ctx,id)).forEach(c=>promptWith(c,id===blindSeats.routerSessionId?'DECIDE':'WORK',[]))
+
+    // The model requests carried exactly the recorded messages: the admitted images, or text only.
+    assert.deepEqual(requests.map(r=>[r.stage,r.sessionId,r.model,r.images]),[
+      ['DECIDE',seats.routerSessionId,'director',[routerRed]],['WORK',seats.workerSessionId,'worker',[workerRed]],
+      ['WORK',seats.workerSessionId,'worker',[workerRed,workerBlue]],
+      ['DECIDE',blindSeats.routerSessionId,'text-only',[]],['WORK',blindSeats.workerSessionId,'text-only',[]]])
+    assert.deepEqual(requests.slice(0,3).map(r=>r.content),[routed,asked,resumed])
+    console.log('PASS images: Router and worker prompts carried the text, the image marker and a DSH-admitted attachment, and the model requests contained it; the receipt checks accepted the recorded content and both seats finished. The clarification round attached only the new image, not the one already sent. Unreadable, non-image and undecodable images were skipped; a text-only model got text only and loaded nothing. Both jobs delivered.')
+  } finally {
+    provider.imageTurn=undefined
+    await loop.dispose();await store.close()
+  }
+}

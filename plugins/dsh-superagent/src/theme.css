@@ -1,0 +1,20 @@
+.sx2 {
+  --x2-bg: var(--dsw-alias-bg-base);
+  --x2-text: var(--dsw-alias-label-primary);
+  --x2-muted: var(--dsw-alias-label-secondary);
+  --x2-ink: var(--dsw-alias-brand-primary);
+  --x2-rule: var(--dsw-alias-border-l2);
+  --x2-paper: color-mix(in srgb, var(--x2-muted) 5%, var(--x2-bg));
+  --x2-hover: color-mix(in srgb, var(--x2-muted) 8%, transparent);
+  --x2-selected: color-mix(in srgb, var(--x2-ink) 9%, var(--x2-paper));
+  --x2-menu-fill: var(--dsw-specific-menu, var(--dsw-alias-bg-layer-2));
+  --x2-menu-filter: var(--dsw-menu-backdrop-filter, none);
+  --x2-menu-active: var(--dsw-alias-interactive-bg-hover, var(--x2-hover));
+  --x2-menu-caption: var(--dsw-alias-label-caption, var(--x2-muted));
+}
+
+/* DSH resolves elevation at the menu element, including its dark material stroke. */
+.sx2 .x2-role-menu {
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+  --x2-menu-shadow: var(--dsw-elevation-prominent, 0 0 0 1px var(--x2-rule));
+}

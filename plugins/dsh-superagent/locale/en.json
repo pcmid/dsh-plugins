@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "SuperAgent",
+    "description": "Route authorized Feishu requests to DSH agents and deliver their replies to the original threads."
+  }
+}
