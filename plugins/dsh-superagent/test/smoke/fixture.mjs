@@ -11,7 +11,7 @@ const { HostConnectionService } = await installed('client-connection')
 const { LlmAdapter } = await installed('llm')
 const { routeRequest, overrideCreate } = await import(pathToFileURL(process.env.SMOKE_WORKSPACE_ROUTE))
 const version = JSON.parse(readFileSync(process.env.SMOKE_INSTALL)).version
-assert.equal(version, '0.2.2-rc.3')
+assert.ok(['0.2.2-rc.3','0.2.2-rc.5'].includes(version), version)
 const caseId = 'e379b502-4160-437c-a8af-49e855d0e5e8'
 const id = 'superagent-' + caseId
 const prompts = ['Fixture local request', 'Fixture follow-up in the same case']

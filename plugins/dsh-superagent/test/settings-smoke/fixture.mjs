@@ -3,7 +3,8 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 
 const load = createRequire(process.env.SMOKE_INSTALL)
-assert.equal(load(process.env.SMOKE_INSTALL).version, '0.2.2-rc.3')
+const dshVersion = load(process.env.SMOKE_INSTALL).version
+assert.ok(['0.2.2-rc.3','0.2.2-rc.5'].includes(dshVersion), dshVersion)
 const { HostConnectionService } = await import(pathToFileURL(load.resolve('@deepseek-ai/dsh-client-connection')))
 const before = { enabled: false, profile: '', managed: true, tenantId: '', recipientId: '', pollIntervalMinutes:1, historyCount:10, historyMinutes:5, allowPrivateChats:false }
 const after = { ...before, cliPath:process.env.SMOKE_CLI_PATH, enabled: true, profile: 'smoke-offline', managed: false, pollIntervalMinutes:3, historyCount:6, historyMinutes:12 }
@@ -68,7 +69,7 @@ async function verify(ctx, connection) {
   }
   assert.deepEqual(ctx.get('agentDefaultModel').currentSelection(), { provider: 'unused', model: 'keep-model' })
   assert.equal(editor.entries().find(e => e.options.id === 'pcmid-superagent').fiber.uid, mounted)
-  console.log('PASS ' + process.env.SMOKE_STEP + ': DSH rc.3 native configEditor → production owner route; retained unrelated settings; no login')
+  console.log('PASS ' + process.env.SMOKE_STEP + ': DSH ' + dshVersion + ' native configEditor → production owner route; retained unrelated settings; no login')
 }
 
 export const inject = ['appReady','appExit']

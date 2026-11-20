@@ -1,4 +1,4 @@
-// node plugins/dsh-superagent/test/settings-smoke/run.mjs — macOS Desktop rc.3. No installs.
+// node plugins/dsh-superagent/test/settings-smoke/run.mjs — installed macOS Desktop 0.2.2-rc.3 or rc.5. No installs.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'

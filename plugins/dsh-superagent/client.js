@@ -1151,10 +1151,12 @@ function EditionWorkspace(p) {
         !compact && h('section',{className:'x2-page'},h('h2',null,casesLabel),h('p',{className:'x2-empty'},tr('暂无事项','No cases yet'))))));
 }
 
-// rc.3 does not expose a session-independent public snapshot. Never load a catalog,
-// call a provider, read account settings, or open an arbitrary session to populate a menu.
+// DSH does not expose a session-independent public snapshot. Read the shared model cache only on releases
+// whose cache shape was checked. Never load a catalog, call a provider, read account settings, or open an
+// arbitrary session to populate a menu.
+const spaceCatalogReleases=['0.2.2-rc.3','0.2.2-rc.5'];
 function spaceCatalogStore(ctx) {
-  if (ctx.get('modules')?.manifest?.release?.version!=='0.2.2-rc.3') return null;
+  if (!spaceCatalogReleases.includes(ctx.get('modules')?.manifest?.release?.version)) return null;
   const own=(obj,key)=>obj && Object.getOwnPropertyDescriptor(obj,key)?.value;
   const store=own(own(ctx.get('modelDirectories'),'catalog'),'store');
   return typeof store?.getSnapshot==='function' && typeof store?.subscribe==='function' ? store : null;

@@ -10,7 +10,7 @@ import { ordinaryIssued,workerPreset,workerTool } from './worker-tool.mjs'
 
 const { HostConnectionService } = await installed('client-connection')
 const version = JSON.parse(readFileSync(process.env.SMOKE_INSTALL)).version
-assert.equal(version, '0.2.2-rc.3')
+assert.ok(['0.2.2-rc.3','0.2.2-rc.5'].includes(version), version)
 
 export const inject = ['llm','appReady','appExit']
 export function apply(ctx) {

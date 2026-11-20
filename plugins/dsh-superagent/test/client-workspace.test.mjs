@@ -396,13 +396,15 @@ test('activity only exposes current tenant, recipient and consent scope; the cas
   const route=new Function(source+';return spaceWorkspaceView')()
   assert.deepEqual(route(items,{section:'cases'},false).records,items)
 })
-test('only an existing rc.3 model cache is observed; no session, getter or provider discovery',()=>{
+test('only an existing model cache of a checked release is observed; no session, getter or provider discovery',()=>{
   const calls=[],store={getSnapshot(){},subscribe(){}}
   function context(service,version='0.2.2-rc.3') {return {get(k){calls.push(k)
     if(k==='modules')return {manifest:{release:{version}}}
     if(k==='modelDirectories')return service
     assert.fail('unexpected service '+k)}}}
   assert.equal(spaceCatalogStore(context({catalog:{store}})),store)
+  assert.equal(spaceCatalogStore(context({catalog:{store}},'0.2.2-rc.5')),store)
+  assert.equal(spaceCatalogStore(context({catalog:{store}},'0.2.2-rc.4')),null)
   assert.equal(spaceCatalogStore(context({get catalog(){assert.fail('must not discover')}})),null)
   assert.equal(spaceCatalogStore(context({get catalog(){assert.fail()}},'next')),null)
   assert.deepEqual(new Set(calls),new Set(['modules','modelDirectories']))

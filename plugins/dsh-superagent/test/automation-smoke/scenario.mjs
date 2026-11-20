@@ -489,7 +489,7 @@ export async function verify(ctx,provider,workspacePath) {
       const retry={router:provider.retryRouterId,worker:provider.retryWorkerId,seal:provider.retrySeal}
       // This is only expected evidence and synthetic Lark input. DSH persists its own cases, queue and sessions.
       await writeFile(checkpoint,JSON.stringify({config,rows:transport.rows,automation,cases,mentions,retry,takeover,archival,merge,ignore,member}))
-      console.log('PASS automation: prepare; installed DSH 0.2.2-rc.3 offline. Owner group self-mention acquired a once grant without a click; an earlier pending mention was not run; Router and worker saw the identical complete admitted thread, including the root and 14 old lines over multiple pages, no sibling. Two distinct questions awaited approval, zero posts. Peer DMs disabled.')
+      console.log('PASS automation: prepare; installed DSH offline. Owner group self-mention acquired a once grant without a click; an earlier pending mention was not run; Router and worker saw the identical complete admitted thread, including the root and 14 old lines over multiple pages, no sibling. Two distinct questions awaited approval, zero posts. Peer DMs disabled.')
     }
   } finally {await app.dispose();await store.close();assert.ifError(provider.error);assert.ifError(transport.error)}
 }

@@ -1,4 +1,4 @@
-// node plugins/dsh-superagent/test/smoke/run.mjs — installed Desktop rc.3, no network or installs.
+// node plugins/dsh-superagent/test/smoke/run.mjs — installed Desktop 0.2.2-rc.3 or rc.5, no network or installs.
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
