@@ -874,8 +874,8 @@ function SpaceMaterials({p,item,id}) {
   const {tr}=p, {source}=item;
   return h('aside',{id,className:'x2-materials','aria-label':tr('事项材料','Case materials')},
     h('h3',{className:'x2-rail-title'},tr('事项材料','Case materials')),
-    h('section',null,h('h4',null,tr('来源','Source')),h('p',null,spaceOrigin(item,tr)),
-      source.kind==='feishu' && h('p',null,h(SpaceGroupLink,{tr,chatId:source.chatId,name:source.name}))),
+    h('section',null,h('h4',null,tr('来源','Source')),
+      h('p',null,source.kind==='feishu' ? h(SpaceGroupLink,{tr,chatId:source.chatId,name:source.name}) : spaceOrigin(item,tr))),
     h(SpaceIntakeContext,{tr,item}),
     item.team && h('section',null,h('h4',null,tr('受理时的分工','Assignment at intake')),
       spaceRoles.map(([id,zh,en])=>{

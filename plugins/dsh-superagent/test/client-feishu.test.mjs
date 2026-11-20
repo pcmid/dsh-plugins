@@ -51,6 +51,16 @@ const view=new Function('h','React',src+`;return {approval:SpaceApproval,actions
 const find=(node,match)=>!node || typeof node!=='object' ? [] : [...(match(node) ? [node] : []),...node.children.flatMap(c=>find(c,match))]
 const text=node=>typeof node==='string' ? node : node && typeof node==='object' ? node.children.map(text).join('') : ''
 
+test('case materials name a Feishu source once, as its conversation link',()=>{
+  const materials=new Function('h','React',src+';return SpaceMaterials')(fake,{Fragment:'fragment'}), tr=zh=>zh
+  const source=item=>find(materials({p:{tr},item,id:'m'}),n=>n.type==='section' && text(n.children[0])==='来源')[0].children.slice(1)
+  const feishu=source({source:{kind:'feishu',chatId:'oc_x'},messages:[],roleModels:{}})
+  assert.equal(feishu.length,1)
+  assert.equal(feishu[0].children[0].type.name,'SpaceGroupLink')
+  assert.deepEqual(feishu[0].children[0].props,{tr,chatId:'oc_x',name:undefined})
+  assert.deepEqual(source({source:{kind:'local'},messages:[],roleModels:{}}).map(text),['本机委托'])
+})
+
 test('a pending message offers Allow and Ignore dropdowns; Allow this user only appears with a recorded sender',()=>{
   const tr=zh=>zh, mention={scopeId:'s',chatId:'oc_x',threadId:'om_t',messageId:'om_m',canApprove:true,senderId:'ou_member'}
   assert.deepEqual(view.actions(mention,'allow',tr),[{id:'once',label:'授权一次'},{id:'permanent',label:'永久授权'},{id:'sender',label:'仅授权此用户'}])
