@@ -231,7 +231,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
   }
   async function execute(j,jobSignal) {
     const key = keyOf(j), signal = jobSignal
-    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','retries'])),
+    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','retries','requesterId'])),
       workerContext:j.workerContext ?? j.context,signal}
     const assignment = pick(j,['role','criteria','attempt','targetWorkspaceId'])
     if (j.status === 'deciding') {
@@ -275,7 +275,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     const delivery = j.outputKind === 'question' || round || j.supplementId ?
       JSON.stringify([key,j.outputKind,round,...j.supplementId ? [j.supplementId] : []]) : key
     const idempotencyKey = 'sa-' + createHash('sha256').update(delivery).digest('hex').slice(0,40)
-    const r = await deliver({...pick(base,['caseId','messageId','source','signal']),text:j.answer,idempotencyKey})
+    const r = await deliver({...pick(base,['caseId','messageId','source','signal','requesterId']),text:j.answer,idempotencyKey})
     if (!validReceipt(r,j) || j.turns?.some(t=>t.questionId === r.messageId || t.replyId === r.messageId))
       return {status:'uncertain',reason:'delivery-uncertain'}
     const receipt = pick(r,['chatId','messageId','inReplyTo'])
@@ -412,8 +412,9 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
       return i
     }
     // Admission can hold its own lock while enqueuing. Check it OUTSIDE the loop lock, then CAS the same request.
-    const source = await locked(s=>structuredClone(s.jobs[index(s)].source))
-    if (await validate(source,signal) === false) fail('admission-denied')
+    const {source,requesterId} = await locked(s=>structuredClone(pick(s.jobs[index(s)],['source','requesterId'])))
+    // Declining posts nothing, so it stays possible after access was revoked.
+    if (action === 'send' && await validate(source,signal,requesterId) === false) fail('admission-denied')
     const row = await locked(async s=>projection(await update(s,index(s),action === 'send'
       ? {status:'released',releaseProof:token} : {status:'declined'})))
     if (action === 'send') void drain().catch(()=>{})

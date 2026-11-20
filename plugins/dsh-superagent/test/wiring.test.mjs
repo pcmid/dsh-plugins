@@ -284,3 +284,38 @@ test('invalid or disabled source identity cannot disable the workspace or create
     assert.equal((await f.send('groupAccess',{chatId:'oc_a',action:'register'})).error.code,'source-unconfigured')
   }
 })
+test('the app names each job’s requester before every automated step, so a member grant runs only that member’s work',async()=>{
+  const db=medium(), store=await openStore(db), cfg={...identity,automationSince:1}, member='ou_member'
+  const chatId='oc_group', threadId='om_root', admission=createAdmission({scope:cfg,...store.permissions,consentSince:1})
+  const ask={chatId,threadId,messageId:'om_ask',at:100,senderId:member}
+  await admission.recordMention({...ask,text:'请帮忙'},1);await admission.observe(ask,1)
+  const g=(await admission.update({action:'sender',chatId,threadId,messageId:ask.messageId})).find(g=>g.mode==='sender')
+  const {createHash}=await import('node:crypto'), hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex')
+  const scopeId=hash([hash({profile:cfg.profile,tenantId:cfg.tenantId,recipientId:cfg.recipientId}),1,chatId,'sender',null,g.grantId,g.approvedAt])
+  const source={kind:'feishu',scopeId,tenantId:cfg.tenantId,recipientId:cfg.recipientId,chatId,threadId}
+  const cases=createCases(store.state), keys=[]
+  for(const [messageId,senderId] of [['om_ask',member],['om_other','ou_other']]) {
+    const c=await cases.receive({tenantId:cfg.tenantId,recipientId:cfg.recipientId,chatId,threadId,messageId,senderId,text:'Request '+messageId},scopeId)
+    keys.push({caseId:c.id,messageId})
+  }
+  await store.automationStore.save({schema:1,jobs:keys.map(k=>({...k,source,status:'stopped',reason:'decision-failed',attempt:0,updatedAt:1}))})
+  const decided=[], cli=[]
+  const actors={decide:b=>{decided.push([b.messageId,b.requesterId]);return {action:'ignore'}},work:assert.fail,seats:()=>({})}
+  const runCli=async argv=>{
+    cli.push(argv)
+    if(argv.includes('check'))return {ok:false,granted:[],missing:['im:message.p2p_msg:get_as_user']}
+    if(argv.includes('+get-user'))return {ok:true,identity:'user',data:{user:{open_id:cfg.recipientId,tenant_key:cfg.tenantId}}}
+    if(argv.includes('chats'))return {ok:true,identity:'user',data:{chat_mode:'group',external:false,tenant_key:cfg.tenantId}}
+    assert.fail('unexpected CLI command')
+  }
+  const f=await mount(db,cfg,{actors,runCli})
+  try {
+    for(const k of keys) assert.deepEqual((await f.send('retryWork',k)).value,{...k,status:'queued'})
+    await f.api.drain()
+    // Only the member's job reached the Router; the other requester was refused before any read.
+    assert.deepEqual(decided,[['om_ask',member]])
+    const jobs=(await store.automationStore.load()).jobs
+    assert.deepEqual(jobs.map(j=>[j.messageId,j.status,j.reason]),[['om_ask','ignored',undefined],['om_other','stopped','access-denied']])
+    assert.ok(cli.some(a=>a.includes('+get-user')))
+  } finally {await f.api.dispose();await f.close();await store.close()}
+})

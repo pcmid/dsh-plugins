@@ -9,11 +9,11 @@ const messageId=threadId, questionId='om_question', privateSince=50, since=10, f
 const ok=data=>({ok:true,identity:'user',data})
 const mk=(id,senderId,at,text,patch={})=>({message_id:id,chat_id:chatId,create_time:String(at),deleted:false,msg_type:'text',
   sender:{sender_type:'user',id_type:'open_id',tenant_key:tenantId,id:senderId},body:{content:JSON.stringify({text})},...patch})
-function fixture({privateChat=false,project=false,changed,mutateQuestion,mutateOriginal,validGrant=true,owner=recipientId,parent=questionId}={}) {
+function fixture({privateChat=false,project=false,changed,mutateQuestion,mutateOriginal,validGrant=true,owner=recipientId,parent=questionId,grantPatch={}}={}) {
   const config={enabled:true,profile:'offline',recipientId,tenantId,automationSince:since,...(privateChat && {allowPrivateChats:true,privateChatsSince:privateSince})}
   const proof=privateChat?{privatePeerId:requesterId,privateChatsSince:privateSince}:{}
   const src={kind:'feishu',tenantId,recipientId,chatId,threadId,scopeId:'a'.repeat(64),...proof}
-  const grant={mode:'once',threadId,chatId,approvedAt:59,...proof}
+  const grant={mode:'once',threadId,chatId,approvedAt:59,...proof,...grantPatch}
   const original=mk(messageId,requesterId,80,'request',privateChat?{}:{thread_id:omt,mentions:[{id_type:'open_id',id:recipientId,tenant_key:tenantId}]})
   if (privateChat) original.sender.tenant_key='other-tenant'
   const question=mk(questionId,recipientId,100,forbidden,{parent_id:messageId,root_id:threadId,...(!privateChat && {thread_id:omt})})
@@ -30,7 +30,8 @@ function fixture({privateChat=false,project=false,changed,mutateQuestion,mutateO
   let locked=false, running=true
   const live=()=>{if(!running)throw Object.assign(Error('disposed'),{code:'scope-changed'})}
   const source=createFeishuSource({config,check:live,admission:{async run(scope,fn){
-    assert.deepEqual(scope,{chatId,threadId});locked=true
+    // The original requester is named, so a grant for that member alone can admit the read.
+    assert.deepEqual(scope,{chatId,threadId,senderId:requesterId});locked=true
     try{return await fn(grant)}finally{locked=false}
   }},receive:()=>assert.fail('a clarification must not dispatch new work'),run:async argv=>{
     assert.ok(locked)
@@ -110,4 +111,19 @@ test('stale grant, identity, private switch, private generation or disposal stop
   for(const changed of [({config})=>config.allowPrivateChats=false,({dispose})=>dispose()]){
     const f=fixture({privateChat:true,changed});await assert.rejects(f.read());assert.equal(f.pages.length,1)
   }
+})
+
+test('under a grant for one member, only that member’s waiting request can read its reply',async()=>{
+  const member={mode:'sender',threadId:undefined,senderId:requesterId}
+  for(const privateChat of [false,true]) {
+    const f=fixture({privateChat,grantPatch:member})
+    assert.deepEqual((await f.read()).messageId,'om_answer')
+  }
+  // A grant for someone else stops at the original request: neither the question nor the thread is read.
+  const other=fixture({grantPatch:{...member,senderId:'ou_other'}})
+  assert.equal(await other.read(),null);assert.equal(other.pages.length,0)
+  assert.ok(!other.calls.some(a=>a.includes(api+'/'+questionId)))
+  // The member's own grant still refuses an original written by someone else.
+  const forged=fixture({grantPatch:member,mutateOriginal:r=>r.sender.id='ou_other'})
+  assert.equal(await forged.read(),null);assert.equal(forged.pages.length,0)
 })

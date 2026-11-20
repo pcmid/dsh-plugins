@@ -77,7 +77,7 @@ function mention(row, scope, group) {
   const inbound=group?.peerId && sender.id===group.peerId && sender.id!==recipientId
   if (!inbound && (group?.peerId && sender.id!==recipientId || sender.tenant_key!==tenantId ||
     !Array.isArray(row.mentions) || !row.mentions.some(m=>m?.id_type==='open_id' && m.id===recipientId && m.tenant_key===tenantId))) return null
-  return {chatId,threadId,messageId:row.message_id,at:Number(row.create_time),...(sender.id===recipientId ? {ownerSelfMention:true} : {})}
+  return {chatId,threadId,messageId:row.message_id,at:Number(row.create_time),senderId:sender.id,...(sender.id===recipientId ? {ownerSelfMention:true} : {})}
 }
 
 function messageText(row,scope,legacy=false) {
@@ -229,13 +229,14 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     if (!group) throw failure('无法确认为本租户内部群或与自己的聊天。','admission-denied','group')
     return group
   }
+  // target.senderId, when known, lets a grant for that one member apply; the read then checks the author.
   async function guarded(target, fn, before, useGrantPeer=false) {
-    const {chatId,threadId}=target
+    const {chatId,threadId,senderId}=target
     if (!configured) throw failure(detail)
     // A bare omt_ does not establish the owning chat before reading the thread.
     if (!matches(chat,chatId) || (threadId !== undefined && !matches(message,threadId)))
       throw Object.assign(new Error('请指定已批准的群；一次准入须提供 om_ 原话题根消息。'),{code:'invalid-input'})
-    return admission.run({chatId,threadId}, async grant => {
+    return admission.run({chatId,threadId,...(senderId ? {senderId} : {})}, async grant => {
       check()
       before?.(grant)
       const proof=useGrantPeer ? grant : target
@@ -442,6 +443,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     const row=await exact(messageId,chatId,threadId,at,group)
     const event=envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
     if (!event || event.threadId!==threadId || Number(row.create_time)!==at || ownerSelfMention===true && event.senderId!==recipientId ||
+        grant?.mode==='sender' && event.senderId!==grant.senderId ||
         !stillOwnerRequest(grant,row,event) || await excluded(row)) return null
     checkPrivate(group)
     return {row,event}
@@ -452,7 +454,8 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         !matches(message,messageId) || !matches(message,threadId) || !matches(person,requesterId) ||
         source.privatePeerId!==group?.peerId || source.privateChatsSince!==group?.privateSince) return null
     const row=await exact(messageId,chatId,threadId,undefined,group), event=envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
-    if (event?.threadId!==threadId || event.senderId!==requesterId || !stillOwnerRequest(grant,row,event) || await excluded(row) ||
+    if (event?.threadId!==threadId || event.senderId!==requesterId || grant.mode==='sender' && requesterId!==grant.senderId ||
+        !stillOwnerRequest(grant,row,event) || await excluded(row) ||
         !inGrant(grant,{messageId,threadId,at:Number(row.create_time)})) return null
     checkPrivate(group)
     return row
@@ -469,7 +472,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
       if (!automated || source?.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
         !matches(message,source.threadId) || !matches(message,messageId) || !matches(message,questionId) || questionId===messageId ||
         !matches(person,requesterId) || !validText(input.originalText) || typeof checkGrant!=='function') throw malformed('admission')
-      return guarded(source,async (grant,group)=>{
+      return guarded({...source,senderId:requesterId},async (grant,group)=>{
         const live=()=>{check();checkPrivate(group);checkGrant(grant)}
         live()
         const original=await verifyOriginalForQuestion(input,grant,group)
@@ -523,7 +526,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
       const unchanged=(row.updated==null || row.updated===false) && (row.update_time==null || row.update_time==='' ||
         row.update_time===0 || row.update_time==='0' || String(row.update_time)===String(row.create_time))
       const old=legacyText===true && unchanged ? messageText(row,undefined,true) : null
-      return {chatId,threadId,messageId,at,text:event.text,...(old && old!==event.text ? {legacyText:old} : {}),...peerFields(group),...(verified.event.senderId===recipientId ? {ownerSelfMention:true} : {}),...(name ? {name} : {})}
+      return {chatId,threadId,messageId,at,senderId:event.senderId,text:event.text,...(old && old!==event.text ? {legacyText:old} : {}),...peerFields(group),...(verified.event.senderId===recipientId ? {ownerSelfMention:true} : {}),...(name ? {name} : {})}
     },
     async consumeMention(ref,recordedText) {
       validateRef(ref)
@@ -591,7 +594,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
       },undefined,true)
     },
     // Private Host path: original target from the durable job; reviewed text is never parsed as a file or URL.
-    async reply({source,messageId,text,idempotencyKey,signal},before) {
+    async reply({source,messageId,text,idempotencyKey,signal,requesterId},before) {
       if (!automated || source?.kind !== 'feishu' ||
           source.tenantId !== tenantId || source.recipientId !== recipientId ||
           !matches(message,messageId) || !matches(message,source.threadId) ||
@@ -599,7 +602,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         throw failure('未获准向该来源回复。')
       const {chatId,threadId} = source
       let attempted=false
-      try {return await guarded(source,async (grant,group) => {
+      try {return await guarded({...source,...(matches(person,requesterId) ? {senderId:requesterId} : {})},async (grant,group) => {
         check()
         const perm=await run(['--profile',profile,'auth','check','--scope',replyScopes.join(' '),'--json'],undefined,cliDir)
         if(perm?.ok!==true || !Array.isArray(perm.granted) || !replyScopes.every(s=>perm.granted.includes(s)) ||
@@ -607,7 +610,8 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         checkPrivate(group)
         const row=await exact(messageId,chatId,threadId,undefined,group)
         const event = envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
-        if (event?.threadId!==threadId || !stillOwnerRequest(grant,row,event) || await excluded(row)) throw failure('不能核实原消息与话题，未发送。')
+        if (event?.threadId!==threadId || grant.mode==='sender' && event.senderId!==grant.senderId ||
+            !stillOwnerRequest(grant,row,event) || await excluded(row)) throw failure('不能核实原消息与话题，未发送。')
         if (!inGrant(grant,{messageId,threadId,at:Number(row.create_time)})) throw failure('原消息早于此次授权。')
         signal?.throwIfAborted()
         checkPrivate(group)

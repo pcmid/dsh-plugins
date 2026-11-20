@@ -160,7 +160,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
           const {threadId,messageId,at}=ref
           const scope=grantScope(rec,g)
           if (!await hasIntake(scope,messageId)) {
-            const target={chatId:g.chatId,threadId,messageId,at,...peerRef(g)}, archived=await archive(rec,target)
+            const target={chatId:g.chatId,threadId,messageId,at,...peerRef(g),...(g.mode==='sender' ? {senderId:g.senderId} : {})}, archived=await archive(rec,target)
             if(archived) await rec.source.consumeMention(ref.ownerSelfMention ? {...target,ownerSelfMention:true} : target,archived.text)
           }
           live(rec)
@@ -250,6 +250,8 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
         check()
         if(epoch ? ref.privateChatsSince!==epoch || !ref.privatePeerId || ref.at<=epoch : ref.privatePeerId!==undefined)continue
         try {
+          // An ignored conversation, or messages from before a revocation, are not read, recorded or proposed.
+          if(await a.skip(ref)) continue
           const archived=await archive(rec,ref)
           if(!archived) continue
           check()
@@ -305,7 +307,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     try {
       const groups=await rec.admission.list(), hydrated=await hydrate(rec,groups)
       // Older grants can lack a label. Resolve only known approved chats, never enumerate groups.
-      const unnamed=new Set(groups.filter(g=>g.mode!=='pending' && !g.privatePeerId && !g.name && !rec.names.has(g.chatId)).map(g=>g.chatId))
+      const unnamed=new Set(groups.filter(g=>!['pending','ignored'].includes(g.mode) && !g.privatePeerId && !g.name && !rec.names.has(g.chatId)).map(g=>g.chatId))
       for(const chatId of [...unnamed].slice(0,4)) {
         try {
           const name=await rec.source.groupName(chatId)
@@ -342,9 +344,9 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     timer.unref?.()
   }
   // Trigger IDs are host-only evidence, never an owner-supplied replay request.
-  const visible=(rec,rows)=>rows.map(({chatId,mode,threadId,name=rec.names.get(chatId),approvedAt,grantId,triggers})=>({
-    chatId,mode,...(threadId?{threadId}:{}),...(name?{name}:{}),...(grantId?{approvedAt,grantId}:{}),
-    ...(mode==='once' && triggers?.[0] ? {mentionAt:triggers[0].at} : {}),
+  const visible=(rec,rows)=>rows.map(({chatId,mode,threadId,name=rec.names.get(chatId),approvedAt,grantId,triggers,ignoredAt,senderId,note})=>({
+    chatId,mode,...(threadId?{threadId}:{}),...(mode==='sender' ? {senderId,...(note ? {note} : {})} : {}),...(name?{name}:{}),...(grantId?{approvedAt,grantId}:{}),
+    ...(mode==='once' && triggers?.[0] ? {mentionAt:triggers[0].at} : {}),...(mode==='ignored' ? {ignoredAt} : {}),
   }))
   async function snapshot(cases,automation=[]) {
     const rec=current(), consent=rec.settings.automationSince
@@ -359,7 +361,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     }
     const rows=consent && rec.admission ? await rec.admission.listMentions(consent) : []
     live(rec)
-    const links=new Map(), previous=new Set(groups.filter(g=>g.mode!=='pending').map(g=>grantScope(rec,g)))
+    const links=new Map(), previous=new Set(groups.filter(g=>['once','permanent','sender'].includes(g.mode)).map(g=>grantScope(rec,g)))
     // Filter the copied action tokens against this same grant snapshot, not one storage read per job.
     const pending=new Map(automation.filter(r=>r.releaseToken).map(r=>[JSON.stringify([r.caseId,r.messageId]),r]))
     const key=(chat,thread,id)=>JSON.stringify([chat,thread,id])
@@ -373,7 +375,8 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
         if(allowed)pending.delete(JSON.stringify([c.id,m.requestId]))
       }
     }
-    for(const row of pending.values()) delete row.releaseToken
+    // Without current access a pending reply can only be declined; sending rechecks access anyway.
+    for(const row of pending.values()) row.releaseBlocked=true
     return {source,mentions:rows.map(({privatePeerId,privateChatsSince,...row})=>{
       const caseId=links.get(key(row.chatId,row.threadId,row.messageId))
       return {...row,scopeId:rec.scopeId,...(caseId ? {caseId,canApprove:false} : {})}
@@ -382,13 +385,14 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
   return {
     startPolling() {if(!started && !disposed) {started=true;schedule(0)}},
     pollOnce,
-    async validateRelease(source,signal) {
+    // requesterId is the job's verified author; a grant for one member covers only their requests.
+    async validateRelease(source,signal,requesterId) {
       const {rec,checkGrant}=jobScope(source,signal)
-      await rec.admission.run({chatId:source.chatId,threadId:source.threadId},checkGrant)
+      await rec.admission.run({chatId:source.chatId,threadId:source.threadId,...(requesterId ? {senderId:requesterId} : {})},checkGrant)
     },
-    async assertAutomation(source,signal) {
+    async assertAutomation(source,signal,requesterId) {
       const {rec,checkGrant}=jobScope(source,signal)
-      await rec.source.assertAllowed(source,checkGrant)
+      await rec.source.assertAllowed({...source,...(requesterId ? {senderId:requesterId} : {})},checkGrant)
       signal?.throwIfAborted()
       if(current()!==rec) fail('scope-changed')
     },
@@ -470,7 +474,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
       const {rec,target}=topicRequest(input)
       const rows=await rec.admission.update({action:'register',...target})
       onChange()
-      return {mode:rows.find(row=>row.chatId===target.chatId && (row.mode==='permanent' || row.threadId===target.threadId)).mode}
+      return {mode:rows.find(row=>row.chatId===target.chatId && (['permanent','ignored'].includes(row.mode) || row.threadId===target.threadId)).mode}
     }),
     syncTopic: input => serial(async()=>{
       const {rec,target}=topicRequest(input)
@@ -478,10 +482,10 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     }),
     groupAccess: ({scopeId,...command}) => serial(async()=>{
       const rec=granted(scopeId)
-      if(!['once','permanent','revoke'].includes(command.action)) fail('invalid-input')
+      if(!['once','permanent','sender','dismiss','ignore','revoke'].includes(command.action)) fail('invalid-input')
       const groups=await rec.admission.update(command)
       onChange()
-      if(rec.settings.automationSince && ['once','permanent'].includes(command.action) &&
+      if(rec.settings.automationSince && ['once','permanent','sender'].includes(command.action) &&
         groups.some(g=>g.chatId===command.chatId && g.mode!=='pending' && g.triggers?.some(t=>!t.handled))) {
         void io(async()=>{live(rec);if(!await replay(rec,await rec.admission.list()))pollError(rec,true)}).catch(async e=>{pollError(rec,true);await recordFailure(rec,e,'receive')})
       }

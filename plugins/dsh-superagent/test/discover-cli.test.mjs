@@ -23,7 +23,7 @@ test('installed CLI dry-run: production argv and jq keep other messages and priv
   const grant={mode:'once',threadId,chatId,approvedAt:13,triggers:[{messageId,threadId,at}]}, received=[]
   let searchBody
   const api='/open-apis/im/v1/messages'
-  const source=createFeishuSource({config,admission:{run:(target,fn)=>{assert.deepEqual(target,{threadId,chatId});return fn(grant)}},
+  const source=createFeishuSource({config,admission:{run:(target,fn)=>{assert.deepEqual(target,{threadId,chatId,senderId:'ou_me'});return fn(grant)}},
     receive:(event,g)=>{assert.equal(g,grant);received.push(event)},run(argv){
       const has=s=>argv.includes(s), flag=s=>argv[argv.indexOf(s)+1]
       let data
@@ -52,7 +52,7 @@ test('installed CLI dry-run: production argv and jq keep other messages and priv
       return {...result,dry_run:false} // Only this injected transport can turn its fixture into a simulated live result.
     }})
   const refs=await source.discover({since:10,until:14})
-  assert.deepEqual(refs,{mentions:[{chatId,threadId,messageId,at,ownerSelfMention:true}]})
+  assert.deepEqual(refs,{mentions:[{chatId,threadId,messageId,at,senderId:'ou_me',ownerSelfMention:true}]})
   const [preview]=JSON.parse(invoke(['im','+messages-search','--as','user','--dry-run','--sender-type','user',
     '--chat-type','group','--at-chatter-ids','ou_me','--start','1970-01-01T00:00:00Z','--end','1970-01-01T00:00:01Z',
     '--page-size','50','--jq','.data.api']))

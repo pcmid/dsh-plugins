@@ -397,7 +397,8 @@ test('the exact admission generation, not just the current CLI account, guards r
   const publicRuns=()=>['om_new','om_orphan'].map(messageId=>({caseId:item.id,messageId,releaseToken:'release-marker'}))
   const before=publicRuns()
   await f.app.activitySnapshot([item],before)
-  assert.deepEqual(before.map(r=>r.releaseToken),['release-marker',undefined])
+  // A reply without current access keeps its token but can only be declined.
+  assert.deepEqual(before.map(r=>[r.releaseToken,r.releaseBlocked]),[['release-marker',undefined],['release-marker',true]])
   await f.app.validateRelease(source)
   assert.equal(f.calls.length,reads,'rendering a release action reads only local authorization')
   await f.app.assertAutomation(source)
@@ -409,7 +410,7 @@ test('the exact admission generation, not just the current CLI account, guards r
   const n=f.calls.length
   const after=publicRuns()
   await f.app.activitySnapshot([item],after)
-  assert.deepEqual(after.map(r=>r.releaseToken),[undefined,undefined],'same-account regrant must hide old actions')
+  assert.deepEqual(after.map(r=>[r.releaseToken,r.releaseBlocked]),[['release-marker',true],['release-marker',true]],'same-account regrant must block sending old actions')
   await assert.rejects(f.app.validateRelease(source),{code:'admission-denied'})
   await assert.rejects(f.app.assertAutomation(source),{code:'admission-denied'})
   await assert.rejects(f.app.deliverReviewed({source,messageId:'om_new',text:'ok',idempotencyKey:'fixture'}),{code:'delivery-denied'})
@@ -450,4 +451,83 @@ test('new OAuth replaces a same-millisecond grant generation; disabling requires
   await assert.rejects(f.app.groupAccess({scopeId,chatId,threadId,action:'once'}),{code:'scope-changed'})
   await save(f,{enabled:false});await save(f,{enabled:true})
   assert.equal((await f.app.snapshot()).automationEnabled,false)
+})
+
+function shared() {
+  const grants=new Map(),feed=new Map()
+  return {load:k=>grants.get(k),save:(k,v)=>grants.set(k,structuredClone(v)),
+    mentions:()=>({get:k=>feed.get(k),put:(k,v)=>feed.set(k,structuredClone(v)),entries:()=>feed.entries()})}
+}
+const grantSource=async g=>{
+  const {createHash}=await import('node:crypto'), hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex')
+  const id=hash([hash({profile:old.profile,...ids}),1,g.chatId,g.mode,g.threadId || null,g.grantId || null,g.approvedAt ?? null])
+  return {kind:'feishu',scopeId:id,...ids,chatId,threadId}
+}
+
+test('a grant for one member guards only that member’s jobs: release, automation and replies name the requester',async t=>{
+  clock(t)
+  const cfg={...old,automationSince:1},permissions=shared(),calls=[],member='ou_member'
+  const a=createAdmission({scope:cfg,...permissions,consentSince:1})
+  const ref={chatId,threadId,messageId:'om_ask',at:Date.now()-1000,senderId:member}
+  await a.recordMention({...ref,text:'  请帮忙\n看下这个  '},1);await a.observe(ref,1)
+  const f=fixture(cfg,{permissions,runCli:async argv=>{calls.push(argv);return selfMapping(argv) ?? ok(argv.includes('+get-user') ? self : group)}})
+  const {scopeId}=await f.app.snapshot()
+  // The browser names a message, never the member.
+  await assert.rejects(f.app.groupAccess({scopeId,chatId,threadId,messageId:ref.messageId,action:'sender',senderId:'ou_other'}),{code:'invalid-input'})
+  const g=(await a.update({action:'sender',chatId,threadId,messageId:ref.messageId})).find(g=>g.mode==='sender')
+  assert.deepEqual((await f.app.snapshot()).groups,[{chatId,mode:'sender',senderId:member,note:'请帮忙 看下这个',approvedAt:g.approvedAt,grantId:g.grantId}])
+  const source=await grantSource(g)
+  await f.app.validateRelease(source,undefined,member)
+  for(const requesterId of [undefined,'ou_other'])
+    await assert.rejects(f.app.validateRelease(source,undefined,requesterId),{code:'admission-denied'})
+  assert.deepEqual(calls,[],'release validation reads only local authorization')
+  await f.app.assertAutomation(source,undefined,member)
+  const n=calls.length;assert.ok(n>0)
+  for(const requesterId of [undefined,'ou_other']) {
+    await assert.rejects(f.app.assertAutomation(source,undefined,requesterId),{code:'admission-denied'})
+    await assert.rejects(f.app.deliverReviewed({source,messageId:ref.messageId,text:'ok',idempotencyKey:'fixture',requesterId}),{code:'delivery-denied'})
+  }
+  assert.equal(calls.length,n,'another requester is refused before any CLI read')
+  // Revoking the member ends their jobs.
+  await f.app.groupAccess({scopeId,chatId,senderId:member,action:'revoke'})
+  assert.deepEqual((await f.app.snapshot()).groups,[])
+  await assert.rejects(f.app.validateRelease(source,undefined,member),{code:'admission-denied'})
+  await assert.rejects(f.app.assertAutomation(source,undefined,member),{code:'admission-denied'})
+  await f.app.dispose()
+})
+
+test('after a member grant or an ignore is revoked, discovery does not read that member’s or conversation’s messages up to that moment',async t=>{
+  const advance=clock(t),start=Date.now(),cfg={...old,automationSince:start-60_000},permissions=shared(),member='ou_member',base='/open-apis/im/v1/messages'
+  const row=(id,chat,sender,at)=>({message_id:id,chat_id:chat,msg_type:'text',create_time:String(at),deleted:false,
+    sender:{sender_type:'user',id_type:'open_id',id:sender,tenant_key:ids.tenantId},mentions:[{id_type:'open_id',id:ids.recipientId,tenant_key:ids.tenantId}],
+    body:{content:JSON.stringify({text:'request '+id})}})
+  const rows=[row('om_member_before',chatId,member,start+150),row('om_colleague_before',chatId,'ou_colleague',start+160),
+    row('om_member_after',chatId,member,start+250),row('om_ignored_before','oc_ignored','ou_colleague',start+150),
+    row('om_ignored_after','oc_ignored','ou_colleague',start+250)]
+  const reads=[]
+  const f=fixture(cfg,{permissions,runCli:async argv=>{
+    const p2p=selfMapping(argv);if(p2p)return p2p
+    if(argv.includes('+get-user'))return ok(self)
+    if(argv.includes('chats'))return ok(group)
+    if(argv.includes(base+'/search'))return ok({items:rows.map(r=>({meta_data:{message_id:r.message_id,chat_id:r.chat_id,is_p2p_chat:false}})),has_more:false})
+    if(argv.includes(base+'/mget'))return ok({items:rows})
+    const exact=rows.find(r=>argv.includes(base+'/'+r.message_id))
+    assert.ok(exact,'unexpected CLI command');reads.push(exact.message_id)
+    return ok({items:[exact]})
+  }})
+  await f.app.pollOnce()
+  // Grant one member and ignore another conversation, then revoke both.
+  const a=createAdmission({scope:cfg,...permissions,consentSince:cfg.automationSince})
+  advance(50)
+  const seed={chatId,threadId:'om_seed',messageId:'om_seed',at:start+50,senderId:member}
+  await a.recordMention({...seed,text:'seed'},cfg.automationSince);await a.observe(seed,cfg.automationSince)
+  await a.update({action:'sender',chatId,threadId:seed.threadId,messageId:seed.messageId})
+  await a.update({action:'ignore',chatId:'oc_ignored'})
+  advance(150)
+  await a.update({action:'revoke',chatId,senderId:member});await a.update({action:'revoke',chatId:'oc_ignored'})
+  advance(100);await f.app.pollOnce()
+  assert.deepEqual(reads.sort(),['om_colleague_before','om_ignored_after','om_member_after'])
+  const activity=(await f.app.activitySnapshot([],[])).mentions
+  assert.deepEqual(activity.map(m=>[m.messageId,m.canApprove]),[['om_ignored_after',true],['om_member_after',true],['om_colleague_before',true],['om_seed',false]])
+  await f.app.dispose()
 })

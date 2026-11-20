@@ -7,13 +7,16 @@ export const questionId='om_question',receiptId='om_receipt',clarificationId='om
 export const selfChatId='oc_owner_notes',selfMessageId='om_note_to_self',selfReceiptId='om_note_receipt'
 export const otherDM='oc_other_dm',peer='ou_peer',foreignMessageId='om_other_dm',privateMessageId='om_private_message',peerSelfId='om_private_owner_at'
 export const mergeRoot='om_merge_root',otherGroup='oc_other_group',otherRoot='om_other_root',colleague='ou_colleague'
+export const quietGroup='oc_quiet_group',quietRoot='om_quiet_root'
+export const memberGroup='oc_member_group',memberRoot='om_member_root',memberA='ou_member_a',memberB='ou_member_b'
 const owner=source.recipientId, api='/open-apis/im/v1/messages'
-const groupChats=new Set([chatId,otherGroup])
+const groupChats=new Set([chatId,otherGroup,quietGroup,memberGroup])
+const groupNames={[chatId]:'Fixture group',[otherGroup]:'Fixture other group',[quietGroup]:'Fixture quiet group',[memberGroup]:'Fixture member group'}
 const ok=data=>({ok:true,identity:'user',data})
 const flag=(args,key)=>{assert.ok(args.includes(key),key);return args[args.indexOf(key)+1]}
 
 export function fakeFeishu(rows=[]) {
-  const posts=[],exactReads=[],searches=[],privateSearches=[],mgets=[],historyReads=[],reverseProofs=[]
+  const posts=[],exactReads=[],searches=[],privateSearches=[],mgets=[],mgetBodies=[],historyReads=[],reverseProofs=[]
   let error,p2pChecked=false
   function publish(id,text,{at=Date.now(),chat=chatId,from='ou_sender',thread=root,parent=thread,mention=true}={}) {
     const r={message_id:id,chat_id:chat,create_time:String(at),msg_type:'text',deleted:false,
@@ -56,7 +59,7 @@ export function fakeFeishu(rows=[]) {
     if(has('im','chats','get')) {
       const id=flag(argv,'--chat-id')
       assert.ok(groupChats.has(id),'only groups use group metadata')
-      return ok({name:id===chatId?'Fixture group':'Fixture other group',chat_mode:'topic',external:false,tenant_key:source.tenantId})
+      return ok({name:groupNames[id],chat_mode:'topic',external:false,tenant_key:source.tenantId})
     }
     if(has('api','POST',api+'/search')) {
       const {filter}=JSON.parse(flag(argv,'--data'))
@@ -76,8 +79,11 @@ export function fakeFeishu(rows=[]) {
     if(has('api','GET',api+'/mget')) {
       const {message_ids,user_id_type}=JSON.parse(flag(argv,'--params'))
       assert.equal(user_id_type,'open_id')
-      assert.ok(flag(argv,'--jq'),'metadata-only batch read')
+      const jq=flag(argv,'--jq')
+      assert.ok(jq,'metadata-only batch read')
       mgets.push(...message_ids)
+      // Only a projection that names its fields strips the body inside the CLI.
+      if(!jq.includes('{message_id,chat_id,'))mgetBodies.push(...message_ids)
       return ok({items:rows.filter(r=>message_ids.includes(r.message_id)).map(({body,...meta})=>meta)})
     }
     if(has('api','GET',api)) {
@@ -86,7 +92,7 @@ export function fakeFeishu(rows=[]) {
       assert.ok(p.page_size>0 && p.page_size<=50)
       const thread=p.container_id_type==='thread'
       if(thread) {
-        assert.ok(['omt_root','omt_another_topic','omt_merge_root','omt_other_root'].includes(p.container_id))
+        assert.ok(['omt_root','omt_another_topic','omt_merge_root','omt_other_root','omt_quiet_root','omt_member_root','omt_member_a_later','omt_member_a_cold'].includes(p.container_id))
         assert.equal(p.sort_type,'ByCreateTimeAsc')
         assert.equal(p.start_time,undefined)
         assert.equal(p.end_time,undefined)
@@ -133,7 +139,7 @@ export function fakeFeishu(rows=[]) {
   }
   return {
     run:async(...args)=>{try{return await run(...args)}catch(e){error=e;throw e}},get error(){return error},
-    exactReads,searches,privateSearches,mgets,historyReads,reverseProofs,posts,rows,
+    exactReads,searches,privateSearches,mgets,mgetBodies,historyReads,reverseProofs,posts,rows,
     replayReceipt(){rows.find(r=>r.message_id===receiptId).mentions=[{id_type:'open_id',id:owner,tenant_key:source.tenantId}]},
     publishHistory(){
       const old=Date.now()-11*60_000
@@ -154,6 +160,12 @@ export function fakeFeishu(rows=[]) {
       publish(mergeCase.other.id,mergeCase.other.text,{chat:otherGroup,thread:otherRoot,from:owner})
     },
     publishToDecline:()=>publish(declineId,declineRequest,{thread:'om_another_topic'}),
+    publishQuietRoot:()=>publish(quietRoot,'Fixture quiet group root.',{chat:quietGroup,thread:quietRoot,mention:false}),
+    // An @ in its own new topic unless a thread is given.
+    publishQuiet:(id,text,thread=id)=>publish(id,text,{chat:quietGroup,thread}),
+    publishOtherTopic:(id,text)=>publish(id,text,{chat:otherGroup,thread:id}),
+    publishMemberRoot:()=>publish(memberRoot,'Fixture member group root.',{chat:memberGroup,thread:memberRoot,mention:false}),
+    publishMember:(id,text,from,thread=id)=>publish(id,text,{chat:memberGroup,thread,from}),
     publishWrongReplies(){
       publish('om_wrong_person','WRONG-REPLY: somebody else.',{parent:questionId,mention:false})
       publish('om_wrong_parent','WRONG-REPLY: not a response to the question.',{parent:messageId,from:owner,mention:false})

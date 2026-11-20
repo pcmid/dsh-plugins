@@ -20,6 +20,10 @@ export const ignored='Fixture acknowledgement only.'
 export const declineRequest='Fixture: ask me which edition I mean.'
 export const noteRequest='@测试用户 ping'
 export const privateRequest='Fixture private conversation: explain configuration.'
+export const quietRequest='Fixture quiet group: answer once the ignore was undone.'
+// One allowed member's requests: before the restart (shipped Router), and after it (default Router).
+export const memberRequest='Fixture member: summarize this topic for me.'
+export const memberColdRequest='Fixture member: one more after the restart.'
 export const forbiddenRequest='Fixture: try an unavailable developer-only tool from this answer seat.'
 export const probes=[
   {id:'om_native_deny',request:'Fixture: request a seal blocked by this local policy.',callId:'fixture-native-deny',label:'native deny example',outcome:'deny'},
@@ -179,7 +183,7 @@ export class Offline extends LlmAdapter {
       assert.ok(stage && options.sessionId,'only Router and worker model calls are expected')
       if(stage==='WORK')assert.match(original.split('\n').slice(0,-1).join('\n'),/check your own result against the request/i)
       assert.equal(options.model,stage==='DECIDE'?'director':'worker','only dispatch runs on the lead model')
-      const emptyRouter=stage==='DECIDE' && (probe || soft || [privateRequest,forbiddenRequest].includes(input.request))
+      const emptyRouter=stage==='DECIDE' && (probe || soft || [privateRequest,forbiddenRequest,quietRequest,memberColdRequest].includes(input.request))
       const presetNames=emptyRouter?[toolName]:role==='develop'?[workerTool]:[]
       assert.deepEqual(options.tools.map(t=>t.name).sort(),[...presetNames,...results].sort(),
         'only this seat’s result tools and its selected ordinary preset tools are callable')
@@ -215,7 +219,7 @@ export class Offline extends LlmAdapter {
           this.retryRouterId=options.sessionId
           if(process.env.SMOKE_PHASE==='prepare'){yield {type:'finish',reason:{kind:'error'}};return}
         }
-        assert.ok(probe || soft || [ignored,request,declineRequest,noteRequest,privateRequest,forbiddenRequest,retryWorker.text,retryRoute.text,held.text,archiveActive.text,
+        assert.ok(probe || soft || [ignored,request,declineRequest,noteRequest,privateRequest,quietRequest,memberRequest,memberColdRequest,forbiddenRequest,retryWorker.text,retryRoute.text,held.text,archiveActive.text,
           mergeCase.work.text,mergeCase.own.text,mergeCase.other.text,...merges.map(k=>mergeCase[k].text)].includes(input.request))
         if(soft?.routerDraft && !nudged){yield* result(soft.routerDraft);return}
         if(input.request===held.text) {
@@ -365,7 +369,7 @@ export class Offline extends LlmAdapter {
         assert.ok(!data.includes(rootText),'other cases never receive this thread')
         if(input.request===declineRequest) body={action:'clarify',question:declinedQuestion}
         else {
-          assert.ok([noteRequest,privateRequest,retryRoute.text].includes(input.request))
+          assert.ok([noteRequest,privateRequest,quietRequest,memberRequest,memberColdRequest,retryRoute.text].includes(input.request))
           if(input.request===retryRoute.text) {
             assert.equal(messages.filter(m=>m.role==='user' && m.source?.kind==='user').length,1)
             assert.equal(input.continue,undefined,'a Router-only retry must not tell a brand-new worker it previously failed')

@@ -11,7 +11,8 @@ const seat = {sessionId:'worker-1',workspaceId:'workspace',resolvedPresetId:'ana
 const cmd = (row,action='send')=>({caseId:row.caseId,messageId:row.messageId,token:row.releaseToken,action})
 const incomingReply = (job,n)=>({chatId:src.chatId,threadId:src.threadId,senderId:input.requesterId,
   parentId:job.questionId,at:200+n,messageId:'om_reply'+n,text:'clarification '+n})
-const authorize = async (source,signal)=>{assert.deepEqual(source,src);signal.throwIfAborted()}
+// Release validation names the job's verified requester, so a grant for one member can be checked.
+const authorize = async (source,signal,requesterId)=>{assert.deepEqual(source,src);assert.equal(requesterId,input.requesterId);signal.throwIfAborted()}
 function fixture(overrides={}) {
   let disk
   const calls = {decide:[],work:[],deliver:[]}, commits = []
@@ -55,7 +56,7 @@ test('two question rounds and the final independently require confirmation, keep
     assert.equal(waiting.outputKind,'question');assert.equal(waiting.answer,current.answer)
     assert.equal(waiting.receipt.messageId,'om_sent'+n);assert.equal(waiting.releaseToken,undefined)
     keys.push(f.calls.deliver.at(-1).idempotencyKey)
-    assert.equal(f.calls.deliver.at(-1).messageId,input.messageId)
+    assert.equal(f.calls.deliver.at(-1).messageId,input.messageId);assert.equal(f.calls.deliver.at(-1).requesterId,input.requesterId)
     await l.dispose();l=f.open()
     const [w]=await l.waitingQuestions(src)
     assert.deepEqual(w,{caseId:input.caseId,messageId:input.messageId,source:src,requesterId:input.requesterId,questionId:'om_sent'+n,originalText:input.text})
@@ -84,7 +85,9 @@ test('two question rounds and the final independently require confirmation, keep
   assert.deepEqual(Object.fromEntries(Object.entries(f.calls).map(([k,v])=>[k,v.length])),{decide:1,work:3,deliver:3})
   assert.equal(f.calls.decide[0].workerContext,input.workerContext)
   assert.equal(f.calls.decide[0].answer,undefined)
-  assert.equal(f.calls.decide[0].requesterId,undefined)
+  // Each stage names the verified requester, so a grant for that member alone still admits it.
+  assert.equal(f.calls.decide[0].requesterId,input.requesterId)
+  assert.equal(f.calls.deliver.at(-1).requesterId,input.requesterId)
   assert.equal(f.calls.work[0].workerContext,input.workerContext)
   assert.doesNotMatch(JSON.stringify(f.disk),/workerContext|workerProof|clarification [12]/)
   await l.dispose();l=f.open()

@@ -93,16 +93,26 @@ function SpaceGroupLink({tr,chatId,name}) {
   return chatId ? h('a',{className:'sx-text-link',target:'_blank',rel:'noopener noreferrer',href:'https://applink.feishu.cn/client/chat/open?openChatId='+encodeURIComponent(chatId)},label) : label;
 }
 function spaceApprovalInput({scopeId,chatId,threadId,messageId},action) {
-  return {scopeId,chatId,threadId,messageId,action};
+  // Ignoring permanently covers the whole conversation, so it names no topic or message.
+  return action==='ignore' ? {scopeId,chatId,action} : {scopeId,chatId,threadId,messageId,action};
+}
+// The two dropdowns on a message awaiting approval. Allowing only its author needs the recorded sender.
+function spaceApprovalActions(mention,menu,tr) {
+  return menu==='allow' ? [{id:'once',label:tr('授权一次','Allow once')},{id:'permanent',label:tr('永久授权','Always allow')},
+    ...mention.senderId ? [{id:'sender',label:tr('仅授权此用户','Allow this user only')}] : []] :
+    [{id:'dismiss',label:tr('忽略一次','Ignore once')},{id:'ignore',label:tr('永久忽略','Always ignore')}];
 }
 function SpaceApproval({p,mention,returnFocus}) {
   if(!mention?.canApprove)return null;
-  const button=(action,zh,en)=>h('button',{className:'sx-quiet',type:'button',disabled:p.busy,onClick:()=>{
-    returnFocus.current?.focus();void p.groupAccess(spaceApprovalInput(mention,action));
-  }},p.tr(zh,en));
-  return h(React.Fragment,null,h('small',{className:'x2-approval-scope'},p.tr('只办理这条和今后符合接收条件的新消息；「批准一次」仅限本话题。','Approval covers this message and future eligible messages. Approve once limits that to this topic.')),
-    h('div',{className:'sx-decision x2-approvals'},button('once','批准一次','Approve once'),button('permanent','永久允许此会话','Always allow this conversation')));
+  const choose=action=>{returnFocus.current?.focus();void p.groupAccess(spaceApprovalInput(mention,action))};
+  const dropdown=(menu,zh,en)=>p.openMenu ? h('button',{className:'sx-quiet x2-dropdown',type:'button',disabled:p.busy,'aria-haspopup':'menu',
+    onClick:e=>{const r=e.currentTarget.getBoundingClientRect();p.openMenu({kind:'superagent-approval',value:{key:spaceMentionKey(mention),menu}},{x:r.left,y:r.bottom})}},
+    p.tr(zh,en),h(Mark,{name:'chevron',size:12})) :
+    spaceApprovalActions(mention,menu,p.tr).map(a=>h('button',{key:a.id,className:'sx-quiet',type:'button',disabled:p.busy,onClick:()=>choose(a.id)},a.label));
+  return h(React.Fragment,null,h('small',{className:'x2-approval-scope'},p.tr('授权一次仅限本话题；永久授权覆盖整个会话；仅授权此用户只办理这位成员在本会话的消息。忽略一次只略过这条，永久忽略后不再接收这个会话。','Allow once covers this topic; always allow covers the conversation; allow this user only covers that member in this conversation. Ignore once skips this message; always ignore stops receiving the conversation.')),
+    h('div',{className:'sx-decision x2-approvals'},dropdown('allow','授权','Allow'),dropdown('ignore','忽略','Ignore')));
 }
+const spaceMentionKey=m=>JSON.stringify([m.scopeId,m.chatId,m.threadId,m.messageId]);
 function SpaceTime({at,tr,day=false}) {
   const date=new Date(at);
   return h('time',{className:'x2-time',dateTime:date.toISOString()},
@@ -140,16 +150,20 @@ function SpaceActivity({p,entries,open,headingRef,backId,compact}) {
       h('h3',null,h(SpaceTime,{at:rows[0].message.at,tr,day:true})),
       h('ul',{className:'x2-history'},rows.map(row=>h(SpaceActivityRow,{key:row.key,p,row,open,restore:row.key===backId}))))));
 }
-function spaceGrantLabel({approvedAt},tr) {
-  if(!Number.isFinite(approvedAt))return tr('已永久允许此会话','Always allowed');
-  const time=new Date(approvedAt).toLocaleString(tr('zh-CN','en-US'),{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-  return tr(time+' 起永久允许','Always allowed since '+time);
+function spaceGrantLabel({mode,approvedAt,ignoredAt,note},tr) {
+  const at=mode==='ignored' ? ignoredAt : approvedAt;
+  // A member grant names the approving message, since member names are not resolved.
+  const who=mode==='sender' ? tr('仅允许一位成员','Only one member')+(note ? tr('（发送「'+note+'」的人）',' (sender of “'+note+'”)') : '') : '';
+  if(!Number.isFinite(at))return mode==='ignored' ? tr('已忽略此会话','Ignored') : who || tr('已永久允许此会话','Always allowed');
+  const time=new Date(at).toLocaleString(tr('zh-CN','en-US'),{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  return mode==='ignored' ? tr(time+' 起忽略','Ignored since '+time) : who ? who+' · '+tr(time+' 起',' since '+time) : tr(time+' 起永久允许','Always allowed since '+time);
 }
 function SpaceGroup({p,group,label}) {
-  const {tr,source,busy}=p,{chatId,name}=group;
+  const {tr,source,busy}=p,{chatId,name,mode,senderId}=group;
   return h('div',{className:'x2-account-row x2-grant'},
     h('div',null,h(SpaceGroupLink,{tr,chatId,name}),h('p',null,label)),
-    h('button',{className:'sx-quiet',type:'button',disabled:busy,onClick:()=>p.groupAccess({scopeId:source.scopeId,chatId,action:'revoke'})},tr('撤销授权','Revoke access')));
+    h('button',{className:'sx-quiet',type:'button',disabled:busy,onClick:()=>p.groupAccess({scopeId:source.scopeId,chatId,action:'revoke',...(mode==='sender' ? {senderId} : {})})},
+      mode==='ignored' ? tr('取消忽略','Stop ignoring') : tr('撤销授权','Revoke access')));
 }
 // Only the initiating page holds the display link; reject external or malformed artwork.
 function spaceFeishuFlow(kind,value,now) {
@@ -227,11 +241,15 @@ function SpacePollLog({records,tr}) {
 }
 // Settings manage whole conversations only; per-topic "approve once" grants are not listed here.
 function SpaceSourceGroups({p}) {
-  const {tr,source}=p,groups=source.groups.filter(group=>group.mode==='permanent');
-  return h('section',{className:'sx-fields x2-source-section'},
-    h('h3',null,tr('永久允许的会话','Always-allowed conversations')),
-    !groups.length && h('p',null,tr('暂无永久允许的会话。可在「动态」里对消息选择「永久允许此会话」。','No always-allowed conversations. In Activity, choose “Always allow this conversation” on a message.')),
-    groups.map(group=>h(SpaceGroup,{p,key:group.chatId,group,label:spaceGrantLabel(group,tr)})));
+  const {tr,source}=p,groups=source.groups.filter(group=>['permanent','sender'].includes(group.mode)),ignored=source.groups.filter(group=>group.mode==='ignored');
+  return h(React.Fragment,null,
+    h('section',{className:'sx-fields x2-source-section'},
+      h('h3',null,tr('永久允许的会话','Always-allowed conversations')),
+      !groups.length && h('p',null,tr('暂无永久允许的会话。可在「动态」里对消息选择「授权 → 永久授权」。','No always-allowed conversations. In Activity, choose Allow → Always allow on a message.')),
+      groups.map(group=>h(SpaceGroup,{p,key:group.chatId+(group.senderId || ''),group,label:spaceGrantLabel(group,tr)}))),
+    ignored.length>0 && h('section',{className:'sx-fields x2-source-section'},
+      h('h3',null,tr('已忽略的会话','Ignored conversations')),
+      ignored.map(group=>h(SpaceGroup,{p,key:group.chatId,group,label:spaceGrantLabel(group,tr)}))));
 }
 async function spaceCommitPollInterval(draft,settings,save) {
   if(!draft)return null;
@@ -406,7 +424,7 @@ function SpaceSource({p}) {
           button(step==='connect'?tr('正在连接…','Connecting…'):tr('连接飞书','Connect Feishu'),'connect',true))),
       status && h('p',{role:'status'},status),
       h(SpacePollLog,{records:source.pollErrors,tr}),
-      !flow && h('p',null,tr('你在内部群、「与自己的聊天」或已开启接收的私聊中明确 @自己，等同于为该话题点「批准一次」，不必再点。对外发送仍遵守你的确认设置。','When you explicitly mention yourself in an internal group, your self-chat, or an enabled direct chat, it counts as Approve once for that topic. Your outbound confirmation setting still applies.'),
+      !flow && h('p',null,tr('你在内部群、「与自己的聊天」或已开启接收的私聊中明确 @自己，等同于为该话题选「授权一次」，不必再点。对外发送仍遵守你的确认设置。','When you explicitly mention yourself in an internal group, your self-chat, or an enabled direct chat, it counts as Allow once for that topic. Your outbound confirmation setting still applies.'),
         !source.automationEnabled && tr('连接并授权后开始接收。消息获准办理前只供查看；对外发送时，会以你的身份回复原消息。',' Connect and authorize Feishu to receive messages. Until approved they are read-only. Outgoing replies are posted to the original message as you.')),
       flow && h('div',{className:'sx-fields x2-auth-flow'},
         h('p',null,flow.kind==='setup'?tr('先在飞书确认创建应用，再连接账号。','Confirm app creation in Feishu before connecting your account.'):
@@ -506,7 +524,9 @@ function SpaceRunOutput({p,item,message}) {
     pending && target && h('p',{className:'x2-step-detail'},tr('回复至：','Reply to: '),h(SpaceGroupLink,{tr,chatId:target.chatId,name:target.name}),
       ' · ',spaceReleaseTopic(target.at,message.at,tr)),
     pending && (target?.input ? h('div',{className:'sx-decision x2-approvals'},
-      h('button',{type:'button',className:'sx-solid',disabled:p.busy,onClick:()=>choose('send')},tr('确认发送','Confirm send')),
+      // After access was revoked the reply can no longer be sent, only declined.
+      r.releaseBlocked ? h('small',{className:'x2-approval-scope'},tr('授权已撤销，只能选择不发送。','Access was revoked; this can only be declined.')) :
+        h('button',{type:'button',className:'sx-solid',disabled:p.busy,onClick:()=>choose('send')},tr('确认发送','Confirm send')),
       h('button',{type:'button',className:'sx-quiet',disabled:p.busy,onClick:()=>choose('decline')},tr('不发送','Do not send')))
       : h('p',{className:'x2-step-detail'},tr('当前无法放行，请核对飞书身份与话题授权。','Cannot release this reply. Check the Feishu identity and topic access.'))));
 }
@@ -698,6 +718,13 @@ function EditionWorkspace(p) {
   menuState.current={records,archive,retry,takeOver,tr,source:p.source};
   // One registration for the shared DSH row menu; its actions read the latest records on each opening.
   React.useEffect(()=>p.registerCaseMenu?.(({caseId})=>spaceCaseMenu(menuState.current,caseId)),[p.registerCaseMenu]);
+  // The approval dropdowns read the latest pending mentions on each opening.
+  const approvals=React.useRef(null);
+  approvals.current={mentions:p.mentions || [],tr,groupAccess:p.groupAccess};
+  React.useEffect(()=>p.registerMenu?.('pcmid-superagent.approval','superagent-approval',({key,menu})=>{
+    const {mentions,tr,groupAccess}=approvals.current,mention=mentions.find(m=>m.canApprove && spaceMentionKey(m)===key);
+    return mention ? spaceApprovalActions(mention,menu,tr).map(a=>({...a,run:()=>groupAccess(spaceApprovalInput(mention,a.id))})) : [];
+  }),[p.registerMenu]);
   React.useLayoutEffect(()=>{
     if(!focus.current) return;
     focus.current=false;

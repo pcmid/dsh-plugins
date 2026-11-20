@@ -521,3 +521,211 @@ for(const action of ['once','permanent']) test(action+' from an activity replays
   const updated=await a.update({action,...topic,messageId:'om_fresh'})
   assert.deepEqual(updated.find(g=>g.mode===action).triggers,[evidence(fresh)])
 })
+
+test('ignoring a conversation covers it whole: earlier messages leave activity, nothing new is recorded or proposed, and it can be undone',async()=>{
+  const {open,tick}=fixture(), a=open()
+  await a.recordMention({...ref,text:'第一条'},consentSince)
+  await a.observe(ref,consentSince)
+  const other={...ref,messageId:'om_other_chat',threadId:'om_oc',chatId:'oc_other'}
+  await a.recordMention({...other,text:'别的群'},consentSince)
+  await a.observe(other,consentSince)
+  // An always-allowed conversation is revoked before it can be ignored.
+  await a.update({action:'permanent',...topic})
+  await assert.rejects(a.update({action:'ignore',chatId}),{code:'admission-denied'})
+  await a.update({action:'revoke',chatId})
+  assert.deepEqual(await a.update({action:'ignore',chatId}),[{chatId:other.chatId,threadId:other.threadId,mode:'pending',triggers:[evidence(other)]},{chatId,mode:'ignored',ignoredAt:2000}])
+  assert.equal(await a.ignored(chatId),true)
+  assert.deepEqual(await a.update({action:'ignore',chatId}),await a.list(),'repeat ignore writes nothing')
+  // Earlier messages of the ignored conversation leave Activity, others remain.
+  assert.deepEqual((await a.listMentions(consentSince)).map(m=>[m.chatId,m.messageId]),[[other.chatId,other.messageId]])
+  // Neither a new mention nor a proposal from it is recorded while ignored.
+  const later={...ref,messageId:'om_later',at:2100}
+  assert.deepEqual(await a.recordMention({...later,text:'再说一句'},consentSince),{changed:false})
+  assert.deepEqual(await a.observe(later,consentSince),{changed:false})
+  assert.deepEqual(await a.update({action:'register',chatId,threadId:later.threadId}),await a.list())
+  await assert.rejects(a.run(topic,()=>1),{code:'admission-denied'})
+  // Undoing it restores normal proposals from the current moment on.
+  await a.update({action:'revoke',chatId})
+  assert.equal(await a.ignored(chatId),false)
+  tick()
+  assert.deepEqual(await a.observe({...later,at:3000},consentSince),{changed:true})
+})
+
+const member='ou_member', colleague='ou_colleague'
+async function seen(a,...messages) {
+  for(const [m,text=m.messageId] of messages) {await a.recordMention({...m,text},consentSince);await a.observe(m,consentSince)}
+}
+test('allowing only this user admits that member’s messages across the conversation, never another member or a browser-named one',async()=>{
+  const {open,tick}=fixture(), a=open()
+  const first={...ref,senderId:colleague}                                   // the topic's proposal began with someone else
+  const mine={...ref,messageId:'om_mine',at:ref.at+1,senderId:member}      // the member in the same topic
+  const elsewhere={chatId,threadId:'om_t2',messageId:'om_t2',at:ref.at+2,senderId:member}
+  const anonymous={chatId,threadId:'om_t3',messageId:'om_t3',at:ref.at+3} // recorded before senders were kept
+  await seen(a,[first],[mine,'  请帮我\n\n看一下   这个报表  '],[elsewhere],[anonymous])
+  // The member always comes from the Host's recorded message, never from the browser.
+  for(const cmd of [{action:'sender',...topic,messageId:mine.messageId,senderId:member},{action:'sender',...topic},{action:'sender',chatId,messageId:mine.messageId},
+    {action:'once',...topic,senderId:member},{action:'permanent',chatId,senderId:member},{action:'register',chatId,senderId:member}])
+    await assert.rejects(a.update(cmd),{code:'invalid-input'})
+  for(const messageId of [anonymous.messageId,'om_missing'])
+    await assert.rejects(a.update({action:'sender',chatId,threadId:messageId===anonymous.messageId ? anonymous.threadId : topic.threadId,messageId}),{code:'admission-denied'})
+  await assert.rejects(a.update({action:'sender',...topic,messageId:elsewhere.messageId}),{code:'admission-denied'},'the message must belong to the named topic')
+  const rows=await a.update({action:'sender',...topic,messageId:mine.messageId}), grant=rows.find(g=>g.mode==='sender')
+  assert.deepEqual(grant,{chatId,mode:'sender',approvedAt:2000,grantId:grant.grantId,senderId:member,note:'请帮我 看一下 这个报表',triggers:[evidence(mine)]})
+  // The topic's proposal stays for the colleague who started it.
+  assert.deepEqual(rows.find(g=>g.threadId===topic.threadId),{...topic,mode:'pending',triggers:[evidence(first)]})
+  assert.equal((await a.listMentions(consentSince)).find(m=>m.messageId===first.messageId).canApprove,true)
+  // Only the member's requests can be read, released or answered under this grant, in any topic of this conversation.
+  assert.equal(await a.run({chatId,threadId:'om_any',senderId:member},g=>g.grantId),grant.grantId)
+  for(const target of [topic,{chatId},{...topic,senderId:colleague},{chatId:'oc_elsewhere',threadId:topic.threadId,senderId:member}])
+    await assert.rejects(a.run(target,hit),{code:'admission-denied'})
+  assert.deepEqual(await a.observe(mine,consentSince),{changed:false,grant})
+  const later={chatId,threadId:'om_t4',messageId:'om_later',at:tick(),senderId:member}
+  assert.deepEqual(await a.observe(later,consentSince),{changed:false,grant})
+  // Someone else's new topic, or a message without a known sender, is proposed as usual.
+  const stranger={chatId,threadId:'om_t5',messageId:'om_stranger',at:tick(),senderId:colleague}
+  const {senderId:_,...unsigned}={...later,threadId:'om_t6',messageId:'om_unsigned',at:tick()}
+  for(const m of [stranger,unsigned]) assert.deepEqual(await a.observe(m,consentSince),{changed:true})
+  // Registering a topic proposes it and leaves the member grant intact and readable.
+  await a.update({action:'register',chatId,threadId:'om_t7'})
+  const reopened=await open().list()
+  assert.deepEqual(reopened.find(g=>g.mode==='sender'),grant)
+  assert.deepEqual(['om_t5','om_t6','om_t7'].map(id=>reopened.find(g=>g.threadId===id)?.mode),['pending','pending','pending'])
+  // Allowing the same member from another topic adds that message to the same grant and settles their own proposal.
+  const again=await a.update({action:'sender',chatId,threadId:elsewhere.threadId,messageId:elsewhere.messageId})
+  assert.deepEqual(again.filter(g=>g.mode==='sender'),[{...grant,triggers:[evidence(mine),evidence(elsewhere)]}])
+  assert.equal(again.some(g=>g.threadId===elsewhere.threadId),false)
+  // Another member gets a separate grant; the shared topic's proposal goes once the member who started it is allowed.
+  const both=await a.update({action:'sender',...topic,messageId:first.messageId})
+  assert.deepEqual(both.filter(g=>g.mode==='sender').map(g=>[g.senderId,g.triggers]),[[member,[evidence(mine),evidence(elsewhere)]],[colleague,[evidence(first)]]])
+  assert.equal(both.some(g=>g.threadId===topic.threadId),false)
+  // Acknowledgement finds the member grant by its id; a handled request is not offered again.
+  assert.equal(await a.ackTrigger({...topic,messageId:mine.messageId,grantId:'00000000-0000-4000-8000-000000000000'}),false)
+  assert.equal(await a.ackTrigger({...topic,messageId:mine.messageId,grantId:grant.grantId}),true)
+  assert.deepEqual(await a.observe(mine,consentSince),{changed:false})
+})
+
+test('a member grant is revoked by member; that member’s earlier messages stay closed while other members are unaffected',async()=>{
+  const {open,tick}=fixture(), a=open()
+  const mine={...ref,senderId:member}, theirs={chatId,threadId:'om_t2',messageId:'om_t2',at:ref.at+1,senderId:colleague}
+  const earlier={chatId,threadId:'om_t3',messageId:'om_t3',at:ref.at+2,senderId:member}
+  await seen(a,[mine],[theirs],[earlier])
+  const grant=(await a.update({action:'sender',...topic,messageId:mine.messageId})).find(g=>g.mode==='sender')
+  // Ignoring the whole conversation waits until the member grant is revoked.
+  await assert.rejects(a.update({action:'ignore',chatId}),{code:'admission-denied'})
+  // Revoking names the member; neither the conversation nor another member removes it.
+  for(const cmd of [{action:'revoke',chatId},{action:'revoke',chatId,senderId:colleague},{action:'revoke',...topic}])
+    await assert.rejects(a.update(cmd),{code:'admission-denied'})
+  assert.deepEqual((await a.list()).find(g=>g.mode==='sender'),grant)
+  const at=tick()
+  const rows=await a.update({action:'revoke',chatId,senderId:member})
+  assert.equal(rows.some(g=>g.mode==='sender'),false)
+  await assert.rejects(a.run({...topic,senderId:member},hit),{code:'admission-denied'})
+  // Their messages up to the revocation are neither proposed again nor approvable; discovery skips them unread.
+  assert.deepEqual(await a.observe(mine,consentSince),{changed:false})
+  assert.equal(await a.skip(mine),true);assert.equal(await a.skip({...mine,at}),true)
+  for(const action of ['sender','once'])
+    await assert.rejects(a.update({action,chatId,threadId:earlier.threadId,messageId:earlier.messageId}),{code:'admission-denied'})
+  // Another member's message in the same conversation is still read and approvable.
+  assert.equal(await a.skip(theirs),false)
+  const other=(await a.update({action:'sender',chatId,threadId:theirs.threadId,messageId:theirs.messageId})).find(g=>g.mode==='sender')
+  assert.equal(other.senderId,colleague)
+  await assert.rejects(a.update({action:'ignore',chatId}),{code:'admission-denied'})
+  // A newer message from the revoked member is proposed again.
+  const fresh={chatId,threadId:'om_t4',messageId:'om_fresh',at:tick(),senderId:member}
+  assert.equal(await a.skip(fresh),false)
+  await seen(a,[fresh])
+  assert.deepEqual((await a.list()).find(g=>g.threadId===fresh.threadId),{chatId,threadId:fresh.threadId,mode:'pending',triggers:[evidence(fresh)]})
+  // An always-allowed conversation supersedes member grants; they never coexist with it.
+  const all=await a.update({action:'permanent',chatId,threadId:fresh.threadId,messageId:fresh.messageId})
+  assert.deepEqual(all.filter(g=>g.chatId===chatId).map(g=>g.mode),['permanent'])
+  assert.equal(await a.run({chatId,threadId:'om_any',senderId:colleague},g=>g.mode),'permanent')
+  const late={chatId,threadId:'om_t5',messageId:'om_late',at:tick(),senderId:colleague}
+  await a.recordMention({...late,text:'late'},consentSince)
+  assert.equal((await a.observe(late,consentSince)).grant.mode,'permanent')
+  await assert.rejects(a.update({action:'sender',chatId,threadId:late.threadId,messageId:late.messageId}),{code:'admission-denied'})
+})
+
+test('ignoring once drops this topic’s proposal: the same message is not proposed again, a newer one is',async()=>{
+  const {open,tick}=fixture(), a=open()
+  const first={...ref,senderId:colleague}, second={...ref,messageId:'om_second',at:ref.at+1,senderId:member}
+  const elsewhere={chatId,threadId:'om_t2',messageId:'om_t2',at:ref.at+2,senderId:colleague}
+  await seen(a,[first],[second],[elsewhere])
+  // Ignoring once names the exact recorded message of a pending topic.
+  for(const cmd of [{action:'dismiss',...topic},{action:'dismiss',chatId,messageId:first.messageId},
+    {action:'dismiss',...topic,messageId:first.messageId,senderId:colleague}])
+    await assert.rejects(a.update(cmd),{code:'invalid-input'})
+  for(const messageId of ['om_missing',elsewhere.messageId])
+    await assert.rejects(a.update({action:'dismiss',...topic,messageId}),{code:'admission-denied'})
+  const rows=await a.update({action:'dismiss',...topic,messageId:second.messageId})
+  assert.deepEqual(rows,[{chatId,threadId:elsewhere.threadId,mode:'pending',triggers:[evidence(elsewhere)]}])
+  // The messages remain in Activity but cannot be approved; nothing else in the conversation changed.
+  assert.deepEqual((await a.listMentions(consentSince)).map(m=>[m.messageId,m.canApprove]),[[elsewhere.messageId,true],[second.messageId,false],[first.messageId,false]])
+  for(const m of [first,second]) {
+    assert.deepEqual(await a.observe(m,consentSince),{changed:false});assert.equal(await a.skip(m),true)
+  }
+  for(const action of ['once','permanent','sender','dismiss'])
+    await assert.rejects(a.update({action,...topic,messageId:second.messageId}),{code:'admission-denied'})
+  await assert.rejects(a.run(topic,hit),{code:'admission-denied'})
+  // A newer message in that topic is proposed again, and only it is approvable there.
+  const newer={...ref,messageId:'om_newer',at:tick(),senderId:colleague}
+  assert.equal(await a.skip(newer),false)
+  await seen(a,[newer])
+  assert.deepEqual((await a.listMentions(consentSince)).filter(m=>m.canApprove).map(m=>m.messageId),[newer.messageId,elsewhere.messageId])
+  const approved=(await a.update({action:'once',...topic,messageId:newer.messageId})).find(g=>g.mode==='once')
+  assert.deepEqual(approved.triggers,[evidence(newer)])
+})
+
+test('discovery skips a message only when it could never be proposed: an ignored conversation or one at or before a cutoff',async()=>{
+  const {open,tick}=fixture(), a=open()
+  const mine={...ref,senderId:member}, other={chatId:'oc_other',threadId:'om_o',messageId:'om_o',at:ref.at,senderId:member}
+  assert.equal(await a.skip(mine),false)
+  assert.equal(await a.skip({...mine,at:consentSince}),true,'nothing at or before consent')
+  await seen(a,[mine])
+  assert.equal(await a.skip(mine),false,'a pending message is still read')
+  await a.update({action:'ignore',chatId})
+  assert.equal(await a.skip({...mine,at:tick()}),true);assert.equal(await a.skip(other),false)
+  // Undoing an ignore starts from that moment: earlier messages stay unread, later ones are read again.
+  const undone=tick()
+  await a.update({action:'revoke',chatId})
+  for(const [at,skipped] of [[ref.at,true],[undone,true],[undone+1,false]])
+    assert.equal(await a.skip({...mine,messageId:'om_'+at,at}),skipped,String(at))
+  // A revoked topic grant closes only that topic up to its revocation.
+  const t2={chatId,threadId:'om_t2',messageId:'om_t2',at:tick(),senderId:colleague}
+  await seen(a,[t2]);await a.update({action:'once',chatId,threadId:t2.threadId,messageId:t2.messageId})
+  const end=tick();await a.update({action:'revoke',chatId,threadId:t2.threadId})
+  assert.equal(await a.skip({...t2,messageId:'om_t2b',at:end}),true)
+  assert.equal(await a.skip({...t2,threadId:'om_t3',messageId:'om_t3',at:end}),false)
+  assert.equal(await a.skip({...t2,messageId:'om_t2c',at:end+1}),false)
+})
+
+test('allowing the same member twice in one topic keeps both approved messages until handled',async()=>{
+  const {open}=fixture(), a=open()
+  const m1={...ref,messageId:'om_m1',senderId:'ou_member',at:1100}, m2={...m1,messageId:'om_m2',at:1200}
+  const other={...ref,messageId:'om_peer',senderId:'ou_peer',at:1050}
+  for(const m of [other,m1,m2]) {await a.recordMention({...m,text:'消息 '+m.messageId},consentSince);await a.observe(m,consentSince)}
+  await a.update({action:'sender',...topic,messageId:m1.messageId})
+  await a.update({action:'sender',...topic,messageId:m2.messageId})
+  const row=(await open().list()).find(g=>g.mode==='sender')
+  assert.deepEqual(row.triggers.map(t=>t.messageId),['om_m1','om_m2'])
+})
+
+test('ignoring an earlier message once keeps a newer one already received in that topic awaiting approval',async()=>{
+  const {open}=fixture(), a=open()
+  const first={...ref,messageId:'om_a',senderId:'ou_x',at:1100}, newer={...first,messageId:'om_b',at:1300}
+  for(const m of [first,newer]) {await a.recordMention({...m,text:'消息 '+m.messageId},consentSince);await a.observe(m,consentSince)}
+  await a.update({action:'dismiss',...topic,messageId:first.messageId})
+  const approvable=async()=>(await a.listMentions(consentSince)).filter(m=>m.canApprove).map(m=>m.messageId)
+  assert.deepEqual(await approvable(),['om_b'])
+  assert.deepEqual(await a.observe(first,consentSince),{changed:false})
+  await a.update({action:'dismiss',...topic,messageId:newer.messageId})
+  assert.deepEqual(await approvable(),[])
+})
+
+test('ignoring a message once does not reopen the topic for a newer message an allowed member already covers',async()=>{
+  const {open}=fixture(), a=open()
+  const b={...ref,messageId:'om_b1',senderId:'ou_b',at:1100}, member={...b,messageId:'om_a1',senderId:'ou_a',at:1200}
+  for(const m of [b,member]) {await a.recordMention({...m,text:'消息 '+m.messageId},consentSince);await a.observe(m,consentSince)}
+  await a.update({action:'sender',...topic,messageId:member.messageId})
+  await a.update({action:'dismiss',...topic,messageId:b.messageId})
+  assert.ok(!(await a.list()).some(g=>g.mode==='pending'))
+})

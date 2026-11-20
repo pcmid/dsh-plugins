@@ -961,3 +961,29 @@ test('merged messages beyond twenty keep only the latest; one without a known se
   assert.deepEqual(kept,[...earlier.slice(1),{messageId:followUp.messageId,text:followUp.text,senderId:requesterId}])
   assert.deepEqual(worked[0].supplements,[...earlier.slice(1).map(s=>({text:s.text,from:'participant'})),{text:followUp.text,from:'requester'}])
 })
+
+test('every stage names the job’s verified requester; sending checks that member, declining needs no access',async()=>{
+  const requesterId='ou_member', seen=[]
+  const h=harness({decide:b=>{seen.push(['decide',b.requesterId]);return task},work:b=>{seen.push(['work',b.requesterId]);return result},
+    deliver:b=>{seen.push(['deliver',b.requesterId]);return reply(b)}})
+  const pending=await run(h,{...input,requesterId})
+  const checks=[]
+  const row=await h.loop.release(releaseCommand(pending),async(source,signal,id)=>{checks.push([source,id]);signal.throwIfAborted()})
+  assert.equal(row.status,'approved');await h.loop.drain()
+  assert.deepEqual(checks,[[input.source,requesterId]])
+  assert.deepEqual(seen,[['decide',requesterId],['work',requesterId],['deliver',requesterId]])
+  // A job without a known requester names none, so only a conversation or topic grant can admit it.
+  const names=[], legacy=harness({decide:b=>{names.push(Object.hasOwn(b,'requesterId'));return task},
+    deliver:b=>{names.push(Object.hasOwn(b,'requesterId'));return reply(b)}})
+  const old=await run(legacy)
+  await legacy.loop.release(releaseCommand(old),async(...args)=>{names.push(args.length===3 && args[2]===undefined)})
+  await legacy.loop.drain()
+  assert.deepEqual(names,[false,true,false])
+  // After access is revoked, sending is refused, yet the owner can still decline without any check.
+  const revoked=harness(), waiting=await run(revoked,{...input,requesterId})
+  await assert.rejects(revoked.loop.release(releaseCommand(waiting),()=>false),{code:'admission-denied'})
+  assert.equal((await revoked.loop.snapshot())[0].status,'awaiting-release')
+  const declined=await revoked.loop.release(releaseCommand(waiting,'decline'),()=>assert.fail('declining posts nothing and checks no access'))
+  assert.equal(declined.status,'declined');await revoked.loop.drain()
+  assert.ok(!revoked.calls.some(([k])=>k==='deliver'))
+})

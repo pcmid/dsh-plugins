@@ -15,7 +15,9 @@ const flag = (argv,key) => argv[argv.indexOf(key)+1]
 async function setup(responses = [], {mode='permanent',options=config,trigger,now=2} = {}) {
   const calls = [],received = []
   let persisted
-  const admission = createAdmission({scope:config,consentSince:options.automationSince,load:async()=>persisted,save:async(_k,row)=>{persisted = row},now:()=>now})
+  const feed = new Map()
+  const admission = createAdmission({scope:config,consentSince:options.automationSince,load:async()=>persisted,save:async(_k,row)=>{persisted = row},now:()=>now,
+    mentions:async()=>({get:k=>feed.get(k),put:async(k,v)=>feed.set(k,structuredClone(v)),entries:()=>feed.entries()})})
   if (trigger) await admission.observe(trigger,options.automationSince)
   else await admission.update({action:'register',chatId,threadId:root})
   if (mode !== 'pending') await admission.update({action:mode,chatId,threadId:root})
@@ -145,6 +147,8 @@ test('reply is separately authorized, scoped to the stored source, checked again
 
 const options={...config,automationSince:10,historyCount:0}
 const trigger={chatId,threadId:root,messageId:'om_trigger',at:11}
+// Discovery and reads carry the verified author; the CLI's sender, never the caller, supplies it.
+const sent={...trigger,senderId:'ou_requester'}
 const first=msg({root_id:root,message_id:trigger.messageId,create_time:'11'})
 const approved={options,trigger,now:20,mode:'once'}
 const threadContext=()=>[ok({items:[msg()]}),ok({items:[],has_more:false})]
@@ -166,8 +170,8 @@ test('discover returns only direct mentions across eligible groups and only thei
     ok({...group.data,tenant_key:'other'})],{options,mode:'pending'})
   assert.equal(source.listGroups,undefined);assert.equal(source.verifyCandidate,undefined)
   assert.deepEqual(await source.discover({since:10,until:15,pageToken:'prev'}),{mentions:[
-    trigger,{chatId:'oc_two',threadId:'om_two',messageId:'om_two',at:13,name:'群二'},
-    {...trigger,messageId:'om_extra',at:14}],nextPageToken:'next'})
+    sent,{chatId:'oc_two',threadId:'om_two',messageId:'om_two',at:13,name:'群二',senderId:'ou_requester'},
+    {...sent,messageId:'om_extra',at:14}],nextPageToken:'next'})
   assert.deepEqual(received,[])
   assert.deepEqual(JSON.parse(flag(calls[1].argv,'--params')),{page_size:50,page_token:'prev'})
   assert.deepEqual(JSON.parse(flag(calls[1].argv,'--data')),{query:'',filter:{chat_type:'group',from_types:['user'],
@@ -182,8 +186,8 @@ test('an explicit self-mention enters the feed, but only its grant permits proce
     {...own,message_id:'om_bot',sender:{...own.sender,sender_type:'app'}},{...own,message_id:'om_p2p',chat_id:'oc_p2p'}]
   const responses=[user,hits(candidates),ok({items:candidates}),group,user,group,ok({items:[own]})]
   const f=await setup(responses,{...approved,mode:'pending'}), req={...delivery,messageId:own.message_id}
-  assert.deepEqual(await f.source.discover({since:10,until:15}),{mentions:[{...trigger,ownerSelfMention:true}]})
-  assert.deepEqual(await f.source.readMention(trigger),{...trigger,text:JSON.parse(own.body.content).text,ownerSelfMention:true})
+  assert.deepEqual(await f.source.discover({since:10,until:15}),{mentions:[{...trigger,senderId:config.recipientId,ownerSelfMention:true}]})
+  assert.deepEqual(await f.source.readMention(trigger),{...trigger,senderId:config.recipientId,text:JSON.parse(own.body.content).text,ownerSelfMention:true})
   await assert.rejects(f.source.consumeMention(trigger),{code:'admission-denied'})
   await assert.rejects(f.source.reply(req),{code:'admission-denied'})
   assert.equal(f.received.length,0);assert.equal(responses.length,0)
@@ -205,7 +209,7 @@ test('a departed or ineligible chat cannot block discovery in the next group',as
   const gone={...first,chat_id:'oc_old',message_id:'om_old'}, items=[gone,first]
   for(const result of [{ok:false,error:{code:232011}},ok({...group.data,chat_status:'dissolved'})]) {
     const f=await setup([user,hits(items),ok({items}),result,group],{options,mode:'pending'})
-    assert.deepEqual(await f.source.discover({since:10,until:15}),{mentions:[trigger]})
+    assert.deepEqual(await f.source.discover({since:10,until:15}),{mentions:[sent]})
   }
   const f=await setup([user,hits(items),ok({items}),{ok:false,error:{code:9999}}],{options})
   await assert.rejects(f.source.discover({since:10,until:15}),{code:'source-unavailable'})
@@ -250,7 +254,7 @@ test('legacy group name lookup checks the binding and one exact group; never lis
 test('feed can read a verified direct mention before approval without granting, receiving or replying',async()=>{
   const result=await setup([user,ok({...group.data,name:'系统群名'}),ok({items:[first]})],{options,mode:'pending'})
   const before=await result.admission.list()
-  assert.deepEqual(await result.source.readMention({...trigger,name:'untrusted',text:'untrusted'}),{...trigger,name:'系统群名',text:'@_user_1 请求核对'})
+  assert.deepEqual(await result.source.readMention({...trigger,name:'untrusted',text:'untrusted',senderId:'ou_untrusted'}),{...sent,name:'系统群名',text:'@_user_1 请求核对'})
   assert.deepEqual(result.received,[]);assert.deepEqual(await result.admission.list(),before)
   await assert.rejects(result.source.consumeMention(trigger),{code:'admission-denied'})
   await assert.rejects(result.source.reply({...delivery,messageId:trigger.messageId}),{code:'admission-denied'})
@@ -279,8 +283,8 @@ test('rich posts use the received paragraphs and the actual mention IDs, never d
       files:[{file_key:'private attachment'}]})}}
   const expected='标题\n@本人 看这里：[例子](https://example.invalid)\nlet x=42'
   const f=await setup([user,hits([row]),ok({items:[row]}),group,user,group,ok({items:[row]})],{options,mode:'pending'})
-  assert.deepEqual((await f.source.discover({since:10,until:15})).mentions,[trigger])
-  assert.deepEqual(await f.source.readMention(trigger),{...trigger,text:expected});assert.deepEqual(f.received,[])
+  assert.deepEqual((await f.source.discover({since:10,until:15})).mentions,[sent])
+  assert.deepEqual(await f.source.readMention(trigger),{...sent,text:expected});assert.deepEqual(f.received,[])
   const approvedPost=await setup([user,group,ok({items:[row]}),...threadContext()],approved)
   assert.deepEqual(await approvedPost.source.consumeMention(trigger),{accepted:1})
   assert.equal(approvedPost.received[0].text,expected)
@@ -323,17 +327,17 @@ test('readMention offers exact pre-fix text only on explicit, unedited name repa
     [{update_time:'bad'},false],[{updated:'false'},false]]) {
     const row={...first,body,mentions,sender:{...first.sender,sender_name:'别人的名字'},...patch}
     const f=await setup([named,group,ok({items:[row]}),named,group,ok({items:[row]})],{options,mode:'pending'})
-    const current={...trigger,text:'@验证本人在吗'}
+    const current={...sent,text:'@验证本人在吗'}
     assert.deepEqual(await f.source.readMention(trigger),current)
     assert.deepEqual(await f.source.readMention(trigger,{legacyText:true}),expected ? {...current,legacyText:'@_user_1在吗'} : current)
     assert.deepEqual(f.received,[])
   }
   const own={...first,body,mentions,sender:{...first.sender,id:config.recipientId,sender_name:'发言本人'}}
   const ownCase=await setup([named,group,ok({items:[own]})],{options,mode:'pending'})
-  assert.deepEqual(await ownCase.source.readMention(trigger),{...trigger,text:'@发言本人在吗',ownerSelfMention:true})
+  assert.deepEqual(await ownCase.source.readMention(trigger),{...trigger,senderId:config.recipientId,text:'@发言本人在吗',ownerSelfMention:true})
   const post={...first,msg_type:'post',mentions,body:{content:JSON.stringify({content:[[{tag:'at',user_id:'@_user_1'}]]})}}
   const postCase=await setup([user,group,ok({items:[post]})],{options,mode:'pending'})
-  assert.deepEqual(await postCase.source.readMention(trigger,{legacyText:true}),{...trigger,text:'@你',legacyText:'@_user_1'})
+  assert.deepEqual(await postCase.source.readMention(trigger,{legacyText:true}),{...sent,text:'@你',legacyText:'@_user_1'})
 })
 
 test('formatting does not change which requests fit the intake limit',async()=>{
@@ -341,7 +345,7 @@ test('formatting does not change which requests fit the intake limit',async()=>{
     ['@_user_1 '+'a'.repeat(65527),'very long owner name',true],['@_user_1 '+'a'.repeat(65528),'你',false]]) {
     const row={...first,body:{content:JSON.stringify({text})},mentions:[{...first.mentions[0],key:'@_user_1',name}]}
     const f=await setup([user,group,ok({items:[row]})],{options,mode:'pending'})
-    assert.deepEqual(await f.source.readMention(trigger,{legacyText:true}),admitted ? {...trigger,text} : null)
+    assert.deepEqual(await f.source.readMention(trigger,{legacyText:true}),admitted ? {...sent,text} : null)
   }
 })
 
@@ -366,4 +370,36 @@ test('only the recorded pre-grant request can receive a reply, at its verified c
     await assert.rejects(f.source.reply({...request,messageId:row.message_id}))
     assert.ok(f.calls.every(c=>!c.argv.includes('+messages-reply')))
   }
+})
+
+test('under a grant for one member, intake and replies accept only that member’s exact messages',async()=>{
+  const responses=[], f=await setup(responses,{options,trigger:sent,now:20,mode:'pending'})
+  await f.admission.recordMention({...sent,text:'请求核对'},options.automationSince)
+  await f.admission.update({action:'sender',chatId,threadId:root,messageId:trigger.messageId})
+  const request={...delivery,messageId:trigger.messageId,requesterId:'ou_requester'}
+  // Without the member, or naming someone else, the grant does not apply and nothing is read.
+  for(const ref of [trigger,{...sent,senderId:'ou_other'}])
+    await assert.rejects(f.source.consumeMention(ref),{code:'admission-denied'})
+  for(const requesterId of [undefined,'ou_other'])
+    await assert.rejects(f.source.reply({...request,requesterId}),{code:'admission-denied'})
+  assert.deepEqual(f.calls,[])
+  // The member's approved request and their later messages are received.
+  responses.push(user,group,ok({items:[first]}),...threadContext())
+  assert.deepEqual(await f.source.consumeMention(sent),{accepted:1})
+  const later=msg({message_id:'om_later',root_id:root,create_time:'21'})
+  responses.push(user,group,ok({items:[later]}),...threadContext())
+  assert.deepEqual(await f.source.consumeMention({...sent,messageId:'om_later',at:21}),{accepted:1})
+  assert.deepEqual(f.received.map(e=>[e.messageId,e.senderId]),[[trigger.messageId,'ou_requester'],['om_later','ou_requester']])
+  // A discovery ref claiming the member cannot admit a message another person actually wrote.
+  const impostor=msg({message_id:'om_impostor',root_id:root,create_time:'22',sender:{...first.sender,id:'ou_other'}})
+  responses.push(user,group,ok({items:[impostor]}))
+  assert.deepEqual(await f.source.consumeMention({...sent,messageId:'om_impostor',at:22}),{accepted:0})
+  assert.equal(f.received.length,2);assert.equal(responses.length,0)
+  // Replies: the member's own message is answered; another author's is refused before sending.
+  responses.push(user,group,grants,ok({items:[impostor]}))
+  await assert.rejects(f.source.reply({...request,messageId:'om_impostor'}),{code:'source-unavailable'})
+  assert.ok(!f.calls.some(c=>c.argv.includes('+messages-reply')))
+  responses.push(user,group,grants,ok({items:[first]}),ok({message_id:'om_sent',chat_id:chatId}))
+  assert.deepEqual(await f.source.reply(request),{chatId,messageId:'om_sent',inReplyTo:trigger.messageId})
+  assert.equal(responses.length,0)
 })

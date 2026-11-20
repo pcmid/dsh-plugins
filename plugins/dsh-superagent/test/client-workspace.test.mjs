@@ -104,7 +104,7 @@ test('SuperAgent is a standalone named global settings page; successful settings
   let allow=true
   // The attention indicator starts polling as an effect; run it explicitly below.
   const ctx={slots:{inject:(name,run)=>run(),register:(slot,page)=>slots.set(slot.name,{...slot,page})},
-    effect:(fn,label)=>/attention/.test(label) ? deferred.push(label) : fn(),on:()=>()=>{},
+    effect:(fn,label)=>/attention/.test(label) ? deferred.push(label) : fn(),on:()=>()=>{},get:()=>undefined,
     locale:{register(){},bind:()=>()=> 'SuperAgent'},uiWorkspace:{openSession:id=>calls.push(id)},
     connection:{rpc:{call:async(_base,path)=>{calls.push(path);return allow?{ok:true,value:{}}:{ok:false,error:{code:'forbidden'}}}}}}
   new Function(source+';return applySuperagent')()(ctx)
@@ -119,8 +119,9 @@ test('SuperAgent is a standalone named global settings page; successful settings
   assert.equal(settingsOnly,true)
   assert.equal(main.inject().settingsOnly,undefined)
   assert.deepEqual(calls,[]) // Registration does not load cases or begin authorization.
-  main.inject().ops.openSession('historical-session')
+  await main.inject().ops.openSession('historical-session')
   assert.deepEqual(calls,['historical-session'])
+  assert.equal(main.inject().ops.openMenu,undefined,'without the shared menu the approval choices stay plain buttons')
   let changed=0
   const off=main.inject().ops.onSettingsChange(()=>changed++)
   await ops.ask('settingsSnapshot',{})
@@ -136,6 +137,45 @@ test('SuperAgent is a standalone named global settings page; successful settings
   allow=true
   await ops.ask('saveFeishu',{})
   assert.equal(changed,2)
+})
+
+function mountWith(services,uiWorkspace) {
+  const slots=new Map()
+  new Function(source+';return applySuperagent')()({slots:{inject:(name,run)=>run(),register:(slot,page)=>slots.set(slot.name,{...slot,page})},
+    effect:(fn,label)=>/attention/.test(label) ? undefined : fn(),on:()=>()=>{},get:name=>services[name],
+    locale:{register(){},bind:()=>()=> 'SuperAgent'},uiWorkspace,connection:{rpc:{call:async()=>({ok:true,value:{}})}}})
+  return slots.get('main').inject().ops
+}
+test('opening an archived worker session restores it to the sidebar first; an active one opens directly',async()=>{
+  const calls=[],archivedSessionIds=['archived-seat']
+  const ui={unarchiveSession:async id=>{calls.push(['unarchive-start',id]);await new Promise(r=>setTimeout(r,5));calls.push(['unarchive-done',id])},
+    openSession:id=>calls.push(['open',id])}
+  const ops=mountWith({workspaces:{list:{getSnapshot:()=>({archivedSessionIds})}}},ui)
+  await ops.openSession('archived-seat')
+  assert.deepEqual(calls,[['unarchive-start','archived-seat'],['unarchive-done','archived-seat'],['open','archived-seat']])
+  calls.length=0;await ops.openSession('active-seat')
+  assert.deepEqual(calls,[['open','active-seat']])
+  // Without the workspace list (or its snapshot) nothing is restored, and the session still opens.
+  for(const services of [{},{workspaces:{}},{workspaces:{list:{getSnapshot:()=>undefined}}}]) {
+    calls.length=0;await mountWith(services,ui).openSession('archived-seat')
+    assert.deepEqual(calls,[['open','archived-seat']])
+  }
+  // A failed restore does not open the session.
+  calls.length=0
+  const failing=mountWith({workspaces:{list:{getSnapshot:()=>({archivedSessionIds})}}},{...ui,unarchiveSession:async()=>{throw Error('offline')}})
+  await assert.rejects(failing.openSession('archived-seat'),/offline/);assert.deepEqual(calls,[])
+})
+test('approval dropdowns use the shared DSH menu: registration by kind and an anchored popup',async()=>{
+  const registered=[],opened=[],off=()=>{}
+  const ops=mountWith({contextMenus:{register:entry=>{registered.push(entry);return off},open:(target,point)=>opened.push([target,point]),notify(){}}},{})
+  const value={key:'k',menu:'allow'}
+  assert.equal(ops.registerMenu('pcmid-superagent.approval','superagent-approval',v=>['resolved',v]),off)
+  assert.deepEqual(registered.map(({id,target,order})=>({id,target,order})),[{id:'pcmid-superagent.approval',target:'superagent-approval',order:0}])
+  assert.deepEqual(registered[0].resolve(value),['resolved',value])
+  ops.openMenu({kind:'superagent-approval',value},{x:1,y:2})
+  assert.deepEqual(opened,[[{kind:'superagent-approval',value},{x:1,y:2}]])
+  const bare=mountWith({},{})
+  assert.equal(typeof bare.registerMenu('id','kind',()=>[]),'function');assert.equal(bare.openMenu,undefined)
 })
 
 test('the sidebar attention dot rereads attention only when the view revision changes and stops cleanly',async()=>{
@@ -269,6 +309,25 @@ test('outbound review names the exact original group and only the current identi
     assert.equal(select(prop,record,message).input,null)
   }
   for(const patch of [{caseId:'other'},{messageId:'om_other'}])assert.equal(select(p,item,{...msg,run:{...run,...patch}}),null)
+})
+
+test('a reply whose access was revoked can only be declined, with one line saying why',()=>{
+  const fake=(type,props,...children)=>({type,props:props ?? {},children:children.flat()})
+  const output=new Function('h','React',source+';return SpaceRunOutput')(fake,{Fragment:'fragment',useRef:()=>({current:null})})
+  const find=(node,match)=>!node || typeof node!=='object' ? [] : [...(match(node) ? [node] : []),...node.children.flatMap(c=>find(c,match))]
+  const text=node=>typeof node==='string' ? node : node && typeof node==='object' ? node.children.map(text).join('') : ''
+  const item={id:'case',feedScopeId:'scope',source:{kind:'feishu',...fixtureSource.settings,chatId:'oc_target',threadId:'om_topic'}}
+  const run={caseId:'case',messageId:'om_in',status:'awaiting-release',outputKind:'answer',releaseToken:'version-1',answer:'最终正文'}
+  const sent=[],p={tr,busy:false,source:{...fixtureSource,groups:[]},mentions:[],releaseOutput:x=>sent.push(x)}
+  const render=r=>output({p,item,message:{kind:'feishu',requestId:'om_in',run:r}})
+  const open=render(run)
+  assert.deepEqual(find(open,n=>n.type==='button').map(text),['确认发送','不发送'])
+  assert.doesNotMatch(text(open),/授权已撤销/)
+  const blocked=render({...run,releaseBlocked:true}),buttons=find(blocked,n=>n.type==='button')
+  assert.deepEqual(buttons.map(text),['不发送'])
+  assert.deepEqual(find(blocked,n=>n.type==='small').map(text),['授权已撤销，只能选择不发送。'])
+  buttons[0].props.onClick()
+  assert.deepEqual(sent,[{caseId:'case',messageId:'om_in',token:'version-1',action:'decline'}])
 })
 
 test('only details share outbound review: full answer before the destination and decision, never a composer or blind approval',()=>{

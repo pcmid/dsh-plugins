@@ -37,8 +37,72 @@ test('list and detail use independent group links and submit the same exact ment
   assert.match(String(link),/tr\('飞书会话','Feishu conversation'\)/)
   assert.match(String(link),/encodeURIComponent\(chatId\)/)
   assert.match(String(actions),/if\(!mention\?\.canApprove\)return null/)
-  assert.match(String(actions),/button\('once','批准一次'/)
-  assert.match(String(actions),/button\('permanent','永久允许此会话'/)
+  assert.match(String(actions),/dropdown\('allow','授权','Allow'\),dropdown\('ignore','忽略','Ignore'\)/)
+  const input=new Function(src+';return spaceApprovalInput')(),ref={scopeId:'s',chatId:'oc_x',threadId:'om_t',messageId:'om_m'}
+  assert.deepEqual(input(ref,'ignore'),{scopeId:'s',chatId:'oc_x',action:'ignore'})
+  // The member is never named by the browser; the Host takes it from the recorded message.
+  for(const action of ['once','permanent','sender','dismiss'])
+    assert.deepEqual(input({...ref,senderId:'ou_member',text:'body'},action),{...ref,action})
+})
+
+const fake=(type,props,...children)=>({type,props:props ?? {},children:children.flat()})
+const view=new Function('h','React',src+`;return {approval:SpaceApproval,actions:spaceApprovalActions,key:spaceMentionKey,
+  group:SpaceGroup,groups:SpaceSourceGroups,label:spaceGrantLabel,workspace:EditionWorkspace}`)(fake,{Fragment:'fragment'})
+const find=(node,match)=>!node || typeof node!=='object' ? [] : [...(match(node) ? [node] : []),...node.children.flatMap(c=>find(c,match))]
+const text=node=>typeof node==='string' ? node : node && typeof node==='object' ? node.children.map(text).join('') : ''
+
+test('a pending message offers Allow and Ignore dropdowns; Allow this user only appears with a recorded sender',()=>{
+  const tr=zh=>zh, mention={scopeId:'s',chatId:'oc_x',threadId:'om_t',messageId:'om_m',canApprove:true,senderId:'ou_member'}
+  assert.deepEqual(view.actions(mention,'allow',tr),[{id:'once',label:'授权一次'},{id:'permanent',label:'永久授权'},{id:'sender',label:'仅授权此用户'}])
+  const {senderId:_,...unknown}=mention
+  assert.deepEqual(view.actions(unknown,'allow',tr).map(a=>a.id),['once','permanent'])
+  assert.deepEqual(view.actions(mention,'ignore',tr),[{id:'dismiss',label:'忽略一次'},{id:'ignore',label:'永久忽略'}])
+  assert.deepEqual(view.actions(unknown,'ignore',tr).map(a=>a.id),['dismiss','ignore'])
+  const sent=[],opened=[],returnFocus={current:{focus:()=>sent.push('focus')}}
+  const p={tr,busy:false,groupAccess:x=>sent.push(x),openMenu:(target,point)=>opened.push([target,point])}
+  // Each dropdown opens the shared DSH menu below itself; opening one decides nothing.
+  const menus=find(view.approval({p,mention,returnFocus}),n=>n.type==='button')
+  assert.deepEqual(menus.map(b=>[b.children[0],b.props['aria-haspopup']]),[['授权','menu'],['忽略','menu']])
+  menus.forEach((b,i)=>b.props.onClick({currentTarget:{getBoundingClientRect:()=>({left:10+i,bottom:40})}}))
+  assert.deepEqual(opened,['allow','ignore'].map((menu,i)=>[{kind:'superagent-approval',value:{key:view.key(mention),menu}},{x:10+i,y:40}]))
+  assert.deepEqual(sent,[])
+  assert.ok(find(view.approval({p:{...p,busy:true},mention,returnFocus}),n=>n.type==='button').every(b=>b.props.disabled))
+  // Without the shared menu the same choices are plain buttons; ignoring permanently names the conversation only.
+  const plain=find(view.approval({p:{...p,openMenu:undefined},mention,returnFocus}),n=>n.type==='button')
+  assert.deepEqual(plain.map(text),['授权一次','永久授权','仅授权此用户','忽略一次','永久忽略'])
+  plain.forEach(b=>b.props.onClick())
+  const ref={scopeId:'s',chatId:'oc_x',threadId:'om_t',messageId:'om_m'}
+  assert.deepEqual(sent.filter(x=>x!=='focus'),[...['once','permanent','sender','dismiss'].map(action=>({...ref,action})),{scopeId:'s',chatId:'oc_x',action:'ignore'}])
+  assert.deepEqual(find(view.approval({p:{...p,openMenu:undefined},mention:unknown,returnFocus}),n=>n.type==='button').map(text),
+    ['授权一次','永久授权','忽略一次','永久忽略'])
+  assert.equal(view.approval({p,mention:{...mention,canApprove:false},returnFocus}),null)
+  // The workspace registers the menu once; it resolves only a still-approvable mention and submits the same input.
+  const ui=String(view.workspace)
+  assert.match(ui,/p\.registerMenu\?\.\('pcmid-superagent\.approval','superagent-approval',\(\{key,menu\}\)=>\{/)
+  assert.match(ui,/mentions\.find\(m=>m\.canApprove && spaceMentionKey\(m\)===key\)/)
+  assert.match(ui,/spaceApprovalActions\(mention,menu,tr\)\.map\(a=>\(\{\.\.\.a,run:\(\)=>groupAccess\(spaceApprovalInput\(mention,a\.id\)\)\}\)\) : \[\]/)
+})
+
+test('settings show each allowed member apart from always-allowed and ignored conversations; revoking a member names that member',()=>{
+  const tr=zh=>zh, calls=[], at=Date.UTC(2026,0,1)
+  const rows=[{chatId:'oc_a',mode:'permanent',approvedAt:at,grantId:'g1'},{chatId:'oc_b',mode:'sender',senderId:'ou_y',note:'帮我看下报表',approvedAt:at,grantId:'g2'},
+    {chatId:'oc_b',mode:'sender',senderId:'ou_z',approvedAt:at,grantId:'g3'},{chatId:'oc_c',mode:'once',threadId:'om_t',approvedAt:at,grantId:'g4'},
+    {chatId:'oc_d',mode:'pending',threadId:'om_p'},{chatId:'oc_e',mode:'ignored',ignoredAt:at}]
+  const p={tr,busy:false,source:{scopeId:'scope',groups:rows},groupAccess:x=>calls.push(x)}
+  const sections=find(view.groups({p}),n=>n.type==='section')
+  const listed=sections.map(s=>find(s,n=>n.type===view.group).map(n=>[n.props.key,n.props.group.mode,n.props.label]))
+  const time=new Date(at).toLocaleString('zh-CN',{year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})
+  assert.deepEqual(listed,[[['oc_a','permanent',time+' 起永久允许'],['oc_bou_y','sender','仅允许一位成员（发送「帮我看下报表」的人） · '+time+' 起'],
+    ['oc_bou_z','sender','仅允许一位成员 · '+time+' 起']],[['oc_e','ignored',time+' 起忽略']]])
+  assert.equal(view.label({mode:'sender',note:'帮我看下报表'},tr),'仅允许一位成员（发送「帮我看下报表」的人）')
+  assert.equal(view.label({mode:'sender'},tr),'仅允许一位成员')
+  for(const g of rows.filter(g=>['permanent','sender','ignored'].includes(g.mode))) {
+    const [button]=find(view.group({p,group:g,label:''}),n=>n.type==='button')
+    assert.equal(text(button),g.mode==='ignored' ? '取消忽略' : '撤销授权')
+    button.props.onClick()
+  }
+  assert.deepEqual(calls,[{scopeId:'scope',chatId:'oc_a',action:'revoke'},{scopeId:'scope',chatId:'oc_b',action:'revoke',senderId:'ou_y'},
+    {scopeId:'scope',chatId:'oc_b',action:'revoke',senderId:'ou_z'},{scopeId:'scope',chatId:'oc_e',action:'revoke'}])
 })
 
 test('settings list each always-allowed conversation once, never per-topic approvals, and revoke the whole conversation',()=>{
@@ -46,9 +110,14 @@ test('settings list each always-allowed conversation once, never per-topic appro
   assert.match(label({mode:'permanent',approvedAt:Date.UTC(2026,0,1)},tr),/起永久允许$/)
   assert.equal(label({mode:'permanent'},tr),'已永久允许此会话')
   const [,group,groups]=panels.map(String)
-  assert.match(groups,/source\.groups\.filter\(group=>group\.mode==='permanent'\)/)
+  assert.match(groups,/source\.groups\.filter\(group=>\['permanent','sender'\]\.includes\(group\.mode\)\)/)
   assert.match(groups,/key:group\.chatId/);assert.doesNotMatch(groups,/'once'|threadId/)
-  assert.match(group,/action:'revoke'\}\)/);assert.doesNotMatch(group,/threadId/)
+  assert.match(group,/action:'revoke',\.\.\.\(mode==='sender' \? \{senderId\} : \{\}\)\}\)/);assert.doesNotMatch(group,/threadId/)
+  // Ignored conversations are listed apart and can be undone.
+  assert.match(label({mode:'ignored',ignoredAt:Date.UTC(2026,0,1)},tr),/起忽略$/)
+  assert.equal(label({mode:'ignored'},tr),'已忽略此会话')
+  assert.match(groups,/source\.groups\.filter\(group=>group\.mode==='ignored'\)/);assert.match(groups,/tr\('已忽略的会话'/)
+  assert.match(group,/mode==='ignored' \? tr\('取消忽略'/)
 })
 test('the poll log localizes the stored timestamp, step, cause and optional numeric Feishu error code only',()=>{
   const {rows,stages,reasons}=new Function(src+';return {rows:spacePollLogRows,stages:spacePollStages,reasons:spacePollReasons}')()
@@ -84,7 +153,7 @@ test('an actual historical log remains expandable independently of current conne
   assert.match(source,/connected && spaceSourceStatus\(source,tr\)/)
   assert.match(source,/^\s*h\(SpacePollLog,\{records:source\.pollErrors,tr\}\),/m)
   assert.doesNotMatch(groups,/SpacePollLog|pollErrors|source\.detail/)
-  assert.match(source,/内部群.*与自己的聊天.*私聊中明确 @自己.*批准一次/);assert.match(source,/internal group.*self-chat.*Approve once/)
+  assert.match(source,/内部群.*与自己的聊天.*私聊中明确 @自己.*授权一次/);assert.match(source,/internal group.*self-chat.*Allow once/)
 })
 test('self-chat and group records use their verified names or neutral conversation labels; the grant target does not depend on the name',()=>{
   const {origin,grant,detail,input}=new Function(src+';return {origin:spaceOrigin,grant:spaceGrantLabel,detail:SpaceActivityDetail,input:spaceApprovalInput}')()
@@ -107,7 +176,7 @@ test('private intake is an explicit versioned switch; even self-chat still needs
   assert.match(c,/save\(\{version:settings\.version,allowPrivateChats:next\}\)/)
   assert.match(c,/对方私聊你无需 @/);assert.match(c,/群里别人 @你.*在「动态」中待批.*不会补收/)
   assert.match(String(panels[0]),/canEnable:connected && source\.automationEnabled/)
-  assert.match(String(panels[0]),/批准一次.*对外发送仍遵守你的确认设置/)
+  assert.match(String(panels[0]),/授权一次.*对外发送仍遵守你的确认设置/)
   assert.match(runtime,/setPrivateChats:input=>change\('setPrivateChats',input\)/)
   const rows=new Function(src+';return spacePollLogRows')()([{at:1,stage:'history',reason:'context-too-large'}],cn=>cn)
   assert.equal(rows[0].reason,'线程内容过长，未交给助手')

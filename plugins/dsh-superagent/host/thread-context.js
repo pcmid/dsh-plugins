@@ -91,7 +91,8 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
   }
   async function addHistory(event,target,grant,group,{count,minutes}) {
     const {chatId,threadId:root,messageId}=event, at=Number(target.create_time)
-    if (grant.chatId!==chatId || !(grant.mode==='permanent' || grant.mode==='once' && grant.threadId===root)) throw bad()
+    // A member grant covers the whole conversation for that author; exactEvent has already checked the sender.
+    if (grant.chatId!==chatId || !(['permanent','sender'].includes(grant.mode) || grant.mode==='once' && grant.threadId===root)) throw bad()
     const s=scope(chatId,group)
     let container=containerOf(target), anchor
     if (root!==messageId) {

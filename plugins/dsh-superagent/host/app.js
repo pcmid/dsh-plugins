@@ -12,7 +12,7 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
     isQuestionReply:(...args)=>loop?.isQuestionReceipt(...args) ?? false,waitingQuestions:binding=>loop?.waitingQuestions(binding) ?? [],
     resumeQuestion:(job,reply)=>loop?.resumeQuestion(job,reply),runCli,managedDir,authFactory,onChange:changed})
   const guarded=fn=>async input=>{
-    await channel.assertAutomation(input.source,input.signal)
+    await channel.assertAutomation(input.source,input.signal,input.requesterId)
     input.signal?.throwIfAborted()
     return fn(input)
   }

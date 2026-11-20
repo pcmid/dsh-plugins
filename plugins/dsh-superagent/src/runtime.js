@@ -171,7 +171,7 @@ function SpaceConnected({ops,tr,settingsOnly,menu}) {
   if(settingsOnly) return h('div',{className:'sx2'},p.error && h('p',{role:'alert'},p.error),
     h(SpaceSettings,{p,source:tab==='source',show:setTab}));
   return h(EditionWorkspace,{...p,cases:spaceWithRuns(p.cases,p.automation),openSession:ops.openSession,refreshing,
-    menu,registerCaseMenu:ops.registerCaseMenu,notify:ops.notify,retainSession:ops.retainSession,
+    menu,registerCaseMenu:ops.registerCaseMenu,registerMenu:ops.registerMenu,openMenu:ops.openMenu,notify:ops.notify,retainSession:ops.retainSession,
     reload:()=>spaceRefreshWorkspace(reload,readRoster,{active,pending:manualPending,setRefreshing})});
 }
 // Whether SuperAgent needs the owner, for the sidebar icon. Polls the cheap view revision and
@@ -211,10 +211,17 @@ function applySuperagent(ctx) {
   const changes=new EventTarget(),t=ctx.locale.bind(ns),ops={
     ask:(endpoint,input)=>spaceCall(ctx,endpoint,input),
     presets:()=>ctx.remote.agentPresets.list(),presetText:ctx.locale.bind('settings.agentPreset'),
-    openSession:id=>ctx.uiWorkspace.openSession(id),
+    // DSH does not open an archived session, so restore it to the sidebar first.
+    openSession:async id=>{
+      if(ctx.get?.('workspaces')?.list?.getSnapshot()?.archivedSessionIds?.includes(id)) await ctx.uiWorkspace.unarchiveSession(id);
+      ctx.uiWorkspace.openSession(id);
+    },
     // Read-only follow of a seat's native event stream; released when the case view unmounts.
     retainSession:id=>ctx.get('sessions')?.retain(id,{source:'superagentCase'}),
     registerCaseMenu:resolve=>ctx.get('contextMenus')?.register({id:'pcmid-superagent.case',target:'superagent-case',order:0,resolve:value=>resolve(value)}) ?? (()=>{}),
+    registerMenu:(id,kind,resolve)=>ctx.get('contextMenus')?.register({id,target:kind,order:0,resolve:value=>resolve(value)}) ?? (()=>{}),
+    // The shared DSH menu popup, anchored below a dropdown button.
+    openMenu:ctx.get('contextMenus') ? (target,point)=>ctx.get('contextMenus').open(target,point) : undefined,
     notify:text=>ctx.get('contextMenus')?.notify(text,true),
     onReset:listener=>ctx.on('connection/reset',listener),
     onSettingsChange:listener=>{changes.addEventListener('change',listener);return ()=>changes.removeEventListener('change',listener)},

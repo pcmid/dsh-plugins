@@ -16,6 +16,8 @@ const row=(message_id,chat_id,sender,text)=>({message_id,chat_id,create_time:'20
   body:{content:JSON.stringify({text})}})
 const m=row(id,own,me,'hand-written self mention'), g=row(gid,group,'ou_user','hello')
 const ref={chatId:own,messageId:id,threadId:id,at:200,ownerSelfMention:true}, gref={chatId:group,messageId:gid,threadId:gid,at:200,name:'team'}
+// Discovery adds the verified author of each mention.
+const found={...ref,senderId:me}, gfound={...gref,senderId:'ou_user'}
 const flag=(argv,k)=>argv[argv.indexOf(k)+1]
 
 function fixture({granted=true,maps=()=>[proof],project=(_args,data)=>ok(data),denyFirstBatch=false,target=m}={}) {
@@ -90,10 +92,10 @@ function dry(t) {
 test('real CLI projections: both self-chat endpoints must match; a peer DM never enters mget, exact reads, history or reply',async t=>{
   const project=dry(t);if(!project)return
   const f=fixture({project})
-  assert.deepEqual(await f.discover(),{mentions:[gref,{...ref,name:'与自己的聊天'}]})
+  assert.deepEqual(await f.discover(),{mentions:[gfound,{...found,name:'与自己的聊天'}]})
   assert.deepEqual(f.batches,[[id,gid]]);assert.equal(f.searches[0].chat_type,undefined)
   assert.deepEqual(f.lookups,[group]);assert.deepEqual(f.events,[])
-  assert.deepEqual(await f.source.readMention(ref),{...ref,text:'hand-written self mention',name:'与自己的聊天'})
+  assert.deepEqual(await f.source.readMention(ref),{...found,text:'hand-written self mention',name:'与自己的聊天'})
   f.setMode('permanent')
   await f.source.consumeMention(ref)
   assert.deepEqual(JSON.parse(f.events[0].workerContext),[{speaker:'requester',at:100,text:'self history'}])
@@ -105,7 +107,7 @@ test('real CLI projections: both self-chat endpoints must match; a peer DM never
 test('host also rejects unclassified or peer hits before mget; wrong/ambiguous mapping warns but does not suppress groups',async()=>{
   for(const forged of [[{...proof,chatter_id2:'ou_other'}],[{...proof,chatter_id1:'ou_other'}],[proof,proof]]){
     const f=fixture({maps:count=>count===1 ? forged : [proof]})
-    assert.deepEqual(await f.discover(),{mentions:[gref]})
+    assert.deepEqual(await f.discover(),{mentions:[gfound]})
     assert.deepEqual(f.batches,[[gid]]);assert.deepEqual(f.warnings,[['group','invalid-response',undefined]])
     assert.equal(f.searches[0].chat_type,'group')
     assert.equal((await f.discover()).mentions.length,2)
@@ -122,7 +124,7 @@ test('old OAuth remains group-only, logs missing scope once, and never looks up 
 
 test('permission revoked during mixed mget does not stall existing groups or expand the retry',async()=>{
   const f=fixture({denyFirstBatch:true})
-  assert.deepEqual(await f.discover(),{mentions:[gref]})
+  assert.deepEqual(await f.discover(),{mentions:[gfound]})
   assert.deepEqual(f.batches,[[id,gid],[gid]])
   assert.deepEqual(f.warnings,[['metadata','api-error',230027]])
   assert.equal((await f.discover()).mentions.length,2)

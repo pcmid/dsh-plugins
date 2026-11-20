@@ -11,6 +11,8 @@ const config={enabled:true,profile:'fixture',recipientId:me,tenantId:'tenant',au
   allowPrivateChats:true,privateChatsSince:epoch,historyCount:0}
 const privateProof={privatePeerId:peer,privateChatsSince:epoch}
 const ref={chatId:dm,messageId,threadId:messageId,at,...privateProof}
+// Discovery and reads add the verified author from the CLI row.
+const found={...ref,senderId:peer}
 const request={source:{kind:'feishu',tenantId:'tenant',recipientId:me,threadId:messageId,chatId:dm,...privateProof},
   messageId,text:'reviewed answer',idempotencyKey:'once-only'}
 const scope='im:message.p2p_msg:get_as_user',base='/open-apis/im/v1/messages',mapping='/open-apis/im/v1/chat_p2p/batch_query',chatDetails='/open-apis/im/v1/chats/batch_query'
@@ -90,12 +92,12 @@ test('only incoming mapped 1:1 peers enter (including a different tenant), never
     {...origin,message_id:'om_spoofed',sender:{...origin.sender,id:'ou_changed'}}]
   const hits=rows.map(r=>hit(r,r.message_id==='om_spoofed' ? peer : r.sender.id,r.message_id!=='om_group'))
   const f=fixture({rows,hits,next:'opaque'})
-  assert.deepEqual(await f.source.discoverPrivate(window),{mentions:[ref],nextPageToken:'opaque'})
+  assert.deepEqual(await f.source.discoverPrivate(window),{mentions:[found],nextPageToken:'opaque'})
   const batch=JSON.parse(flag(f.calls.find(a=>a.includes(base+'/mget')),'--params')).message_ids
   assert.deepEqual(batch,[messageId,'om_old','om_answer','om_owner','om_bot','om_spoofed'])
   assert.ok(!f.calls.some(a=>a.includes(chatDetails))) // Ordinary outgoing speech does not even trigger partner lookup.
   assert.deepEqual(f.events,[]);assert.ok(!f.calls.some(a=>a.includes(base+'/'+messageId)))
-  assert.deepEqual(await f.source.readMention(ref),{...ref,text:'plain request'})
+  assert.deepEqual(await f.source.readMention(ref),{...found,text:'plain request'})
   assert.deepEqual(await f.source.consumeMention(ref,'approved text'),{accepted:1})
   assert.deepEqual(f.events.map(e=>[e.senderId,e.text,e.privatePeerId,e.privateChatsSince]),[[peer,'approved text',peer,epoch]])
   // Delivery after restart knows no cached chat catalog: proof comes from the durable grant and a fresh pair lookup.
@@ -105,7 +107,7 @@ test('only incoming mapped 1:1 peers enter (including a different tenant), never
 })
 
 const owner={...origin,sender:{...origin.sender,id:me,tenant_key:'tenant'},mentions:[{id:me,tenant_key:'tenant',id_type:'open_id'}]}
-const ownRef={...ref,ownerSelfMention:true}
+const ownRef={...ref,ownerSelfMention:true}, ownFound={...ownRef,senderId:me}
 
 test('owner self-mention in a peer DM requires a chat→peer lookup, bilateral proof and exact original self-mention',async()=>{
   const junk=[{message_id:'om_plain',mentions:[],body:{content:'{"text":"@me"}'}},
@@ -114,10 +116,10 @@ test('owner self-mention in a peer DM requires a chat→peer lookup, bilateral p
     {message_id:'om_answer',root_id:messageId,parent_id:'om_question'}]
   const f=fixture({rows:[owner,...junk.map(x=>({...owner,...x}))],exact:[owner],
     grant:{approvedAt:at+10,triggers:[ownRef]}})
-  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[ownRef])
+  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[ownFound])
   const paths=f.calls.map(a=>a[4])
   assert.ok(paths.indexOf(chatDetails)>paths.indexOf(base+'/mget'));assert.ok(paths.lastIndexOf(mapping)>paths.indexOf(chatDetails))
-  assert.deepEqual(await f.source.readMention(ref),{...ownRef,text:'plain request'})
+  assert.deepEqual(await f.source.readMention(ref),{...ownFound,text:'plain request'})
   assert.deepEqual(await f.source.consumeMention(ownRef),{accepted:1});assert.equal(f.events[0].senderId,me)
   assert.equal((await f.source.reply(request)).messageId,'om_sent')
   for(const details of [[],[{chat_id:dm,chat_mode:'group',p2p_target_id:peer}],
@@ -150,13 +152,13 @@ test('a stored automatic trigger cannot be reused for a changed request or asser
     assert.deepEqual(f.events,[])
   }
   const inbound=fixture({grant:{triggers:[{...ownRef,messageId:'om_unrelated'}]}})
-  assert.deepEqual(await inbound.source.readMention(ref),{...ref,text:'plain request'})
+  assert.deepEqual(await inbound.source.readMention(ref),{...found,text:'plain request'})
   assert.deepEqual(await inbound.source.consumeMention(ref),{accepted:1}) // Same scope, another trigger is not this request.
 })
 
 test('a search index without open IDs only yields bodyless metadata until mapping matches the human sender',async()=>{
   const f=fixture({hits:[hit(origin,'legacy-provider-id')]})
-  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[ref])
+  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[found])
   const n=f.calls.findIndex(a=>a.includes(base+'/mget'))
   assert.ok(n>=0);assert.ok(!flag(f.calls[n],'--jq').includes('body'))
   assert.ok(f.calls.slice(n+1).some(a=>a.includes(mapping)))
@@ -204,7 +206,7 @@ test('installed CLI dry-run checks private search, pair, projected metadata, and
     const raw=invoke(args);assert.ok(!raw.includes(bad));assert.ok(!raw.includes('NEVER_IMPORT_SEARCH_BODY'))
     const out=JSON.parse(raw);assert.equal(out.dry_run,true);return {...out,dry_run:false}
   }
-  for (const [row,expected] of [[origin,ref],[owner,ownRef]]) {
+  for (const [row,expected] of [[origin,found],[owner,ownFound]]) {
     const f=fixture({rows:[{...row,body:{content:JSON.stringify({text:bad})}}],
       exact:[{...owner,mentions:[],body:{content:JSON.stringify({text:bad})}},row],project})
     assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[expected])

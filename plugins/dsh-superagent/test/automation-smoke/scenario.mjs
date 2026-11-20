@@ -13,6 +13,8 @@ import { legacyRound } from './legacy.mjs'
 import { coldTakeover,exerciseTakeover,finishedTakeover } from './takeover.mjs'
 import { failBeforeExit,retryAfterRestart } from './retries.mjs'
 import { mergeAfterRestart,mergeBeforeExit } from './merge.mjs'
+import { ignoreAfterRestart,ignoreBeforeExit } from './ignore.mjs'
+import { memberAfterRestart,memberBeforeExit } from './member.mjs'
 import { chatId,clarificationId,declineId,fakeFeishu,firstId,followupId,foreignMessageId,messageId,otherDM,peerSelfId,privateMessageId,questionId,receiptId,root,selfChatId,selfMessageId,selfReceiptId,source } from './feishu.mjs'
 import { answer,forbiddenAnswer,ownerAsk,probes,resultNames,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
 
@@ -465,6 +467,8 @@ export async function verify(ctx,provider,workspacePath) {
       await mergeAfterRestart(ctx,app,provider,transport,saved.merge)
       await replayAndDM(ctx,app,provider,transport,await app.snapshot(),saved.retry)
       await finishedTakeover(ctx,app)
+      await ignoreAfterRestart(app,provider,transport,saved.ignore)
+      await memberAfterRestart(app,provider,transport,saved.member)
       await checkSoftStops(ctx,app,provider,transport)
       console.log('PASS result tools: only the active seat saw its result tools, invalid answer returned an error and was corrected in one turn; both same-step submissions succeeded and only the last question/answer was retained for release. An ordinary tail call ran without an extra send or repeated execution on cold continuation.')
       await legacyRound(ctx,workspacePath,actors)
@@ -476,13 +480,15 @@ export async function verify(ctx,provider,workspacePath) {
       const takeover=await exerciseTakeover(ctx,app,provider,transport)
       const archival=await archiveDuringWork(ctx,app,provider,transport)
       await failBeforeExit(app,provider,transport)
+      const ignore=await ignoreBeforeExit(app,provider,transport)
+      const member=await memberBeforeExit(app,provider,transport)
       const merge=await mergeBeforeExit(ctx,app,provider,transport)
       await reopen() // A cold exit interrupts the merged follow-up the worker is still running.
       assert.equal(provider.mergeCancelled,merge.workerId)
       const {automation,cases,mentions}=await app.snapshot()
       const retry={router:provider.retryRouterId,worker:provider.retryWorkerId,seal:provider.retrySeal}
       // This is only expected evidence and synthetic Lark input. DSH persists its own cases, queue and sessions.
-      await writeFile(checkpoint,JSON.stringify({config,rows:transport.rows,automation,cases,mentions,retry,takeover,archival,merge}))
+      await writeFile(checkpoint,JSON.stringify({config,rows:transport.rows,automation,cases,mentions,retry,takeover,archival,merge,ignore,member}))
       console.log('PASS automation: prepare; installed DSH 0.2.2-rc.3 offline. Owner group self-mention acquired a once grant without a click; an earlier pending mention was not run; Router and worker saw the identical complete admitted thread, including the root and 14 old lines over multiple pages, no sibling. Two distinct questions awaited approval, zero posts. Peer DMs disabled.')
     }
   } finally {await app.dispose();await store.close();assert.ifError(provider.error);assert.ifError(transport.error)}
