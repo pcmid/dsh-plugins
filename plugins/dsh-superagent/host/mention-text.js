@@ -5,6 +5,10 @@ const nameOf = value => typeof value==='string' && value.trim() ? value : undefi
 export const imageKey = key => typeof key==='string' && /^img_[\w-]{1,256}$/.test(key)
 // The same image always gets the same marker, in every message and round that mentions it.
 export const imageMarker = key => '[图片 #'+createHash('sha256').update(key).digest('hex').slice(0,6)+']'
+export const fileKey = key => typeof key==='string' && /^file_[\w-]{1,256}$/.test(key)
+// A file reads as its name and a stable tag; brackets and line breaks in the name cannot fake another marker.
+export const fileName = name => typeof name==='string' ? name.replace(/[\u0000-\u001f\u007f[\]#]/g,' ').replace(/\s+/g,' ').trim().slice(0,120) : ''
+export const fileMarker = (key,name) => '[文件 '+(fileName(name) || '未命名')+' #'+createHash('sha256').update(key).digest('hex').slice(0,6)+']'
 const token=/^@_user_[0-9]+$/
 function display(key,mentions,scope,inline) {
   const m=mentions.get(key), name=nameOf(m?.name) ?? nameOf(inline)

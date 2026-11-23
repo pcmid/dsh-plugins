@@ -14,9 +14,9 @@ const accessErrors = new Set(['admission-denied','scope-changed','source-unconfi
 const publicFields = ['caseId','messageId','status','attempt','updatedAt','role','presetId','resolvedPresetId',
   'criteria','sessionId','workspaceId','targetWorkspaceId','answer','outputKind','reason','receipt','supplements','mergedInto']
 const storedFields = [...publicFields,'text','context','decisionHistory','source','team','roleModels','releaseNonce','releaseProof',
-  'requesterId','workerContext','workerImages','workerProof','turns','retries','supplementId']
+  'requesterId','workerContext','workerImages','workerFiles','workerProof','turns','retries','supplementId']
 // Later messages merged into this job wait in `supplements` until a worker run takes them in.
-const intakeKeys = ['text','context','team','roleModels','workerContext','workerImages','requesterId','supplements','supplementId']
+const intakeKeys = ['text','context','team','roleModels','workerContext','workerImages','workerFiles','requesterId','supplements','supplementId']
 // Failed work keeps its intake so the owner can retry; a possibly delivered reply is never retried.
 const retryable = j => j.status === 'stopped' || j.status === 'uncertain' && j.reason === 'work-uncertain'
 // The owner can take over a worker session any time except while its reply is being posted.
@@ -55,7 +55,11 @@ const workerContextOK = v => v === undefined || typeof v === 'string' && v.lengt
 const imagesOK = v => v === undefined || Array.isArray(v) && v.length > 0 && v.length <= 100 &&
   v.every(x => only(x,['messageId','key','at']) && message(x.messageId) && matches(x.key,/^img_[\w-]{1,256}$/) && time(x.at)) &&
   new Set(v.map(x => x.key)).size === v.length
-// Later messages add their images; each image is kept once, the newest 100 at most.
+// Files of the conversation by reference, with the name the conversation shows.
+const filesOK = v => v === undefined || Array.isArray(v) && v.length > 0 && v.length <= 100 &&
+  v.every(x => only(x,['messageId','key','name','at']) && message(x.messageId) && matches(x.key,/^file_[\w-]{1,256}$/) &&
+    typeof x.name === 'string' && x.name.length <= 120 && time(x.at)) && new Set(v.map(x => x.key)).size === v.length
+// Later messages add their images and files; each is kept once, the newest 100 at most.
 const joinImages = (...lists) => {
   const seen = new Set(), all = lists.flat().filter(x => x && !seen.has(x.key) && seen.add(x.key)).slice(-100)
   return all.length ? all : undefined
@@ -71,8 +75,9 @@ function pick(obj,keys) { return Object.fromEntries(keys.filter(k => obj[k] !== 
 function incoming(input) {
   if (!input || !ref(input.caseId) || !message(input.messageId) || !sourceOK(input.source) ||
       !prose(input.text,65536) || !contextOK(input.context) || !contextOK(input.decisionHistory) || !routesOK(input) ||
-      !workerContextOK(input.workerContext) || !imagesOK(input.workerImages) || input.requesterId !== undefined && !user(input.requesterId)) fail('invalid-input')
-  return structuredClone({...pick(input,['caseId','messageId','text','context','decisionHistory','roleModels','requesterId','workerContext','workerImages']),
+      !workerContextOK(input.workerContext) || !imagesOK(input.workerImages) || !filesOK(input.workerFiles) ||
+      input.requesterId !== undefined && !user(input.requesterId)) fail('invalid-input')
+  return structuredClone({...pick(input,['caseId','messageId','text','context','decisionHistory','roleModels','requesterId','workerContext','workerImages','workerFiles']),
     source:pick(input.source,sourceKeys),team:pick(input.team,roles),status:'queued',attempt:0,updatedAt:Date.now()})
 }
 
@@ -108,7 +113,7 @@ function validJob(j) {
       !Number.isFinite(j.updatedAt) || (j.reason !== undefined && !reasons.has(j.reason)) ||
       j.retries !== undefined && !(Number.isSafeInteger(j.retries) && j.retries > 0)) return false
   const {status,attempt} = j
-  if (!validTurns(j) || j.requesterId !== undefined && !user(j.requesterId) || !workerContextOK(j.workerContext) || !imagesOK(j.workerImages) ||
+  if (!validTurns(j) || j.requesterId !== undefined && !user(j.requesterId) || !workerContextOK(j.workerContext) || !imagesOK(j.workerImages) || !filesOK(j.workerFiles) ||
       j.workerProof !== undefined && !(digest(j.workerProof) && ref(j.sessionId))) return false
   if (j.decisionHistory !== undefined && (!['queued','deciding'].includes(status) || !contextOK(j.decisionHistory))) return false
   if (status === 'awaiting-release' || status === 'released') {
@@ -216,13 +221,15 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     return jobs[index]
   }
   function stopped(reason) { return {status:'stopped',reason} }
-  // Earlier jobs in the same conversation this message might belong to: the same native thread, or
-  // for a message outside any thread, other such messages in the same chat. Archived cases are excluded.
+  // Earlier jobs in the same discussion this message might belong to: in a native thread, those of that
+  // thread, including the request the thread grew from; for a message outside any thread, other such
+  // messages in the same chat. Each job keeps its own grant, so a follow-up approved separately still
+  // finds the work it follows up on. Archived cases are excluded.
   function related(s,j) {
     const inThread = j.source.threadId !== j.messageId
-    return s.jobs.filter(x => x !== j && x.source.scopeId === j.source.scopeId && sameBinding(x,j.source) &&
+    return s.jobs.filter(x => x !== j && sameBinding(x,j.source) &&
       x.source.chatId === j.source.chatId && workerRoles.includes(x.role) &&
-      (inThread ? x.source.threadId === j.source.threadId : x.source.threadId === x.messageId) &&
+      (inThread ? x.source.threadId === j.source.threadId || x.messageId === j.source.threadId : x.source.threadId === x.messageId) &&
       (openStatuses.includes(x.status) || inThread && x.status === 'delivered'))
   }
   async function openWork(j) {
@@ -240,7 +247,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
   }
   async function execute(j,jobSignal) {
     const key = keyOf(j), signal = jobSignal
-    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','retries','requesterId','workerImages'])),
+    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','retries','requesterId','workerImages','workerFiles'])),
       workerContext:j.workerContext ?? j.context,signal}
     const assignment = pick(j,['role','criteria','attempt','targetWorkspaceId'])
     if (j.status === 'deciding') {
@@ -301,7 +308,8 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
       ? [{messageId:last.replyId,text:last.reply,...user(t.requesterId) && {senderId:t.requesterId}}] : []
     let next = {...t,status:'assigned',attempt:0,supplementId:m.messageId,
       supplements:[...(t.supplements ?? []),...pending,{messageId:m.messageId,text:m.text,...m.requesterId && {senderId:m.requesterId}}].slice(-20),
-      ...m.workerContext !== undefined && {workerContext:m.workerContext},workerImages:joinImages(t.workerImages,m.workerImages)}
+      ...m.workerContext !== undefined && {workerContext:m.workerContext},workerImages:joinImages(t.workerImages,m.workerImages),
+      workerFiles:joinImages(t.workerFiles,m.workerFiles)}
     delete next.answer; delete next.outputKind; delete next.workerProof; delete next.reason; delete next.receipt
     // A question still waiting for the requester is withdrawn; answered rounds stay on record.
     if (t.status === 'waiting-requester') next.turns = t.turns.slice(0,-1)
@@ -429,35 +437,6 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     if (action === 'send') void drain().catch(()=>{})
     return row
   }
-  // Host-only. The adapter verifies live identity, original intake, grant and reply parent before this CAS.
-  function waitingQuestions(binding) {
-    return locked(s=>s.jobs.filter(j=>j.status === 'waiting-requester' && sameBinding(j,binding)).map(j=>({
-      ...structuredClone(pick(j,['caseId','source','messageId','requesterId'])),questionId:j.receipt.messageId,originalText:j.text
-    })))
-  }
-  async function resumeQuestion(job,reply) {
-    const w = structuredClone(job), r = structuredClone(reply)
-    if (!sourceOK(w?.source) || !ref(w.caseId) || !message(w.messageId) || !user(w.requesterId) || !message(w.questionId) ||
-        r?.chatId !== w.source.chatId || r.threadId !== w.source.threadId || r.senderId !== w.requesterId ||
-        r.parentId !== w.questionId || !message(r.messageId) || [w.questionId,w.messageId,w.source.threadId].includes(r.messageId) ||
-        !time(r.at) || !prose(r.text,65536) || !workerContextOK(r.workerContext) || !imagesOK(r.workerImages)) fail('invalid-input')
-    const changed = await locked(async s=>{
-      if (signal.aborted) fail('loop-disposed')
-      const i = s.jobs.findIndex(j=>j.status === 'waiting-requester' && j.caseId === w.caseId && j.messageId === w.messageId &&
-        sameSource(j.source,w.source) && j.requesterId === w.requesterId && j.receipt.messageId === w.questionId)
-      if (i < 0) return false
-      const j = s.jobs[i]
-      if (s.jobs.some(x=>sameBinding(x,j.source) && x.source.chatId === r.chatId &&
-          (x.messageId === r.messageId || x.receipt?.messageId === r.messageId ||
-           x.turns?.some(t=>t.questionId === r.messageId || t.replyId === r.messageId)))) return false
-      const turn = {questionId:w.questionId,replyId:r.messageId,question:j.answer,reply:r.text}
-      await update(s,i,{status:'assigned',attempt:0,...pick(r,['workerContext']),workerImages:joinImages(j.workerImages,r.workerImages),
-        turns:[...j.turns.slice(0,-1),turn]})
-      return true
-    })
-    if (changed) void drain().catch(()=>{})
-    return changed
-  }
   // Owner-only. No worker role: route again. A worker role: start that worker again on its own session.
   async function retry(command,fallback) {
     if (!only(command,['caseId','messageId']) || !ref(command.caseId) || !message(command.messageId)) fail('invalid-input')
@@ -504,12 +483,11 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
       return projection(next)
     })
   }
-  return {enqueue,drain,release,retry,takeOver,waitingQuestions,resumeQuestion,
+  return {enqueue,drain,release,retry,takeOver,
     jobInputs:()=>locked(s=>s.jobs.map(j=>structuredClone(pick(j,['caseId','messageId','source','retries'])))),
     takenOverSessions:()=>locked(s=>s.jobs.filter(j=>j.status === 'taken-over').map(j=>j.sessionId)),
     hasIntake:(scopeId,messageId)=>locked(s=>s.jobs.some(j=>j.source.scopeId===scopeId && j.messageId===messageId)),
     hasReceived:(b,chatId,id)=>locked(s=>s.jobs.some(j=>sameBinding(j,b) && j.source.chatId===chatId && j.messageId===id)),
-    isQuestionReceipt:(b,chatId,id)=>locked(s=>s.jobs.some(j=>sameBinding(j,b) && j.source.chatId === chatId && questionSeen(j,id))),
     isSentMessage:(b,chatId,id)=>locked(s=>s.jobs.some(j=>sameBinding(j,b) && j.source.chatId === chatId &&
       (j.status === 'delivered' && j.receipt.messageId === id || questionSeen(j,id)))),
     snapshot:() => locked(s => s.jobs.map(projection)),

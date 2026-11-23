@@ -193,6 +193,18 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
         return {changed:true}
       })
     },
+    // A message recorded before the discussion rule changed keeps the discussion it was recorded under,
+    // so its pending approval and grant still apply. Every other field must match the new reading.
+    async recordedThread(input,since) {
+      checkConsent(since)
+      const parsed = mention.safeParse(input)
+      if (!parsed.success) throw problem('invalid-input')
+      return serial(async()=>{
+        await read()
+        const m = await messageById(parsed.data.messageId)
+        return m && sameMention(m,{...parsed.data,threadId:m.threadId}) ? m.threadId : undefined
+      })
+    },
     // Old archives stored Feishu's @_user_N keys. Only normalize unchanged, still-pending messages.
     async repairMentionNames(ref,since,lookup) {
       checkConsent(since)

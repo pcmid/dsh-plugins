@@ -30,7 +30,7 @@ function fixture(opt={}) {
   const f={cfg,calls,events,grant,source:undefined}
   const projected=(args,data)=>opt.project ? opt.project(args,data) : ok(data)
   f.source=createFeishuSource({config:cfg,admission:{run:(target,fn)=>fn(grant)},receive:e=>events.push(e),
-    isQuestionReply:(chat,parent)=>chat===dm && parent==='om_question',isSentMessage:(_,id)=>id==='om_previously_sent',
+    isSentMessage:(_,id)=>id==='om_previously_sent',
     async run(args,stdin){
       await opt.during?.(args,f)
       calls.push(args)
@@ -81,7 +81,7 @@ test('third-party DMs default off; off, old epochs and the opening instant yield
   assert.deepEqual(f.calls,[])
 })
 
-test('only incoming mapped 1:1 peers enter (including a different tenant), never self, group, outgoing, or a question reply',async()=>{
+test('only incoming mapped 1:1 peers enter (including a different tenant), never self, group or outgoing; a reply to a question is a new message',async()=>{
   const rows=[origin,{...origin,message_id:'om_old',create_time:String(epoch)},
     {...origin,message_id:'om_answer',root_id:messageId,parent_id:'om_question'},
     {...origin,message_id:'om_owner',sender:{...origin.sender,id:me}},
@@ -92,7 +92,8 @@ test('only incoming mapped 1:1 peers enter (including a different tenant), never
     {...origin,message_id:'om_spoofed',sender:{...origin.sender,id:'ou_changed'}}]
   const hits=rows.map(r=>hit(r,r.message_id==='om_spoofed' ? peer : r.sender.id,r.message_id!=='om_group'))
   const f=fixture({rows,hits,next:'opaque'})
-  assert.deepEqual(await f.source.discoverPrivate(window),{mentions:[found],nextPageToken:'opaque'})
+  // A peer's reply to SuperAgent's question is its own message; the Router decides which request it follows up.
+  assert.deepEqual(await f.source.discoverPrivate(window),{mentions:[found,{...found,messageId:'om_answer',threadId:'om_answer'}],nextPageToken:'opaque'})
   const batch=JSON.parse(flag(f.calls.find(a=>a.includes(base+'/mget')),'--params')).message_ids
   assert.deepEqual(batch,[messageId,'om_old','om_answer','om_owner','om_bot','om_spoofed'])
   assert.ok(!f.calls.some(a=>a.includes(chatDetails))) // Ordinary outgoing speech does not even trigger partner lookup.
@@ -112,11 +113,12 @@ const ownRef={...ref,ownerSelfMention:true}, ownFound={...ownRef,senderId:me}
 test('owner self-mention in a peer DM requires a chat→peer lookup, bilateral proof and exact original self-mention',async()=>{
   const junk=[{message_id:'om_plain',mentions:[],body:{content:'{"text":"@me"}'}},
     {message_id:'om_all',mentions:[{...owner.mentions[0],id:'all'}]}, {message_id:'om_bot',sender:{...owner.sender,sender_type:'app'}},
-    {message_id:'om_wrong_tenant',sender:{...owner.sender,tenant_key:'other'}}, {message_id:'om_previously_sent'},
-    {message_id:'om_answer',root_id:messageId,parent_id:'om_question'}]
-  const f=fixture({rows:[owner,...junk.map(x=>({...owner,...x}))],exact:[owner],
+    {message_id:'om_wrong_tenant',sender:{...owner.sender,tenant_key:'other'}}, {message_id:'om_previously_sent'}]
+  // The owner's explicit self-mention in reply to a question is a new request like any other.
+  const answer={...owner,message_id:'om_answer',root_id:messageId,parent_id:'om_question'}
+  const f=fixture({rows:[owner,...junk.map(x=>({...owner,...x})),answer],exact:[owner],
     grant:{approvedAt:at+10,triggers:[ownRef]}})
-  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[ownFound])
+  assert.deepEqual((await f.source.discoverPrivate(window)).mentions,[ownFound,{...ownFound,messageId:'om_answer',threadId:'om_answer'}])
   const paths=f.calls.map(a=>a[4])
   assert.ok(paths.indexOf(chatDetails)>paths.indexOf(base+'/mget'));assert.ok(paths.lastIndexOf(mapping)>paths.indexOf(chatDetails))
   assert.deepEqual(await f.source.readMention(ref),{...ownFound,text:'plain request'})
@@ -131,21 +133,8 @@ test('owner self-mention in a peer DM requires a chat→peer lookup, bilateral p
   }
 })
 
-test('a question from a self-directed peer-DM intake accepts only the original owner’s explicit reply, not a peer answer',async()=>{
-  const child=(id,sender,time,parent)=>({...owner,message_id:id,sender,create_time:String(time),mentions:[],root_id:messageId,parent_id:parent})
-  const question=child('om_question',owner.sender,at+1,messageId)
-  const answers=[child('om_peer_replied',origin.sender,at+2,'om_question'),child('om_wrong_parent',owner.sender,at+3,messageId),
-    child('om_own_answer',owner.sender,at+4,'om_question')]
-  const f=fixture({exact:[owner],grant:{triggers:[ownRef]},question,answers})
-  const input={source:request.source,messageId,requesterId:me,questionId:'om_question',originalText:'archived request'}
-  assert.equal(await f.source.readQuestionReply({...input,requesterId:peer},()=>{}),null)
-  const answer=await f.source.readQuestionReply(input,()=>{})
-  assert.equal(answer.messageId,'om_own_answer');assert.equal(answer.senderId,me)
-})
-
 test('a stored automatic trigger cannot be reused for a changed request or asserted by a discovery flag',async()=>{
-  for(const exact of [origin,{...owner,mentions:[]},{...owner,mentions:[{...owner.mentions[0],id:'all'}]},
-    {...owner,parent_id:'om_question',root_id:messageId}]) {
+  for(const exact of [origin,{...owner,mentions:[]},{...owner,mentions:[{...owner.mentions[0],id:'all'}]}]) {
     const f=fixture({exact:[exact],grant:{triggers:[ownRef]}})
     assert.equal(await f.source.readMention(ownRef),null)
     assert.deepEqual(await f.source.consumeMention(ref),{accepted:0});await assert.rejects(f.source.reply(request))
@@ -175,7 +164,7 @@ test('forged, old or mismatched grants and raw rows cannot use a private exact f
     const f=fixture({grant});await assert.rejects(f.source.consumeMention(ref));await assert.rejects(f.source.reply(request));assert.deepEqual(f.calls,[])
   }
   for(const override of [{sender:{...origin.sender,id:me}},{sender:{...origin.sender,id:'ou_else'}},{create_time:String(epoch)},
-    {chat_id:'oc_else'},{root_id:'om_other'},{deleted:true},{msg_type:'merge_forward'}]) {
+    {chat_id:'oc_else'},{parent_id:'om_other'},{deleted:true},{msg_type:'merge_forward'}]) {
     const f=fixture({exact:[{...origin,...override}]})
     assert.equal(await f.source.readMention(ref),null);assert.deepEqual(await f.source.consumeMention(ref),{accepted:0})
     await assert.rejects(f.source.reply(request));assert.deepEqual(f.events,[])

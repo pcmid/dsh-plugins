@@ -97,6 +97,7 @@ export class Offline extends LlmAdapter {
   expectedOpenWork(text) {
     const declined=open(declineRequest,'question drafted',declinedQuestion), work=mergeCase.work.text, a=mergeCase.answers
     if(text===ignored)return [open(request,'question drafted',this.firstDraft)]
+    if(text===clarification)return [open(request,'waiting for the requester',this.firstDraft)]
     if([held.text,archiveActive.text].includes(text) || process.env.SMOKE_PHASE==='prepare' && text===noteRequest)return [declined]
     if(text===softStops[1].request)return [open(softStops[0].request,'reply drafted',softStops[0].answer)]
     return {[mergeCase.add.text]:[open(work,'in progress')],[mergeCase.more.text]:[open(work,'reply drafted',a.add)],
@@ -196,7 +197,7 @@ export class Offline extends LlmAdapter {
       // DSH fills the persona's {{model}} placeholder with the routed model.
       else assert.ok((role==='develop'?workerPersona:this.personas[role]).split('{{model}}').every(part=>systems.includes(part)),'normal preset persona is assembled by DSH: '+role)
       assert.ok(!data.includes(sibling),'an unrelated Feishu thread is not admitted')
-      if(input.request===request)assert.ok(!data.includes('Edited after display.'),'the selected request uses its admitted, not edited version')
+      if(input.request===request && !input.continue)assert.ok(!data.includes('Edited after display.'),'the selected request uses its admitted, not edited version')
       if(stage==='DECIDE' && !nudged && !afterTool) {
         assert.equal(messages.filter(m=>m.role==='user' && m.source?.kind==='user').length,1,'a fresh control conversation contains only its one canonical request')
         this.controls.push({id:options.sessionId,role})
@@ -224,7 +225,7 @@ export class Offline extends LlmAdapter {
           this.retryRouterId=options.sessionId
           if(process.env.SMOKE_PHASE==='prepare'){yield {type:'finish',reason:{kind:'error'}};return}
         }
-        assert.ok(probe || soft || [ignored,request,declineRequest,noteRequest,privateRequest,quietRequest,memberRequest,memberColdRequest,forbiddenRequest,retryWorker.text,retryRoute.text,held.text,archiveActive.text,
+        assert.ok(probe || soft || [ignored,request,clarification,declineRequest,noteRequest,privateRequest,quietRequest,memberRequest,memberColdRequest,forbiddenRequest,retryWorker.text,retryRoute.text,held.text,archiveActive.text,
           mergeCase.work.text,mergeCase.own.text,mergeCase.other.text,...merges.map(k=>mergeCase[k].text)].includes(input.request))
         if(soft?.routerDraft && !nudged){yield* result(soft.routerDraft);return}
         if(input.request===held.text) {
@@ -237,16 +238,16 @@ export class Offline extends LlmAdapter {
           assert.ok(gate?.running && !gate.aborted,'the Router decides while the earlier worker’s native tool is still executing')
           this.mergeRoutedWhileTool=true
         }
-        body=input.request===ignored?{action:'ignore'}:merges.some(k=>mergeCase[k].text===input.request)?{action:'merge',target:'w1'}:
+        body=input.request===ignored?{action:'ignore'}:input.request===clarification || merges.some(k=>mergeCase[k].text===input.request)?{action:'merge',target:'w1'}:
           {action:'work',role:worker,...placed && {workspace:this.project.id}}
       } else if(input.request===request) {
         const topic=JSON.parse(input.topic),turns=messages.slice(0,userIndex).filter(m=>m.role==='assistant' &&
           m.content.some(b=>b.type==='tool-call' && b.name==='superagent_ask_requester'))
         const toolResult=messages.find(m=>m.role==='tool' && m.source?.callId===sealId)
         const seal=toolResult?.content.find(b=>b.type==='text')?.text
-        assert.deepEqual(topic.slice(0,18).map(m=>m.text),[rootText,...oldLines,unselected,request,laterLine],
-          'complete root, 14 old messages, prior mention, selected original and later multiline reply preserve order and boundaries')
-        assert.deepEqual(topic.filter(m=>m.request).map(m=>[m.text,m.speaker]),[[request,'requester']])
+        assert.deepEqual(topic.slice(0,18).map(m=>m.text),[rootText,...oldLines,unselected,input.continue?'Edited after display.':request,laterLine],
+          'approved topic keeps the root, preceding messages and later multi-line reply in order; refreshed history may contain edits')
+        assert.deepEqual(topic.filter(m=>m.request).map(m=>[m.text,m.speaker]),[[input.continue?clarification:request,'requester']])
         assert.equal(new Set(topic.slice(0,16).map(m=>m.speaker)).size,1)
         assert.match(topic[0].speaker,/^participant-\d+$/)
         assert.notEqual(topic[0].speaker,topic[17].speaker)
@@ -266,17 +267,17 @@ export class Offline extends LlmAdapter {
           assert.ok(data.includes(question) && data.includes(clarification),'the same worker sees the sent question and the original requester reply')
           assert.equal(turns.length,1,'both submitted questions belong to the same previous assistant step')
           assert.deepEqual(turns[0].content.filter(b=>b.name==='superagent_ask_requester').map(b=>JSON.parse(b.arguments).question),[supersededQuestion,question+' '+seal])
-          assert.ok(topic.some(m=>m.text===clarification && m.speaker==='requester'),'a confirmed reply refreshes the worker’s complete native thread')
-          assert.ok(topic.some(m=>m.text.includes('WRONG-REPLY: somebody else.')),'other participants remain context, not the answer')
-          assert.equal(input.requesterReply,clarification,'only the addressed reply from the original requester answers the question')
-          assert.equal(input.previousQuestion,question+' '+seal)
+          assert.ok(topic.some(m=>m.text===clarification && m.speaker==='requester'),'the new mention refreshes the native thread')
+          assert.ok(topic.some(m=>m.text.includes('WRONG-REPLY: somebody else.')),'other participants remain context, not the supplement')
+          assert.equal(input.continue,true)
+          assert.deepEqual(input.supplements,[{from:'requester',text:clarification}])
           body={action:'answer',answer:answer+' '+seal}
         }
       } else if(input.request===legacy.request) {
         assert.equal(stage,'WORK');assert.equal(process.env.SMOKE_PHASE,'release')
         const prior=messages.slice(0,userIndex).filter(m=>m.role==='assistant')
         assert.deepEqual(prior.map(m=>m.content),[[{type:'text',text:JSON.stringify({action:'clarify',question:legacy.question})}]])
-        assert.deepEqual([input.previousQuestion,input.requesterReply],[legacy.question,legacy.reply])
+        assert.equal(input.continue,true);assert.deepEqual(input.supplements,[{from:'requester',text:legacy.reply}])
         body={action:'answer',answer:'Confirmed: '+legacy.reply}
       } else if(soft) {
         if(!nudged){yield* result(soft.workerDraft,soft.finish);return}

@@ -27,6 +27,7 @@ const team={lead:'superagent-lead',develop:'',answer:'superagent-answer'}
 const models=model=>({lead:{provider:'offline',model:model ?? 'director'},answer:{provider:'offline',model:model ?? 'worker'}})
 const seeing={caseId:'images-case',messageId:'om_images_request',requesterId:'ou_images',source,team,roleModels:models(),
   text:'Fixture image: what does '+imageMarker(red.ref.key)+' show?',workerImages:[red,text,broken,gone].map(i=>i.ref)}
+const follow={...seeing,caseId:'images-follow',messageId:blue.ref.messageId,text:'Fixture image: @owner the blue one.',workerImages:[blue.ref]}
 const blind={caseId:'images-blind',messageId:'om_images_blind',requesterId:'ou_images',source:{...source,threadId:'om_images_blind'},team,
   roleModels:models('text-only'),text:'Fixture image: answer from text about '+imageMarker(red.ref.key)+'.',workerImages:[red.ref]}
 const question='Fixture image: which part do you mean?',answers={seeing:'Fixture image: red, then blue.',blind:'Fixture image: answered from text alone.'}
@@ -62,37 +63,45 @@ export async function imagesRound(ctx,provider,actors) {
     if(!input.request.startsWith('Fixture image:'))return
     requests.push({stage,sessionId:options.sessionId,model:options.model,content:canonical.content,
       images:options.messages.flatMap(m=>m.content.filter(b=>b.type==='image').map(b=>b.attachment?.attachmentId))})
+    if(stage==='DECIDE' && input.request===follow.text){
+      assert.deepEqual(input.openWork,[{ref:'w1',request:seeing.text,state:'waiting for the requester',output:question}])
+      return ['superagent_merge',{target:'w1'}]
+    }
     if(stage==='DECIDE')return ['superagent_route',{role:'answer'}]
     if(input.request===blind.text)return ['superagent_answer',{answer:answers.blind}]
-    return input.requesterReply ? ['superagent_answer',{answer:answers.seeing}] : ['superagent_ask_requester',{question}]
+    if(!input.continue)return ['superagent_ask_requester',{question}]
+    assert.deepEqual(input.supplements,[{text:follow.text,from:'requester'}])
+    return ['superagent_answer',{answer:answers.seeing}]
   }
   const loader=stage=>refs=>{loads.push([stage,refs.map(r=>r.key)]);return Promise.resolve(refs.map(r=>bytesOf.get(r.key)))}
   const store=await openStore({open:spec=>ctx.storageDomain.open({...spec,name:'images_fixture_'+spec.name})})
-  const loop=createLoop({...store.automationStore,isReleaseRequired:()=>false,
+  const loop=createLoop({...store.automationStore,isReleaseRequired:()=>false,caseInfo:()=>seeing,
     decide:j=>actors.decide({...j,loadImages:loader('decide')}),work:j=>actors.work({...j,loadImages:loader('work')}),
     deliver:async d=>{sent.push(d.text);return {chatId:d.source.chatId,inReplyTo:d.messageId,messageId:'om_images_receipt_'+sent.length}}})
   try {
     await loop.enqueue(seeing);await loop.drain()
-    const [waiting]=await loop.waitingQuestions(source)
-    assert.equal(waiting?.messageId,seeing.messageId,JSON.stringify(await loop.snapshot()))
-    // The requester's reply brings a new image; the worker continues its own session.
-    assert.ok(await loop.resumeQuestion(waiting,{chatId:source.chatId,threadId:source.threadId,senderId:seeing.requesterId,parentId:waiting.questionId,
-      messageId:'om_images_reply',at:blue.ref.at,text:'Fixture image: the blue one.',workerImages:[blue.ref]}))
+    const [waiting]=await loop.snapshot()
+    assert.deepEqual([waiting.status,waiting.messageId],['waiting-requester',seeing.messageId])
+    // The new @ brings a blue image; after routing it continues the original worker's session.
+    await loop.enqueue(follow)
     await loop.drain()
     await loop.enqueue(blind);await loop.drain()
     assert.ifError(provider.error)
     const rows=await loop.snapshot(),row=id=>rows.find(r=>r.messageId===id)
     assert.deepEqual([seeing,blind].map(j=>[row(j.messageId)?.status,row(j.messageId)?.answer]),
       [['delivered',answers.seeing],['delivered',answers.blind]],JSON.stringify(rows))
+    assert.deepEqual([row(follow.messageId).status,row(follow.messageId).mergedInto],['merged',{caseId:seeing.caseId,messageId:seeing.messageId}])
     assert.deepEqual(sent,[question,answers.seeing,answers.blind])
-    assert.deepEqual(provider.calls.slice(calls),['DECIDE','WORK','WORK','DECIDE','WORK'])
+    assert.deepEqual(provider.calls.slice(calls),['DECIDE','WORK','DECIDE','WORK','DECIDE','WORK'])
 
     // Each seat loaded its images newest first, never one it had already received; the text-only model loaded none.
     const first=keys([gone,broken,text,red])
-    assert.deepEqual(loads,[['decide',first],['work',first],['work',keys([blue,gone,broken,text])]])
-    const seats=await actors.seats(seeing),blindSeats=await actors.seats(blind)
+    assert.deepEqual(loads,[['decide',first],['work',first],['decide',keys([blue])],['work',keys([blue,gone,broken,text])]])
+    const seats=await actors.seats(seeing),followSeats=await actors.seats(follow),blindSeats=await actors.seats(blind)
     const [routed]=await prompts(ctx,seats.routerSessionId),[asked,resumed]=await prompts(ctx,seats.workerSessionId)
+    const [routedFollow]=await prompts(ctx,followSeats.routerSessionId)
     const [routerRed]=promptWith(routed,'DECIDE',[red]),[workerRed]=promptWith(asked,'WORK',[red]),[workerBlue]=promptWith(resumed,'WORK',[blue])
+    assert.deepEqual(promptWith(routedFollow,'DECIDE',[blue]),[workerBlue])
     assert.equal(routerRed,workerRed,'the same image is the same content-addressed attachment')
     assert.notEqual(workerBlue,workerRed)
     for(const id of Object.values(blindSeats))(await prompts(ctx,id)).forEach(c=>promptWith(c,id===blindSeats.routerSessionId?'DECIDE':'WORK',[]))
@@ -100,10 +109,10 @@ export async function imagesRound(ctx,provider,actors) {
     // The model requests carried exactly the recorded messages: the admitted images, or text only.
     assert.deepEqual(requests.map(r=>[r.stage,r.sessionId,r.model,r.images]),[
       ['DECIDE',seats.routerSessionId,'director',[routerRed]],['WORK',seats.workerSessionId,'worker',[workerRed]],
-      ['WORK',seats.workerSessionId,'worker',[workerRed,workerBlue]],
+      ['DECIDE',followSeats.routerSessionId,'director',[workerBlue]],['WORK',seats.workerSessionId,'worker',[workerRed,workerBlue]],
       ['DECIDE',blindSeats.routerSessionId,'text-only',[]],['WORK',blindSeats.workerSessionId,'text-only',[]]])
-    assert.deepEqual(requests.slice(0,3).map(r=>r.content),[routed,asked,resumed])
-    console.log('PASS images: Router and worker prompts carried the text, the image marker and a DSH-admitted attachment, and the model requests contained it; the receipt checks accepted the recorded content and both seats finished. The clarification round attached only the new image, not the one already sent. Unreadable, non-image and undecodable images were skipped; a text-only model got text only and loaded nothing. Both jobs delivered.')
+    assert.deepEqual(requests.slice(0,4).map(r=>r.content),[routed,asked,routedFollow,resumed])
+    console.log('PASS images: Router and worker received each admitted image, the merged clarification attached only the new image on the worker, and both answers were delivered. Unreadable images and the text-only model still produced no attachment.')
   } finally {
     provider.imageTurn=undefined
     await loop.dispose();await store.close()

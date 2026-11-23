@@ -9,13 +9,13 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
   let revision=0, closed=false
   const changed=()=>{revision++}
   const channel=sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived:(...args)=>loop?.hasReceived(...args) ?? false,hasIntake:(scope,id)=>loop?.hasIntake(scope,id) ?? false,isSentMessage:(...args)=>loop?.isSentMessage(...args) ?? false,
-    isQuestionReply:(...args)=>loop?.isQuestionReceipt(...args) ?? false,waitingQuestions:binding=>loop?.waitingQuestions(binding) ?? [],
-    resumeQuestion:(job,reply)=>loop?.resumeQuestion(job,reply),runCli,managedDir,authFactory,onChange:changed})
+    runCli,managedDir,authFactory,onChange:changed})
   const guarded=fn=>async input=>{
     await channel.assertAutomation(input.source,input.signal,input.requesterId)
     input.signal?.throwIfAborted()
-    // A seat reads the conversation's images itself, once it knows which ones it still needs.
-    return fn({...input,loadImages:refs=>channel.loadImages(input.source,refs,input.signal,input.requesterId)})
+    // A seat reads the conversation's images and files itself, once it knows which ones it still needs.
+    return fn({...input,loadImages:refs=>channel.loadImages(input.source,refs,input.signal,input.requesterId),
+      loadFiles:(refs,use)=>channel.loadFiles(input.source,refs,input.signal,input.requesterId,use)})
   }
   const loop=automationStore && actors && createLoop({...automationStore,onChange:changed,isReleaseRequired:cases.isReleaseRequired,
     decide:guarded(actors.decide), work:guarded(actors.work),
@@ -40,7 +40,8 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
       const {team,roleModels}=await cases.teamSettings()
       const source={...item.source,...(event.privatePeerId ? {privatePeerId:event.privatePeerId,privateChatsSince:event.privateChatsSince} : {})}
       await loop.enqueue({caseId:item.id,messageId:event.messageId,text:item.messages[index].text,requesterId:event.senderId,
-        source,team,roleModels,workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {})})
+        source,team,roleModels,workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {}),
+        ...(event.workerFiles?.length ? {workerFiles:event.workerFiles} : {})})
     }
     changed()
     return item

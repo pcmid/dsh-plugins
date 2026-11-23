@@ -63,7 +63,7 @@ function projections(t) {
   }]
 }
 
-function conversation({target=request(),options={},list=()=>page([]),rootRows=[],question,project}) {
+function conversation({target=request(),options={},list=()=>page([]),rootRows=[],project}) {
   let admitted=false
   const config={enabled:true,profile:'fixture',tenantId,recipientId,automationSince:at-350_000,...options}
   const threadId=target.root_id || target.message_id
@@ -78,13 +78,10 @@ function conversation({target=request(),options={},list=()=>page([]),rootRows=[]
       if(has('chats')) return ok({chat_mode:'group',group_message_type:'chat',external:false,tenant_key:tenantId})
       if(has(api+'/'+messageId)) return ok({items:[target]})
       if(has(api+'/'+root)) return project(argv,{items:rootRows})
-      if(question && has(api+'/'+question.message_id)) return project(argv,{items:[question]})
       assert.ok(has(api) && has('GET') && has('--jq'))
       return project(argv,list(JSON.parse(flag(argv,'--params'))))
     }})
-  return {events,consume:()=>source.consumeMention({chatId,threadId,messageId,at}),
-    readReply:questionId=>source.readQuestionReply({source:{kind:'feishu',tenantId,recipientId,chatId,threadId},
-      messageId,requesterId:writer,questionId,originalText:'archived request'},()=>{})}
+  return {events,consume:()=>source.consumeMention({chatId,threadId,messageId,at})}
 }
 
 test('flat history: images read as markers, image-only posts count, empty rows take no count slot',async t=>{
@@ -119,25 +116,6 @@ test('native thread: an image root, image-only replies and the request’s own i
     assert.deepEqual(turns(event),[mark('img_root'),mark('img_t1'),'words',requestText,mark('img_req'),mark('img_late')])
     assert.deepEqual(event.workerImages,[shown(root,'img_root',at-100),shown('om_t1','img_t1',at-50),
       shown(messageId,'img_req',at),shown('om_t6','img_late',at+20)])
-  }
-})
-
-test('an image-only reply to a clarification counts as the reply, in a flat chat and in a native thread',async t=>{
-  for (const project of projections(t)) {
-    const question=text('om_q',at+1,'哪一张？',{parent_id:messageId,sender:sender(recipientId)})
-    const answer=image('om_reply',at+2,'img_reply',{parent_id:'om_q'})
-    const flat=conversation({project,question,list:()=>page([question,answer])})
-    assert.deepEqual(await flat.readReply('om_q'),{chatId,threadId:messageId,messageId:'om_reply',senderId:writer,parentId:'om_q',
-      at:at+2,text:mark('img_reply'),workerImages:[shown('om_reply','img_reply',at+2)]})
-
-    const asked={...question,...thread,parent_id:messageId}, replied={...post('om_reply',at+2,[[img('img_reply')]]),...thread,parent_id:'om_q'}
-    const native=conversation({target:request(thread),project,question:asked,rootRows:[image(root,at-100,'img_root',{thread_id:omt})],
-      list:()=>page([{...image('om_t1',at-50,'img_t1'),...thread},asked,replied])})
-    const {workerContext,...reply}=await native.readReply('om_q')
-    // The refreshed thread supplies every image the worker may need, including the request's own.
-    assert.deepEqual(reply,{chatId,threadId:root,messageId:'om_reply',senderId:writer,parentId:'om_q',at:at+2,text:mark('img_reply'),
-      workerImages:[shown(root,'img_root',at-100),shown('om_t1','img_t1',at-50),shown(messageId,'img_req',at),shown('om_reply','img_reply',at+2)]})
-    assert.deepEqual(JSON.parse(workerContext).map(r=>r.text),[mark('img_root'),mark('img_t1'),'archived request','哪一张？',mark('img_reply')])
   }
 })
 
@@ -283,15 +261,19 @@ test('a merged message adds its images to the job it joins: each image once, at 
   }
 })
 
-test('the requester’s reply adds its images to the waiting job; malformed reply images are refused',async()=>{
+test('a merged @ with images continues a waiting worker; malformed attachments never enter the queue',async()=>{
   const seat={sessionId:result.sessionId,workspaceId:result.workspaceId,resolvedPresetId:result.resolvedPresetId}
-  const h=queue({work:b=>b.requesterReply ? result : {...seat,question:'Which one?'}})
+  const follow={...input,caseId:'case_follow',messageId:'om_answer',text:'@owner '+mark('img_9')}
+  const h=queue({decide:b=>b.messageId===follow.messageId ? {action:'merge',target:'w1'} : {action:'work',role:'develop'},
+    work:b=>b.continueWork ? result : {...seat,question:'Which one?'}},undefined,{caseInfo:()=>input})
   await h.loop.enqueue({...input,workerImages:[pic(1),pic(2)]});await h.loop.drain()
-  const [q]=await h.loop.waitingQuestions(input.source)
-  const reply={chatId:q.source.chatId,threadId:q.source.threadId,senderId:q.requesterId,parentId:q.questionId,at:200,messageId:'om_answer',text:mark('img_9')}
+  assert.equal(storedJob(h).status,'waiting-requester')
   for (const workerImages of [[],{},'img_9',[{...pic(9),key:'bad'}]])
-    await assert.rejects(h.loop.resumeQuestion(q,{...reply,workerImages}),{code:'invalid-input'})
-  assert.equal(await h.loop.resumeQuestion(q,{...reply,workerImages:[pic(1,200),pic(9,200)]}),true);await h.loop.drain()
+    await assert.rejects(h.loop.enqueue({...follow,workerImages}),{code:'invalid-input'})
+  assert.equal(h.saved.jobs.length,1)
+  const attached=[pic(1,200),pic(9,200)]
+  await h.loop.enqueue({...follow,workerImages:attached});await h.loop.drain()
+  assert.deepEqual(sentTo(h,'decide'),[[pic(1),pic(2)],attached])
   assert.deepEqual(sentTo(h,'work'),[[pic(1),pic(2)],[pic(1),pic(2),pic(9,200)]])
-  assert.equal(storedJob(h).status,'delivered')
+  assert.deepEqual([storedJob(h).status,storedJob(h,follow.messageId).status],['delivered','merged'])
 })

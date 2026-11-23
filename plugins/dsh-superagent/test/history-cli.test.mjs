@@ -40,7 +40,7 @@ function dryRun(t) {
   }
 }
 
-function fixture({target=child,group={},grantMode='once',options={},list=()=>page([]),rootRows=[],question,project=(_args,data)=>ok(data),deny=false,identity=recipientId}={}) {
+function fixture({target=child,group={},grantMode='once',options={},list=()=>page([]),rootRows=[],project=(_args,data)=>ok(data),deny=false,identity=recipientId}={}) {
   let admitted=false
   const config={enabled:true,profile:'fixture',tenantId,recipientId,automationSince:at-350_000,...options}
   const ref={chatId,threadId:target.root_id || target.message_id,messageId,at}
@@ -61,7 +61,6 @@ function fixture({target=child,group={},grantMode='once',options={},list=()=>pag
     if(has(api+'/search')) return ok({items:[{meta_data:{message_id:messageId}}]})
     if(has(api+'/mget')) return ok({items:[target]})
     if(has(api+'/'+root)) return project(argv,{items:rootRows})
-    if(question && has(api+'/'+question.message_id)) return project(argv,{items:[question]})
     assert.ok(has(api) && has('GET') && has('--jq'))
     return project(argv,await list(JSON.parse(flag(argv,'--params'))))
   }})
@@ -144,7 +143,7 @@ test('flat-chat limits work with once approval; retain the nearest whole utteran
   await f.consume();assert.equal(texts(f.events[0]),'older\n'+last);assert.equal(f.lists().length,2)
 })
 
-test('installed CLI and Host use only each message’s mention map for the root, native replies and exact clarification',async t=>{
+test('installed CLI and Host use only each message’s mention map for the root and native replies',async t=>{
   const project=dryRun(t);if(!project)return
   const k='@_user_1',k10='@_user_10',uid='om_question'
   const named=(key,name)=>({key,name,id:forbidden,id_type:'open_id',tenant_key:'other'})
@@ -160,17 +159,13 @@ test('installed CLI and Host use only each message’s mention map for the root,
   const near=plain('om_prior',at-1,k10+'、'+k+'/@_user_55abc',{mentions:[named(k10,'$1'+k),named(k,'乙'),named('@_user_55',forbidden)]})
   const neighbor=plain('om_bad',at+1,forbidden,{root_id:'om_other',mentions:[named(k,forbidden)]})
   for(const projection of [project,(_argv,data)=>ok(data)]) {
-    const f=fixture({list:()=>page([near,self,question,rich,neighbor]),question,rootRows:[anchor],project:projection})
+    const f=fixture({list:()=>page([near,self,question,rich,neighbor]),rootRows:[anchor],project:projection})
     await f.consume()
     const turns=JSON.parse(f.events[0].workerContext).map(item=>item.text)
     assert.equal(turns[0],'请@林$&と@你确认')
     assert.ok(turns.includes('@$1'+k+'、@乙/@_user_55abc'),'replacement names are neither templates nor re-tokenized')
     assert.ok(turns.includes('本人@写信人补充'))
     assert.ok(turns.includes(richText));assert.ok(!f.events[0].workerContext.includes(forbidden))
-    const result=await f.source.readQuestionReply({source:{kind:'feishu',tenantId,recipientId,chatId,threadId:root},
-      messageId,requesterId:top.sender.id,questionId:uid,originalText:'archived'},()=>{})
-    assert.equal(result.text,richText)
-    assert.equal(JSON.parse(result.workerContext).at(-1).text,richText)
   }
 })
 

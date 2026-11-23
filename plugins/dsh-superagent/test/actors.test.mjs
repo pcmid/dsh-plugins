@@ -1,7 +1,7 @@
 import test from 'node:test'
 import { createHash } from 'node:crypto'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm, realpath } from 'node:fs/promises'
+import { mkdtemp, rm, realpath, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActors } from '../host/actors.js'
@@ -40,10 +40,12 @@ async function fixture(t,priorApproval) {
   // Other registered DSH workspaces the Router may choose from; SuperAgent's own is listed once created.
   const places = new Map()
   const f = {requested:[],prompts:[],nativeRequests:[],oneShots:[],globalTools:[],registrations:[],lookups:[],archives:[],worker:answer('First draft.'),
-    control:route('develop'),approved:[],modelInfo:[]}
+    control:route('develop'),approved:[],modelInfo:[],uploads:[],uploaded:new Map()}
   // DSH stores each prompt image as an attachment; with `offload`, the model surface later shows it as a placeholder.
   const admit = b => b.type === 'image' && b.data !== undefined && !f.rawImages ? {type:'image',attachment:{attachmentId:'att-'+createHash('sha256').update(b.data).digest('hex').slice(0,12),
-    mediaType:b.mediaType,bytes:Buffer.from(b.data,'base64').length,width:1,height:1}} : b
+    mediaType:b.mediaType,bytes:Buffer.from(b.data,'base64').length,width:1,height:1}} :
+    // A staged upload enters the message as its stored file.
+    b.type === 'file' && f.uploaded.has(b.receiptId) ? {type:'file',attachment:f.uploaded.get(b.receiptId)} : b
   const shown = m => f.offload && m.role === 'user' && m.content.some(b=>b.type === 'image') ?
     {...m,content:m.content.map(b=>b.type === 'image' ? {...b,offloaded:true} : b)} : m
   if(priorApproval)hooks.set('approval/request',[priorApproval])
@@ -75,6 +77,15 @@ async function fixture(t,priorApproval) {
       // A model's input modalities; undefined when the provider does not say.
       async resolveModelInfo(provider,model){f.modelInfo.push([provider,model]);return {...f.modalities && {inputModalities:f.modalities}}},
       stream(req){f.oneShots.push(req);return f.directStream || chunks(f.control)}},
+    // Uploads staged on one session; a prompt cites them by receipt.
+    fileUploads:{async uploadStream({sessionId,data,name}) {
+      const chunks=[];for await(const c of data) chunks.push(Buffer.from(c))
+      const bytes=Buffer.concat(chunks)
+      if(f.failUpload?.(name)) throw Error('storage refused')
+      const receiptId='rcpt-'+(f.uploads.length+1), file={attachmentId:'sha256:'+createHash('sha256').update(bytes).digest('hex'),name,bytes:bytes.length}
+      f.uploads.push({sessionId,name,text:bytes.toString()});f.uploaded.set(receiptId,file)
+      return {receiptId,file}
+    }},
     attachments:{imageLimits:{maxImageBytes:1024,maxImagesPerMessage:4,maxMessageImageBytes:4096,maxImagePixels:1e6,maxImageDimension:1024,
       mediaTypes:['image/png','image/jpeg','image/gif','image/webp']},
       async validateImage({data}){if(data.includes('CORRUPT')) throw Error('cannot decode')}},
@@ -1171,4 +1182,56 @@ test('a continuing worker is sent only images its session has not received; an o
   assert.deepEqual(f.loaded,[['img_1'],['img_2'],['img_3']])
   assert.deepEqual(f.prompts.map(p=>attached(p).map(([m])=>m)),[[marker('img_1')],[marker('img_2')],[marker('img_3')]])
   assert.equal(f.requested.length,1)
+})
+
+// Files of the conversation: only the worker receives them, each staged on its own session under its marker.
+const fileMark = (key,name) => '[文件 '+name+' #'+createHash('sha256').update(key).digest('hex').slice(0,6)+']'
+const doc = (n,at=n) => ({messageId:'om_f'+n,key:'file_v3_'+n,name:'log-'+n+'.txt',at})
+// A job whose conversation shows these files; the loader writes each one to disk only while `use` reads it.
+async function sharing(t,f,refs,{missing=[]}={}) {
+  const dir=await mkdtemp(join(await realpath(tmpdir()),'sa-files-'));t.after(()=>rm(dir,{recursive:true,force:true}))
+  return {...base,workerFiles:refs,loadFiles:async (wanted,use)=>{
+    f.fileLoads=[...(f.fileLoads ?? []),wanted.map(r=>r.key)]
+    const out=[]
+    for(const [i,r] of wanted.entries()) {
+      if(missing.includes(r.key)){out.push(null);continue}
+      const path=join(dir,r.key);await writeFile(path,'contents of '+r.key)
+      out.push(await use(i,path));await rm(path)
+    }
+    return out
+  }}
+}
+const filesOf = p => p.content.slice(1).reduce((out,b,i,all)=>i % 2 ? out : [...out,[b.text,all[i+1].type]],[])
+
+test('only the worker receives the conversation’s files, staged on its own session; the Router routes on their markers',async t=>{
+  const f=await fixture(t)
+  const job=await sharing(t,f,[doc(1),doc(2)])
+  assert.deepEqual(await f.actors.decide(job),{action:'work',role:'develop'})
+  assert.equal(f.fileLoads,undefined)
+  assert.equal(filesOf(f.prompts[0]).length,0)
+  assert.match(f.prompts[0].text,/A marker such as \[文件 report\.xlsx #1a2b3c\] stands for a file/)
+  const done=await f.actors.work(job)
+  assert.equal(done.answer,'First draft.')
+  assert.deepEqual(f.fileLoads,[['file_v3_2','file_v3_1']],'newest first')
+  assert.deepEqual(filesOf(f.prompts[1]),[[fileMark('file_v3_1','log-1.txt'),'file'],[fileMark('file_v3_2','log-2.txt'),'file']])
+  assert.deepEqual(f.uploads.map(u=>[u.sessionId,u.name,u.text]),[[done.sessionId,'log-2.txt','contents of file_v3_2'],[done.sessionId,'log-1.txt','contents of file_v3_1']])
+  // The model sees DSH's stored message: each file as its attachment, after its marker.
+  const asked=f.nativeRequests.at(-1).messages.findLast(m=>m.role==='user' && m.source.kind==='user').content
+  assert.deepEqual(asked.slice(1).map(b=>b.type==='file' ? b.attachment.name : b.text),[fileMark('file_v3_1','log-1.txt'),'log-1.txt',fileMark('file_v3_2','log-2.txt'),'log-2.txt'])
+})
+
+test('a continuing worker gets only files its session has not received; an unreadable or refused file keeps just its marker',async t=>{
+  const f=await fixture(t)
+  f.worker=ask('Which log?')
+  const asked=await f.actors.work(await sharing(t,f,[doc(1)]))
+  f.hooks.clear();f.actors=createActors(f.ctx,{workspacePath:f.workspace.path}) // Only the session log tells what was sent.
+  f.worker=answer('Read it.')
+  f.failUpload=name=>name==='log-4.txt'
+  const more=await f.actors.work({...await sharing(t,f,[doc(1),doc(2),doc(3),doc(4)],{missing:['file_v3_3']}),
+    continueWork:true,previousWorkspaceId:f.workspace.id,supplements:[{from:'requester',text:'@雷格'}]})
+  assert.deepEqual([more.answer,more.sessionId],['Read it.',asked.sessionId])
+  assert.deepEqual(f.fileLoads,[['file_v3_1'],['file_v3_4','file_v3_3','file_v3_2']])
+  assert.deepEqual(f.prompts.map(filesOf),[[[fileMark('file_v3_1','log-1.txt'),'file']],[[fileMark('file_v3_2','log-2.txt'),'file']]])
+  // A loader that does not answer for each requested file fails the seat.
+  await assert.rejects(f.actors.work({...await sharing(t,f,[doc(9)]),messageId:'om_short',loadFiles:async()=>[]}),denied)
 })

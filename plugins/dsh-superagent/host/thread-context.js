@@ -1,13 +1,13 @@
 // Private source adapter: no browser route, chat discovery, URL fetches or model calls. Images are
 // listed by reference here and downloaded only when a seat receives them.
-import {imageKey,imageMarker,postImages,postText,renderTextMentions} from './mention-text.js'
+import {fileKey,fileMarker,fileName,imageKey,imageMarker,postImages,postText,renderTextMentions} from './mention-text.js'
 
 const messages='/open-apis/im/v1/messages', maxContext=262144
 const q=JSON.stringify, mid=s=>typeof s==='string' && /^om_[\w-]{1,128}$/.test(s), tid=s=>typeof s==='string' && /^omt_[\w-]{1,128}$/.test(s)
 const time=t=>Number.isSafeInteger(Number(t)) && Number(t)>0
 const noParents='((.root_id // "")=="" and (.parent_id // "")=="")'
 const meta='{chat_id,message_id,thread_id,root_id,parent_id,upper_message_id,create_time,update_time,updated,deleted,msg_type,sender:(.sender|{id,id_type,sender_type,tenant_key})}'
-const human='.deleted==false and (.msg_type=="text" or .msg_type=="post" or .msg_type=="image") and .sender.sender_type=="user" and .sender.id_type=="open_id" and (.sender.id | strings | test("^ou_[a-zA-Z0-9_-]{1,128}$"))'
+const human='.deleted==false and (.msg_type=="text" or .msg_type=="post" or .msg_type=="image" or .msg_type=="file") and .sender.sender_type=="user" and .sender.id_type=="open_id" and (.sender.id | strings | test("^ou_[a-zA-Z0-9_-]{1,128}$"))'
 const validKey='(strings|test("^img_[A-Za-z0-9_-]{1,256}$"))'
 const speech='(. as $m | (.body.content|fromjson?) as $b | if .msg_type=="text" then $b.text else '+
   '($b.content|arrays|select(all(.[]; type=="array"))) as $lines | [($b.title|strings),($lines[]|map('+
@@ -23,14 +23,19 @@ const cleanPost='{title:(.title | strings // ""),content:[.content[]|map('+
   'elif .tag=="at" and (.user_id|type)=="string" then {tag,user_id:(if (.user_name|strings // ""|test("[^[:space:]]")) and (.user_id|test("^@_user_[0-9]+$")|not) then "" else .user_id end),user_name:(.user_name|strings // "")} else empty end)]}'
 // An image message carries only its image reference; one without a valid key is dropped.
 const imageRow='{image:((.body.content|fromjson?)|.image_key|select('+validKey+'))}'
+// A file message carries only its file reference and display name.
+const fileRow='{file:((.body.content|fromjson?)|select(.file_key|strings|test("^file_[A-Za-z0-9_-]{1,256}$"))|{key:.file_key,name:(.file_name|strings // "")})}'
 const sameRoot=root=>'.message_id=='+q(root)+' and '+noParents
-const rootRow=(r,root)=>r.message_id===root && !r.root_id && !r.parent_id
+// The root of a discussion: a native thread's root may itself quote an older message, so inside a known
+// thread the shared container proves it; otherwise it must be a top-level message.
+const rootRow=(r,root,container)=>r.message_id===root && (container ? r.thread_id===container || !r.thread_id && !r.root_id && !r.parent_id :
+  !r.root_id && !r.parent_id)
 const flatRow=r=>!r.thread_id && !r.root_id && !r.parent_id
-const sameThread=(r,root,container)=>r.thread_id===container && (r.root_id===root || rootRow(r,root))
-const textual=r=>r.deleted===false && ['text','post','image'].includes(r.msg_type) && r.sender?.sender_type==='user' &&
+const sameThread=(r,root,container)=>r.thread_id===container && (r.root_id===root || rootRow(r,root,container))
+const textual=r=>r.deleted===false && ['text','post','image','file'].includes(r.msg_type) && r.sender?.sender_type==='user' &&
   r.sender.id_type==='open_id' && /^ou_[\w-]{1,128}$/.test(r.sender.id)
 const order=(a,b)=>a.at-b.at || a.id.localeCompare(b.id)
-// One entry per image, at its first appearance.
+// One entry per image or file, at its first appearance.
 export const distinctImages=list=>{
   const seen=new Set()
   return list.filter(i=>!seen.has(i.key) && seen.add(i.key))
@@ -44,6 +49,12 @@ function rowImages(row) {
   }
   return row?.msg_type==='post' ? postImages(row.post ?? parsed(row)) : []
 }
+// The file a verified file message carries.
+function rowFiles(row) {
+  if (row?.msg_type!=='file') return []
+  const f=row.file ?? (b=>b && {key:b.file_key,name:b.file_name})(parsed(row))
+  return fileKey(f?.key) ? [{key:f.key,name:fileName(f.name)}] : []
+}
 
 export function createThreadReader({api,config,pageCursor,mentionScope,check,checkPrivate,failure}) {
   const {recipientId,tenantId}=config
@@ -56,7 +67,7 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     '(if .msg_type=="text" then {speech:$s} else ($b|select(.content|arrays|all(.[]; type=="array"))|{post:'+cleanPost+'}) + {speechSize:($s|length)} end) as $c | '+
     'select($s!="" or ([$c.post.content[]?[]?|select(.tag=="img")]|length)>0) | $c + {mentions:$mentions} + '+
     '(if ($keys|length)>0 and (.sender|'+isMe+') and (.sender.sender_name|type)=="string" then {sender:(.sender|{id,id_type,sender_type,tenant_key,sender_name})} else {} end)'
-  const content='(if .msg_type=="image" then '+imageRow+' else ('+display+') end)'
+  const content='(if .msg_type=="image" then '+imageRow+' elif .msg_type=="file" then '+fileRow+' else ('+display+') end)'
   const fields=meta+' + '+content
   const bad=(message='无法核实完整的飞书话题或分页。')=>failure(message,'invalid-response','history')
   const tooLarge=()=>failure('飞书上下文过大，未提交不完整的内容办理。','context-too-large','history')
@@ -72,8 +83,9 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     }
   }
   function rowText(row) {
-    // An image message reads as its marker only.
+    // An image or file message reads as its marker only.
     if (row.msg_type==='image') return rowImages(row).map(imageMarker)[0] ?? null
+    if (row.msg_type==='file') return rowFiles(row).map(f=>fileMarker(f.key,f.name))[0] ?? null
     const binding=mentionScope(row)
     const mentions=row.mentions ?? []
     if (typeof row.speech==='string') return renderTextMentions(row.speech,mentions,binding)
@@ -120,35 +132,35 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     const s=scope(chatId,group)
     let container=containerOf(target), anchor
     if (root!==messageId) {
-      // If the verified reply omitted its container, only its exact root may supply it. A quote
+      // If the verified reply omitted its container, only its exact top-level root may supply it. A quote
       // without a native thread does not authorize importing that root's old text as flat history.
-      const want=container ? '((.thread_id // "")=="" or .thread_id=='+q(container)+')' : 'true'
-      const filter=s.jq+' and '+sameRoot(root)+' and '+want
+      const want=container ? '.message_id=='+q(root)+' and (.thread_id=='+q(container)+' or ((.thread_id // "")=="" and '+noParents+'))' : sameRoot(root)
+      const filter=s.jq+' and '+want
       const project='('+meta+') + (if ('+human+' and '+(container?'true':'(.thread_id // "" | test("^omt_[a-zA-Z0-9_-]{1,128}$"))')+
         ') then (('+content+') // {}) else {} end)'
-      anchor=(await one(group,root,filter,project)).find(r=>s.ok(r) && rootRow(r,root) && (!container || !r.thread_id || r.thread_id===container))
+      anchor=(await one(group,root,filter,project)).find(r=>s.ok(r) && rootRow(r,root,container))
       if (!container && !anchor) throw bad('无法核实原消息是否属于独立飞书话题。')
       container??=containerOf(anchor)
     }
     const found=new Map()
     let length=0
-    const put=(id,at,sender,text,images=[])=>{
+    const put=(id,at,sender,text,images=[],files=[])=>{
       if (found.has(id) || typeof text!=='string' || !text.trim()) return
       length+=text.length+(found.size?1:0)
       if(length>maxContext) throw tooLarge()
-      found.set(id,{id,at,sender,text,images})
+      found.set(id,{id,at,sender,text,images,files})
     }
     // The request's own images; its text already carries their markers.
     const requestImages=rowImages(target)
     if (container) {
       // The archived request wins over an edited copy in a subsequent root or thread listing.
       put(messageId,at,event.senderId,event.text,requestImages)
-      if (anchor && textual(anchor) && time(anchor.create_time)) put(root,Number(anchor.create_time),anchor.sender.id,rowText(anchor),rowImages(anchor))
+      if (anchor && textual(anchor) && time(anchor.create_time)) put(root,Number(anchor.create_time),anchor.sender.id,rowText(anchor),rowImages(anchor),rowFiles(anchor))
       const region='.thread_id=='+q(container)+' and (.root_id=='+q(root)+' or ('+sameRoot(root)+'))'
       const items=()=>'[.data.items[]|select('+s.jq+' and '+human+' and .message_id!='+q(messageId)+' and ('+region+'))|'+fields+']'
       await pages(group,{container_id_type:'thread',container_id:container,sort_type:'ByCreateTimeAsc',page_size:50},items,rows=>{
         for(const r of rows) if (s.ok(r) && textual(r) && time(r.create_time) && r.message_id!==messageId && sameThread(r,root,container))
-          put(r.message_id,Number(r.create_time),r.sender.id,rowText(r),rowImages(r))
+          put(r.message_id,Number(r.create_time),r.sender.id,rowText(r),rowImages(r),rowFiles(r))
       })
       // Only a verified root (including an explicit deleted/non-text root) or the same root
       // in the validated thread listing establishes completeness; an empty lookup cannot.
@@ -168,7 +180,7 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
             const t=Number(r.create_time), u=Number(r.update_time)
             if (!time(t) || t<since || t>=at || (r.updated===true || r.update_time && u!==0) && !(time(u) && u<at) ||
               t<=cutoff && r.mentions?.some(m=>m?.id===recipientId)) continue
-            put(r.message_id,t,r.sender.id,rowText(r),rowImages(r))
+            put(r.message_id,t,r.sender.id,rowText(r),rowImages(r),rowFiles(r))
             if (found.size>=count) return true
           }
         })
@@ -188,59 +200,9 @@ export function createThreadReader({api,config,pageCursor,mentionScope,check,che
     const shown=[...found.values()].sort(order).flatMap(f=>f.images.map(key=>({messageId:f.id,key,at:f.at})))
     if (!found.has(messageId)) shown.push(...requestImages.map(key=>({messageId,key,at})))
     event.workerImages=distinctImages(shown)
+    // Every file the conversation shows; a file travels to the worker only once it is in the context.
+    event.workerFiles=distinctImages([...found.values()].sort(order).flatMap(f=>f.files.map(({key,name})=>({messageId:f.id,key,name,at:f.at}))))
     return found
   }
-  async function readReply({source,messageId,requesterId,questionId,originalText},original,grant,group,live) {
-    const {chatId,threadId:root}=source, s=scope(chatId,group)
-    live()
-    const filter=s.jq+' and '+human+' and .message_id=='+q(questionId)+' and .sender.id=='+q(recipientId)+
-      ' and .parent_id=='+q(messageId)+' and ((.root_id // "")=="" or .root_id=='+q(root)+')'
-    const question=(await one(group,questionId,filter,meta)).find(r=>s.ok(r) && textual(r) && r.message_id===questionId &&
-      r.sender.id===recipientId && r.parent_id===messageId && (!r.root_id || r.root_id===root) && time(r.create_time) && Number(r.create_time)>=Number(original.create_time))
-    live()
-    if (!question) return null
-    const originalContainer=containerOf(original), ownContainer=containerOf(question)
-    if (originalContainer && ownContainer && originalContainer!==ownContainer) throw bad()
-    let container=ownContainer || originalContainer
-    if(!container && original.message_id!==root) {
-      const anchor=(await one(group,root,s.jq+' and '+sameRoot(root),meta)).find(r=>s.ok(r) && rootRow(r,root))
-      if (!anchor) throw bad()
-      container=containerOf(anchor)
-    }
-    const after=Number(question.create_time), params={container_id_type:container?'thread':'chat',container_id:container || chatId,
-      sort_type:'ByCreateTimeAsc',page_size:50,...(container?{}:{start_time:String(Math.floor(after/1000))})}
-    const region=container ? '.thread_id=='+q(container)+' and .root_id=='+q(root) :
-      '((.root_id // "")=="" or .root_id=='+q(root)+' or .root_id=='+q(questionId)+')'
-    const items=()=>'([.data.items[]|select('+s.jq+' and '+human+' and .sender.id=='+q(requesterId)+' and .parent_id=='+q(questionId)+
-      ' and .message_id!='+q(questionId)+' and .message_id!='+q(messageId)+' and (.create_time|tonumber?)>='+after+' and ('+region+'))|'+fields+']|.[:1])'
-    let reply=null
-    await pages(group,params,items,rows=>{
-      live()
-      for (const r of rows.filter(r=>s.ok(r) && textual(r) && r.sender.id===requesterId && r.parent_id===questionId &&
-        ![questionId,messageId].includes(r.message_id) && time(r.create_time) && Number(r.create_time)>=after &&
-        (container ? r.thread_id===container && r.root_id===root : !r.root_id || r.root_id===root || r.root_id===questionId))
-        .sort((a,b)=>Number(a.create_time)-Number(b.create_time))) {
-        const text=rowText(r)
-        if (typeof text!=='string' || !text.trim()) continue
-        if (text.length>65536) throw tooLarge()
-        const images=distinctImages(rowImages(r).map(key=>({messageId:r.message_id,key,at:Number(r.create_time)})))
-        reply={chatId,threadId:root,messageId:r.message_id,senderId:requesterId,parentId:questionId,at:Number(r.create_time),text,
-          ...(images.length ? {workerImages:images} : {})}
-        return true
-      }
-    })
-    live()
-    if (reply && container) {
-      const event={chatId,threadId:root,messageId,senderId:requesterId,text:originalText}
-      const snapshot=await addHistory(event,{...original,thread_id:container},grant,group,{})
-      live()
-      // Do not resume a request on a reply that was recalled/edited between the exact search and refresh.
-      const seen=snapshot.get(reply.messageId)
-      if (seen?.sender!==requesterId || seen.at!==reply.at || seen.text!==reply.text) return null
-      reply.workerContext=event.workerContext
-      if (event.workerImages.length) reply.workerImages=event.workerImages
-    }
-    return reply
-  }
-  return {addHistory,readReply}
+  return {addHistory}
 }

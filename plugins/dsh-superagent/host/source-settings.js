@@ -25,7 +25,7 @@ export function sourceValues(f = {}) {
     tenantId:text(f?.tenantId),recipientId:text(f?.recipientId),pollIntervalMinutes:minutesOK(f?.pollIntervalMinutes) ? f.pollIntervalMinutes : 1,
     ...(automationSince ? {automationSince} : {}),allowPrivateChats,...(allowPrivateChats ? {privateChatsSince:f.privateChatsSince} : {})}
 }
-export function sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived=()=>false,hasIntake=()=>false,isSentMessage=()=>false,isQuestionReply=()=>false,waitingQuestions=()=>[],resumeQuestion,runCli,managedDir,onChange=()=>{},authFactory = createFeishuAuth}) {
+export function sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived=()=>false,hasIntake=()=>false,isSentMessage=()=>false,runCli,managedDir,onChange=()=>{},authFactory = createFeishuAuth}) {
   let active, disposed = false, tail = Promise.resolve(), ioTail = Promise.resolve(), timer, polling, started=false
   let lastPrivateConsent=0
   function current() {
@@ -57,7 +57,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     const check=()=>{if(current()!==rec) fail('scope-changed')}
     const rec = {key,logKey,unsavedLogs:[],config:f,names:new Map(),seen:new Map(),settings:{...f,version:randomUUID()},configured,admission,bindingId,scopeId,cliDir,auth:authFactory({cliDir,cliPath:f.cliPath})}
     rec.source = createFeishuSource({config:f,cliDir,admission,check,onPollWarning:(e,stage)=>recordFailure(rec,e,stage),isSentMessage:(chatId,id)=>isSentMessage(scope,chatId,id),
-      isQuestionReply:(chatId,id)=>isQuestionReply(scope,chatId,id),receive:(msg,grant)=>{
+      receive:(msg,grant)=>{
       check();checkPrivate(rec,msg)
       const automatic=!!f.automationSince
       return receive(msg,automatic ? grantScope(rec,grant) : scopeId,automatic,automatic ? rec.scopeId : undefined)
@@ -246,10 +246,12 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
         throw e
       }
       let pageOK=true
-      for(const {ownerSelfMention:candidate,...ref} of result.mentions) {
+      for(let {ownerSelfMention:candidate,...ref} of result.mentions) {
         check()
         if(epoch ? ref.privateChatsSince!==epoch || !ref.privatePeerId || ref.at<=epoch : ref.privatePeerId!==undefined)continue
         try {
+          const recorded=await a.recordedThread(ref,consent)
+          if(recorded) ref={...ref,threadId:recorded}
           // An ignored conversation, or messages from before a revocation, are not read, recorded or proposed.
           if(await a.skip(ref)) continue
           const archived=await archive(rec,ref)
@@ -286,20 +288,6 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     }
     return true
   }
-  async function pollQuestions(rec,groups) {
-    const scopes=new Set(groups.filter(g=>g.mode!=='pending').map(g=>grantScope(rec,g)))
-    let ok=true
-    for(const job of await waitingQuestions({tenantId:rec.config.tenantId,recipientId:rec.config.recipientId})) {
-      if(!scopes.has(job.source.scopeId))continue
-      live(rec)
-      try {
-        const {checkGrant}=jobScope(job.source)
-        const reply=await rec.source.readQuestionReply(job,checkGrant)
-        if(reply){live(rec);checkPrivate(rec,job.source);await resumeQuestion(job,reply)}
-      } catch(e){ok=false;await recordFailure(rec,e,'receive')}
-    }
-    return ok
-  }
   async function poll() {
     if(disposed)return
     const rec=current(), consent=rec.settings.automationSince, startedAt=Date.now()
@@ -316,7 +304,6 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
         } catch(e) {await recordFailure(rec,e,'group')} // Missing display names do not block intake.
       }
       let ok=await replay(rec,groups) && hydrated
-      ok=await pollQuestions(rec,groups) && ok
       for(const epoch of [undefined,...(rec.config.allowPrivateChats ? [rec.config.privateChatsSince] : [])]){
         try { ok=await scanFeed(rec,epoch,startedAt) && ok }
         catch(e){if(e?.code!=='scope-changed'){ok=false;await recordFailure(rec,e,'poll')}}
@@ -403,6 +390,14 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
       signal?.throwIfAborted()
       if(current()!==rec) fail('scope-changed')
       return images
+    },
+    // Files a worker is about to receive, read under the job's current grant; `use` reads each one in place.
+    async loadFiles(source,refs,signal,requesterId,use) {
+      const {rec,checkGrant}=jobScope(source,signal)
+      const files=await rec.source.files({source,refs,requesterId},checkGrant,use)
+      signal?.throwIfAborted()
+      if(current()!==rec) fail('scope-changed')
+      return files
     },
     async deliverReviewed(job) {
       try {

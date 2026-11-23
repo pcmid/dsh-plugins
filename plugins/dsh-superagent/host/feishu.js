@@ -3,7 +3,7 @@ import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { createThreadReader } from './thread-context.js'
-import { imageKey, legacyPostText, postText, renderTextMentions } from './mention-text.js'
+import { fileKey, imageKey, legacyPostText, postText, renderTextMentions } from './mention-text.js'
 import { validAdmissionScope } from './admission.js'
 import { replyScopes } from './auth.js'
 import { cliExecutable } from './cli-path.js'
@@ -63,16 +63,25 @@ async function runCli(cliPath, args, input = '', cliDir, cwd) {
   })
 }
 
+// The discussion a message belongs to, named by its root message. A native thread reply belongs to its
+// thread's root; any other message starts its own discussion, because SuperAgent's in-thread reply roots
+// a native thread at that very message. A quoted message is a clue for the Router, not the discussion.
 function rootOf(row) {
-  if (row.root_id) return matches(message,row.root_id) ? row.root_id : null
-  // A parent alone is not evidence of the root of a nested reply.
-  return !row.parent_id && matches(message,row.message_id) ? row.message_id : null
+  // A parent without a root is not a consistent reply.
+  if (!matches(message,row.message_id) || row.parent_id && !row.root_id) return null
+  if (!row.thread_id) return row.message_id
+  if (!matches(topic,row.thread_id)) return null
+  return row.root_id ? (matches(message,row.root_id) ? row.root_id : null) : row.message_id
 }
+// Whether a verified row may be named by a recorded discussion: its own message (it later became a
+// thread root), the root above it, or the quoted root that older records used for a flat reply.
+const belongs = (row,threadId) => matches(message,threadId) && !(row?.parent_id && !row.root_id) &&
+  (row?.message_id===threadId || row?.root_id===threadId)
 
-function mention(row, scope, group) {
+function mention(row, scope, group, claimed) {
   const {tenantId,recipientId,chatId} = scope
   const sender = row?.sender
-  const threadId = row && rootOf(row)
+  const threadId = row && (claimed===undefined ? rootOf(row) : belongs(row,claimed) ? claimed : null)
   if (!threadId || !matches(chat,chatId) || row.chat_id !== chatId || !matches(message,row.message_id) ||
       row.deleted !== false || !['text','post'].includes(row.msg_type) || row.upper_message_id ||
       sender?.sender_type !== 'user' || sender.id_type !== 'open_id' ||
@@ -99,8 +108,8 @@ function messageText(row,scope,legacy=false) {
 }
 
 const peerFields = group => group?.peerId ? {privatePeerId:group.peerId,privateChatsSince:group.privateSince} : {}
-function envelope(row, scope, group, displayScope) {
-  const ref=mention(row,scope,group)
+function envelope(row, scope, group, displayScope, claimed) {
+  const ref=mention(row,scope,group,claimed)
   if (!ref) return null
   const text=messageText(row,displayScope)
   if (!text) return null
@@ -108,7 +117,7 @@ function envelope(row, scope, group, displayScope) {
 }
 
 // Private Host adapter. No event listener, public ingress, credential or implicit send permission.
-export function createFeishuSource({config = {}, cliDir, admission, receive, isSentMessage=()=>false, isQuestionReply=()=>false, onPollWarning=()=>{}, run = runCli.bind(null,config.cliPath), check=()=>{}}) {
+export function createFeishuSource({config = {}, cliDir, admission, receive, isSentMessage=()=>false, onPollWarning=()=>{}, run = runCli.bind(null,config.cliPath), check=()=>{}}) {
   const {profile,tenantId,recipientId} = config
   const enabled = config.enabled === true
   const configured = hasFeishuIdentity(config) && typeof admission?.run === 'function'
@@ -278,7 +287,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     const sameId=JSON.stringify(id), sameChat=JSON.stringify(chatId), sameRoot=JSON.stringify(threadId)
     // Filter the exact row before it crosses into the Host: GET can include nested/forwarded rows.
     const selection='.chat_id=='+sameChat+' and .message_id=='+sameId+' and (.upper_message_id // "")==""'+selfSender(chatId)+
-      (threadId ? ' and '+eligible+' and (.root_id=='+sameRoot+' or ((.root_id // "")=="" and (.parent_id // "")=="" and .message_id=='+sameRoot+'))' : '')+
+      (threadId ? ' and '+eligible+' and (.root_id=='+sameRoot+' or .message_id=='+sameRoot+')' : '')+
       (at!==undefined ? ' and (.create_time | tostring)=='+JSON.stringify(String(at)) : '')
     try {
       const items = rows(await api('GET',messages+'/'+id,{user_id_type:'open_id'},undefined,
@@ -297,10 +306,10 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     return token
   }
   const metadataRows=(onlyPrivate=false)=>'{ok,identity,dry_run,data:{items:[.data.items[]|'+(onlyPrivate ? 'select(.sender.id!='+me+' or ('+human+' and '+byOwner+'))|' : '')+
-    '{message_id,chat_id,root_id,parent_id,upper_message_id,msg_type,deleted,create_time,'+
+    '{message_id,chat_id,thread_id,root_id,parent_id,upper_message_id,msg_type,deleted,create_time,'+
     'sender:(.sender|{id,id_type,sender_type,tenant_key}),mentions:[.mentions[]?|{id,id_type,tenant_key}]}]}}'
-  const questionChild = row => matches(message,row?.parent_id) && isQuestionReply(row.chat_id,row.parent_id)
-  const excluded=async row=>(row.sender.id===recipientId && await isSentMessage(row.chat_id,row.message_id)) || await questionChild(row)
+  // Only SuperAgent's own posts are left out. A reply to its question is a new request only when it @s the owner.
+  const excluded=async row=>row.sender.id===recipientId && await isSentMessage(row.chat_id,row.message_id)
   // Only for verified owner self-mention candidates: a sender cannot identify the *other* participant.
   async function partnerIds(chatIds,epoch) {
     const ids=[...new Set(chatIds)], partners=new Map()
@@ -433,7 +442,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     if (!Number.isInteger(count) || count<0 || count>100 || !Number.isInteger(minutes) || minutes<0 || minutes>1440) throw malformed()
     return {count,minutes}
   }
-  const {addHistory,readReply}=createThreadReader({api,config,pageCursor,mentionScope,check,checkPrivate,failure})
+  const {addHistory}=createThreadReader({api,config,pageCursor,mentionScope,check,checkPrivate,failure})
   function validateRef(ref) {
     if (!automated) throw failure('未完成自动办理授权。')
     if (!matches(chat,ref?.chatId) || !matches(message,ref.threadId) || !matches(message,ref.messageId) || !positiveTime(ref.at)) throw malformed()
@@ -445,41 +454,29 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
   }
   async function exactEvent({chatId,threadId,messageId,at,ownerSelfMention},group,grant) {
     const row=await exact(messageId,chatId,threadId,at,group)
-    const event=envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
+    const event=envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row),threadId)
     if (!event || event.threadId!==threadId || Number(row.create_time)!==at || ownerSelfMention===true && event.senderId!==recipientId ||
         grant?.mode==='sender' && event.senderId!==grant.senderId ||
         !stillOwnerRequest(grant,row,event) || await excluded(row)) return null
     checkPrivate(group)
     return {row,event}
   }
-  async function verifyOriginalForQuestion({source,messageId,requesterId},grant,group) {
-    const {chatId,threadId}=source
-    if (source.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
-        !matches(message,messageId) || !matches(message,threadId) || !matches(person,requesterId) ||
-        source.privatePeerId!==group?.peerId || source.privateChatsSince!==group?.privateSince) return null
-    const row=await exact(messageId,chatId,threadId,undefined,group), event=envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
-    if (event?.threadId!==threadId || event.senderId!==requesterId || grant.mode==='sender' && requesterId!==grant.senderId ||
-        !stillOwnerRequest(grant,row,event) || await excluded(row) ||
-        !inGrant(grant,{messageId,threadId,at:Number(row.create_time)})) return null
-    checkPrivate(group)
-    return row
-  }
-  // One image of a verified job conversation, as bytes. The CLI writes into a private directory that is
-  // removed afterwards; a recalled message or a refused download leaves only the image's marker.
-  async function download(messageId,key) {
-    const dir=await realpath(await mkdtemp(join(tmpdir(),'superagent-image-')))
+  // One image or file of a verified job conversation. The CLI writes into a private directory that is
+  // removed once `use` has read it; a recalled message or a refused download leaves only the marker.
+  async function download(messageId,key,type,use) {
+    const dir=await realpath(await mkdtemp(join(tmpdir(),'superagent-'+type+'-')))
     try {
       check()
       let out
       try {
         out=await run(['--profile',profile,'im','+messages-resources-download','--message-id',messageId,'--file-key',key,
-          '--type','image','--output','image','--as','user','--format','json'],undefined,cliDir,dir)
+          '--type',type,'--output',type,'--as','user','--format','json'],undefined,cliDir,dir)
       } catch { return null }
       check()
       if (out?.ok!==true || out.identity!=='user' || typeof out.data?.saved_path!=='string') return null
       const path=await realpath(out.data.saved_path).catch(()=>null), info=path && await stat(path)
-      if (!info || dirname(path)!==dir || !info.isFile() || info.size>maxImageBytes) return null
-      return await readFile(path)
+      if (!info || dirname(path)!==dir || !info.isFile() || type==='image' && info.size>maxImageBytes) return null
+      return await use(path)
     } finally { await rm(dir,{recursive:true,force:true}) }
   }
   function inGrant(grant,{messageId,threadId,at}) {
@@ -488,20 +485,6 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
   }
   return {
     status,
-    // Called only for a persisted waiting job and its actual confirmed outgoing question receipt.
-    async readQuestionReply(input,checkGrant) {
-      const {source,messageId,requesterId,questionId}=input || {}
-      if (!automated || source?.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
-        !matches(message,source.threadId) || !matches(message,messageId) || !matches(message,questionId) || questionId===messageId ||
-        !matches(person,requesterId) || !validText(input.originalText) || typeof checkGrant!=='function') throw malformed('admission')
-      return guarded({...source,senderId:requesterId},async (grant,group)=>{
-        const live=()=>{check();checkPrivate(group);checkGrant(grant)}
-        live()
-        const original=await verifyOriginalForQuestion(input,grant,group)
-        live()
-        return original ? readReply(input,original,grant,group,live) : null
-      },checkGrant)
-    },
     // Images of a job's conversation, under the job's current grant; null for each one not obtained.
     async images({source,requesterId,refs},checkGrant) {
       if (!automated || source?.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
@@ -511,7 +494,22 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         const out=[]
         for (const r of refs) {
           checkGrant(grant);checkPrivate(group)
-          out.push(await download(r.messageId,r.key))
+          out.push(await download(r.messageId,r.key,'image',path=>readFile(path)))
+        }
+        return out
+      },checkGrant)
+    },
+    // Files of a job's conversation, under the job's current grant. `use(index,path)` reads each file while
+    // it exists; the result is null for a file not obtained.
+    async files({source,requesterId,refs},checkGrant,use) {
+      if (!automated || source?.kind!=='feishu' || source.tenantId!==tenantId || source.recipientId!==recipientId ||
+        !matches(message,source.threadId) || !Array.isArray(refs) || refs.length>100 ||
+        !refs.every(r=>matches(message,r?.messageId) && fileKey(r.key)) || typeof checkGrant!=='function' || typeof use!=='function') throw malformed('message')
+      return guarded({...source,...(matches(person,requesterId) ? {senderId:requesterId} : {})},async (grant,group)=>{
+        const out=[]
+        for (const [i,r] of refs.entries()) {
+          checkGrant(grant);checkPrivate(group)
+          out.push(await download(r.messageId,r.key,'file',path=>use(i,path)))
         }
         return out
       },checkGrant)
@@ -608,7 +606,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
           }
         } else ({items,more,next}=threadId ? await threadRows(chatId,threadId,since,cursor) : await search({chatId,since,cursor}))
         for (const row of items.sort((a,b) => Number(a?.create_time)-Number(b?.create_time))) {
-          let event = envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
+          let event = envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row),threadId)
           const at=Number(row?.create_time)
           if (!event || seen.has(event.messageId) || since && (!Number.isSafeInteger(at) || at<=since)) continue
           if (!automated && await excluded(row)) continue
@@ -645,7 +643,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
           !(perm.missing===null || Array.isArray(perm.missing) && !perm.missing.length)) throw failure('没有本人发送权限。')
         checkPrivate(group)
         const row=await exact(messageId,chatId,threadId,undefined,group)
-        const event = envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row))
+        const event = envelope(row,{chatId,tenantId,recipientId},group,mentionScope(row),threadId)
         if (event?.threadId!==threadId || grant.mode==='sender' && event.senderId!==grant.senderId ||
             !stillOwnerRequest(grant,row,event) || await excluded(row)) throw failure('不能核实原消息与话题，未发送。')
         if (!inGrant(grant,{messageId,threadId,at:Number(row.create_time)})) throw failure('原消息早于此次授权。')

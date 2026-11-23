@@ -37,7 +37,13 @@ async function oldWorker(ctx,path,j) {
 
 export async function legacyRound(ctx,path,actors) {
   const store=await openStore({open:spec=>ctx.storageDomain.open({...spec,name:'legacy_fixture_'+spec.name})})
-  const loop=createLoop({...store.automationStore,decide:async()=>{assert.ok(!actors);return {action:'work',role:'answer'}},
+  const follow={...job,caseId:'legacy-follow',messageId:'om_legacy_reply',text:legacy.reply}
+  const loop=createLoop({...store.automationStore,caseInfo:()=>job,decide:b=>{
+    if(!actors){assert.equal(b.messageId,job.messageId);return {action:'work',role:'answer'}}
+    assert.equal(b.messageId,follow.messageId)
+    assert.deepEqual(b.openWork,[{ref:'w1',request:job.text,state:'waiting for the requester',output:legacy.question}])
+    return {action:'merge',target:'w1'}
+  },
     work:actors?.work ?? (j=>oldWorker(ctx,path,j)),deliver:async j=>{
       assert.ok(!actors);assert.equal(j.text,legacy.question)
       return {chatId:source.chatId,inReplyTo:job.messageId,messageId:questionId}
@@ -51,15 +57,16 @@ export async function legacyRound(ctx,path,actors) {
       await loop.drain()
       assert.equal((await loop.snapshot())[0].status,'waiting-requester')
     } else {
-      const [old]=await loop.waitingQuestions(source)
-      assert.equal(old.questionId,questionId)
+      const [old]=await loop.snapshot()
+      assert.deepEqual([old.status,old.receipt.messageId],['waiting-requester',questionId])
       assert.equal((await ctx.sessionPersistence.stat(sessionId))?.header.id,sessionId)
-      assert.ok(await loop.resumeQuestion(old,{...source,messageId:'om_legacy_reply',senderId:job.requesterId,parentId:old.questionId,at:Date.now(),text:legacy.reply}))
+      await loop.enqueue(follow)
       await loop.drain()
-      const [row]=await loop.snapshot()
+      const [row,merged]=await loop.snapshot()
+      assert.deepEqual([merged.status,merged.mergedInto],['merged',{caseId:job.caseId,messageId:job.messageId}])
       assert.deepEqual([row.status,row.sessionId,row.outputKind,row.answer],['awaiting-release',sessionId,'answer','Confirmed: '+legacy.reply])
       assert.ok(row.releaseToken && !row.receipt)
-      console.log('PASS migration: the cold native worker resumed its recorded legacy JSON question and submitted the final answer with a result tool; independent release still required.')
+      console.log('PASS migration: a merged mention continued the cold native worker with its recorded legacy JSON question; the final answer still requires its own release.')
     }
   } finally {await loop.dispose();await store.close()}
 }

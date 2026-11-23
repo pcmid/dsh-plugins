@@ -17,7 +17,7 @@ import { ignoreAfterRestart,ignoreBeforeExit } from './ignore.mjs'
 import { memberAfterRestart,memberBeforeExit } from './member.mjs'
 import { imagesRound } from './images.mjs'
 import { chatId,clarificationId,declineId,fakeFeishu,firstId,followupId,foreignMessageId,messageId,otherDM,peerSelfId,privateMessageId,questionId,receiptId,root,selfChatId,selfMessageId,selfReceiptId,source } from './feishu.mjs'
-import { answer,forbiddenAnswer,ownerAsk,probes,resultNames,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
+import { answer,forbiddenAnswer,ownerAsk,probes,resultNames,mergeTool,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
 
 const decision=(j,action)=>({caseId:j.caseId,messageId:j.messageId,token:j.releaseToken,action})
 const job=(snapshot,id)=>snapshot.automation.find(j=>j.messageId===id)
@@ -89,8 +89,8 @@ async function checkSession(ctx,id,role,outputs) {
       assert.match(late[0].data.message.content[0].text,sealRE,'the ordinary tail tool ran under the native allow policy')
       assert.equal(events.filter(e=>e.type==='tool/result' && JSON.stringify(e.data).includes('SEAL:')).length,2,
         'both ordinary developer calls are retained, not re-executed after restart')
-    } else assert.ok(!events.some(e=>e.type==='tool/call' && !resultNames.DECIDE.includes(e.data.name)))
-    const names=role==='lead'?resultNames.DECIDE:resultNames.WORK
+    } else assert.ok(!events.some(e=>e.type==='tool/call' && ![...resultNames.DECIDE,mergeTool].includes(e.data.name)))
+    const names=role==='lead'?[...resultNames.DECIDE,mergeTool]:resultNames.WORK
     const calls=events.filter(e=>e.type==='tool/call' && names.includes(e.data.name)).map(e=>e.data)
     const submitted=role==='develop'?outputs.flatMap((text,i)=>[i?supersededAnswer:supersededQuestion,text]):outputs
     assert.equal(calls.length,submitted.length)
@@ -228,16 +228,13 @@ async function confirmQuestions(app,provider,transport,saved) {
 
 async function resumeWork(ctx,app,provider,transport,waiting,saved) {
   assert.deepEqual((await app.snapshot()).automation,waiting.automation,'waiting-requester survives reopening native storage')
-  async function stillWaiting() {
-    const start=transport.historyReads.length
-    assert.equal(job(await poll(app),messageId).status,'waiting-requester')
-    const checked=transport.historyReads.slice(start)
-    assert.ok(checked.length && checked.every(p=>p.replyLookup),'an unanswered question only scans for its addressed reply: '+JSON.stringify(checked))
-  }
-  await stillWaiting() // Even cold, the overlapping discovery window must not re-read an already queued job’s thread.
+  const reads=transport.historyReads.length
+  assert.equal(job(await poll(app),messageId).status,'waiting-requester')
   transport.publishWrongReplies()
-  await stillWaiting()
-  assert.deepEqual(provider.calls,[],'wrong author or parent cannot wake the worker')
+  assert.equal(job(await poll(app),messageId).status,'waiting-requester')
+  assert.equal(transport.historyReads.length,reads,'waiting alone does not poll a question’s replies')
+  assert.deepEqual(provider.calls,[],'ordinary replies in the group do not wake the worker')
+  provider.firstDraft=job(waiting,messageId).answer
   transport.publishClarification()
   const ready=await poll(app)
   assert.ifError(provider.error);assert.ifError(transport.error)
@@ -245,13 +242,15 @@ async function resumeWork(ctx,app,provider,transport,waiting,saved) {
   assert.match(seal,sealRE)
   assert.deepEqual(issued,[],'the new OS process reuses the actual prior tool result without executing it again')
   const finalText=answer+' '+seal
-  assert.equal(ready.cases.length,saved.cases.length,'an unmentioned reply resumes the original case')
-  assert.equal(ready.automation.length,saved.automation.length)
-  assert.ok(!job(ready,clarificationId))
+  const merged=job(ready,clarificationId)
+  assert.notEqual(merged?.caseId,first.caseId)
+  assert.deepEqual([merged?.status,merged?.mergedInto],['merged',{caseId:first.caseId,messageId}])
+  assert.equal(ready.automation.length,saved.automation.length+1,'the mention has its own Router decision, not its own worker')
+  assert.ok(merged.routerSessionId && !merged.workerSessionId)
   assert.deepEqual([final?.status,final?.outputKind,final?.answer,final?.caseId,final?.sessionId],
     ['awaiting-release','answer',finalText,first.caseId,first.sessionId],JSON.stringify(final))
   assert.ok(final.releaseToken && final.releaseToken!==first.releaseToken)
-  assert.deepEqual(provider.calls,['WORK'],'only one worker call after the clarification, with no second dispatch or separate verification')
+  assert.deepEqual(provider.calls,['DECIDE','WORK'],'one decision merges the mention into the original worker')
   assert.deepEqual(provider.workSessions,[first.sessionId])
   await checkSession(ctx,first.sessionId,'develop',[first.answer,finalText])
   await checkPlacement(ctx,final,provider.project)
@@ -476,7 +475,7 @@ export async function verify(ctx,provider,workspacePath) {
       await imagesRound(ctx,provider,actors)
       assert.ok(provider.emptyRouter,'the default Router reached the native provider')
       assert.equal((await ctx.sessionPersistence.stat(provider.emptyRouter)).header.agentPreset,'default-fixture')
-      console.log('PASS automation: release; cold native worker resumed the confirmed question only on its original requester’s unmentioned reply; independent final approval, rejected question had zero sends; recovered receipt did not loop. Owner self-mentions in notes and opted-in P2P ran without clicks; plain owner DMs were ignored and peer-initiated messages still required separate admission. Every outgoing answer was released separately.')
+      console.log('PASS automation: release; after cold restart the group question waited through unmentioned replies; a new mention merged back into the original worker. Each outgoing question or answer required its own approval; receipt replay did not dispatch again. Notes required owner self-mentions; opted-in peer DMs entered normal admission without an @.')
     } else {
       await prepare(ctx,app,provider,transport)
       const takeover=await exerciseTakeover(ctx,app,provider,transport)

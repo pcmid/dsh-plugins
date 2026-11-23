@@ -15,7 +15,7 @@ test('installed CLI dry-run: production argv and jq keep other messages and priv
   try {invoke(['--version'])} catch(e) {if(e.code==='ENOENT') {t.skip('system lark-cli is not installed');return} throw e}
   const config={enabled:true,profile:'fixture',tenantId:'tenant',recipientId:'ou_me',automationSince:10,historyCount:0}
   const chatId='oc_demo',threadId='om_root',messageId='om_target',at=12,secret='SHOULD_NOT_CROSS_BOUNDARY'
-  const row={message_id:messageId,chat_id:chatId,root_id:threadId,create_time:String(at),deleted:false,msg_type:'text',
+  const row={message_id:messageId,chat_id:chatId,thread_id:'omt_demo',root_id:threadId,create_time:String(at),deleted:false,msg_type:'text',
     sender:{id:'ou_me',id_type:'open_id',sender_type:'user',tenant_key:'tenant',name:secret},
     mentions:[{id:'ou_me',id_type:'open_id',tenant_key:'tenant',name:secret,key:secret}],body:{content:JSON.stringify({text:secret})}}
   const rich={...row,thread_id:'omt_demo',msg_type:'post',body:{content:JSON.stringify({content:[[{tag:'at',user_id:'@_user_1'},{tag:'text',text:' exact request'}]]})},

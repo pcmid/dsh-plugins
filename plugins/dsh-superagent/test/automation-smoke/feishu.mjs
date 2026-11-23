@@ -170,7 +170,7 @@ export function fakeFeishu(rows=[]) {
       publish('om_wrong_person','WRONG-REPLY: somebody else.',{parent:questionId,mention:false})
       publish('om_wrong_parent','WRONG-REPLY: not a response to the question.',{parent:messageId,from:owner,mention:false})
     },
-    publishClarification:()=>publish(clarificationId,clarification,{from:owner,parent:questionId,mention:false}),
+    publishClarification:()=>publish(clarificationId,clarification,{from:owner,parent:questionId}),
     publishSelf(){
       publish('om_plain_self','@owner is just text.',{chat:selfChatId,from:owner,parent:null,mention:false})
       const note=publish(selfMessageId,'@_user_1 ping',{chat:selfChatId,from:owner,parent:null})

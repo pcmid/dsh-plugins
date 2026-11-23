@@ -612,8 +612,7 @@ const mergeFollowUps=(routed,target='w1',ids=[followUp.messageId])=>b=>{
 const byId=async(h,id)=>(await h.loop.snapshot()).find(r=>r.messageId===id)
 const stored=(doc,id)=>doc.jobs.find(j=>j.messageId===id)
 const atMerge=(h,id=followUp.messageId)=>h.commits.find(c=>stored(c,id)?.status==='merged')
-const answerTo=(q,messageId='om_answer')=>({chatId:q.source.chatId,threadId:q.source.threadId,senderId:q.requesterId,
-  parentId:q.questionId,at:200,messageId,text:'October.'})
+const clarification=later('om_answer','@owner October.',{caseId:'case_clarification'})
 
 test('a follow-up merges into work not yet started; the worker takes each merged message in and posts anew',async()=>{
   const gate=deferred(), busy=deferred(), routed=[], worked=[], keys=[]
@@ -725,7 +724,7 @@ test('a follow-up discards an unsent draft: the old release token is stale and t
   assert.deepEqual((await byId(h2,first.messageId)).answer,'November')
 })
 
-test('a follow-up withdraws a question still waiting for the requester; a later reply to it no longer resumes the worker',async()=>{
+test('a merged @ withdraws the outstanding question and resumes the worker once, even on replay',async()=>{
   let n=0
   const routed=[], worked=[], keys=[], go=deferred()
   const h=automatic({caseInfo:cases(),decide:mergeFollowUps(routed),
@@ -735,19 +734,18 @@ test('a follow-up withdraws a question still waiting for the requester; a later 
       await go.promise;return {...result,answer:'The fiscal October report'}
     },
     deliver:b=>{keys.push(b.idempotencyKey);return {...reply(b),messageId:'om_sent'+(++n)}}})
-  assert.equal((await run(h,first)).status,'waiting-requester')
-  const [question]=await h.loop.waitingQuestions(first.source)
+  const waiting=await run(h,first)
+  assert.equal(waiting.status,'waiting-requester')
+  assert.equal(await h.loop.isSentMessage(first.source,first.source.chatId,waiting.receipt.messageId),true)
   await h.loop.enqueue(followUp)
   await until(()=>worked.length===2,'the worker to rerun with the follow-up')
   assert.deepEqual(routed.at(-1).openWork,[{ref:'w1',request:first.text,state:'waiting for the requester',output:'Which month?'}])
   const reopened=stored(atMerge(h),first.messageId)
   assert.equal(reopened.status,'assigned')
   for(const k of ['turns','receipt','answer','outputKind'])assert.ok(!(k in reopened),k)
-  assert.deepEqual(await h.loop.waitingQuestions(first.source),[])
-  assert.equal(await h.loop.resumeQuestion(question,answerTo(question)),false)
-  assert.equal(await h.loop.isQuestionReceipt(first.source,first.source.chatId,question.questionId),false)
+  assert.deepEqual((await byId(h,followUp.messageId)).mergedInto,{caseId:first.caseId,messageId:first.messageId})
+  await h.loop.enqueue(followUp)
   go.resolve();await h.loop.drain()
-  assert.equal(await h.loop.resumeQuestion(question,answerTo(question)),false)
   const second=worked[1]
   assert.deepEqual([second.continueWork,second.previousWorkspaceId,second.supplements],[true,result.workspaceId,[{text:followUp.text,from:'requester'}]])
   for(const k of ['previousSessionId','previousQuestion','requesterReply'])assert.ok(!(k in second),k)
@@ -756,40 +754,47 @@ test('a follow-up withdraws a question still waiting for the requester; a later 
   assert.equal(worked.length,2);assert.equal(new Set(keys).size,2)
 })
 
-test('a requester reply the worker has not taken in yet rides along ahead of a merged follow-up',async()=>{
-  const routed=[], worked=[], gate=deferred(), busy=deferred()
-  const h=automatic({caseInfo:cases(),decide:mergeFollowUps(routed),
-    work:async b=>{
-      worked.push(b)
-      if(worked.length===1) return {...seat,question:'Which month?'}
-      if(worked.length===2) {busy.resolve();await new Promise((_,reject)=>b.signal.addEventListener('abort',()=>reject(Object.assign(Error('stopped'),{code:'WORK_UNCERTAIN'})),{once:true}))}
-      await gate.promise;return {...result,answer:'The October report'}
-    },
-    deliver:b=>({...reply(b),messageId:'om_sent'+worked.length})})
-  assert.equal((await run(h,first)).status,'waiting-requester')
-  const [q]=await h.loop.waitingQuestions(first.source)
-  assert.equal(await h.loop.resumeQuestion(q,answerTo(q)),true)
+test('a legacy requester reply not yet taken in rides along ahead of a merged @',async()=>{
+  const old=automatic({work:()=>({...seat,question:'Which month?'})})
+  const waiting=await run(old,first)
+  assert.equal(waiting.status,'waiting-requester')
+  await old.loop.dispose()
+  // A pre-mention-flow build committed the reply but had not started the worker.
+  const saved=clone(old.saved),j=saved.jobs[0]
+  Object.assign(j,{status:'assigned',attempt:0,turns:[{questionId:j.receipt.messageId,replyId:'om_legacy_answer',question:j.answer,reply:'October.'}]})
+  delete j.receipt;delete j.answer;delete j.outputKind
+
+  const worked=[], busy=deferred()
+  const h=automatic({caseInfo:cases(),decide:mergeFollowUps([]),work:async b=>{
+    worked.push(b)
+    if (!b.continueWork) {
+      busy.resolve()
+      await new Promise((_,reject)=>b.signal.addEventListener('abort',()=>reject(Error('interrupted')),{once:true}))
+    }
+    return {...result,answer:'The October report'}
+  },deliver:b=>({...reply(b),messageId:'om_final'})},saved)
   void h.loop.drain();await busy.promise
-  // The clarification run is interrupted before it took the reply in.
-  await h.loop.enqueue(followUp)
-  await until(()=>worked.length===3,'the worker to rerun with the follow-up')
-  assert.deepEqual(worked[2].supplements,[{text:'October.',from:'requester'},{text:followUp.text,from:'requester'}])
-  for(const k of ['previousQuestion','requesterReply'])assert.ok(!(k in worked[2]),k)
-  gate.resolve();await h.loop.drain()
+  assert.deepEqual([worked[0].previousQuestion,worked[0].requesterReply],['Which month?','October.'])
+  await h.loop.enqueue(followUp);await h.loop.drain()
+  assert.equal(worked.length,2)
+  assert.deepEqual(worked[1].supplements,[{text:'October.',from:'requester'},{text:followUp.text,from:'requester'}])
+  for(const k of ['previousQuestion','requesterReply'])assert.ok(!(k in worked[1]),k)
   assert.equal((await byId(h,first.messageId)).answer,'The October report')
 })
 
-test('a follow-up in the same thread reopens a posted reply, even after a clarification round, and posts a new reply',async()=>{
+test('a same-thread @ reopens a posted reply, even after a merged clarification, and posts a new reply',async()=>{
   for(const clarified of [false,true]) {
     let n=0
     const routed=[], worked=[], keys=[]
-    const h=automatic({caseInfo:cases(),decide:mergeFollowUps(routed),
+    const h=automatic({caseInfo:cases(),decide:mergeFollowUps(routed,'w1',[clarification.messageId,followUp.messageId]),
       work:b=>{worked.push(b);return clarified && worked.length===1 ? {...seat,question:'Which month?'} : {...result,answer:'Answer '+worked.length}},
       deliver:b=>{keys.push(b.idempotencyKey);return {...reply(b),messageId:'om_sent'+(++n)}}})
-    await run(h,first)
+    const initial=await run(h,first)
     if(clarified) {
-      const [q]=await h.loop.waitingQuestions(first.source)
-      assert.equal(await h.loop.resumeQuestion(q,answerTo(q)),true);await h.loop.drain()
+      assert.equal(initial.status,'waiting-requester')
+      await h.loop.enqueue(clarification);await h.loop.drain()
+      assert.equal((await byId(h,clarification.messageId)).status,'merged')
+      assert.deepEqual(worked[1].supplements,[{text:clarification.text,from:'requester'}])
     }
     const posted=await byId(h,first.messageId)
     assert.equal(posted.status,'delivered')
@@ -801,7 +806,7 @@ test('a follow-up in the same thread reopens a posted reply, even after a clarif
     assert.deepEqual([reopened.status,reopened.text,reopened.requesterId,reopened.receipt,reopened.answer],
       ['assigned','Case text of '+first.messageId,requesterId,undefined,undefined])
     assert.deepEqual(reopened.team,input.team)
-    assert.deepEqual(reopened.turns,clarified ? [{questionId:'om_sent1',replyId:'om_answer'}] : undefined)
+    assert.equal(reopened.turns,undefined)
     const last=worked.at(-1)
     assert.deepEqual([last.continueWork,last.previousWorkspaceId,last.text,last.supplements],
       [true,result.workspaceId,'Case text of '+first.messageId,[{text:followUp.text,from:'requester'}]])
@@ -837,7 +842,8 @@ test('the Router is offered only open work of the same conversation and binding,
     moved(awaiting,'om_t04',{source:{threadId:'om_t04'},text:'Outside any thread'}),
     moved(awaiting,'om_t05',{source:{chatId:'oc_elsewhere'}}),
     moved(awaiting,'om_t06',{source:{recipientId:'ou_other'}}),
-    moved(awaiting,'om_t07',{source:{scopeId:'e'.repeat(64)}}),
+    moved(awaiting,'om_t07',{source:{scopeId:'e'.repeat(64)},text:'Separate grant in the same thread'}),
+    moved(awaiting,first.source.threadId,{source:{threadId:'om_original_root'},text:'The request this thread grew from'}),
     moved(awaiting,'om_t08'),
     moved(awaiting,'om_t09'),
     moved(failed,'om_t10'),
@@ -850,8 +856,10 @@ test('the Router is offered only open work of the same conversation and binding,
   assert.deepEqual(routed[0].openWork,[
     {ref:'w1',request:'Same thread draft',state:'reply drafted',output:result.answer},
     {ref:'w2',request:'Case text of om_t02',state:'replied',output:result.answer},
-    {ref:'w3',request:'Same thread question',state:'question drafted',output:'Which month?'}])
-  assert.deepEqual(looked,['om_t01','om_t02','om_t08','om_t09','om_t11'])
+    {ref:'w3',request:'Separate grant in the same thread',state:'reply drafted',output:result.answer},
+    {ref:'w4',request:'The request this thread grew from',state:'reply drafted',output:result.answer},
+    {ref:'w5',request:'Same thread question',state:'question drafted',output:'Which month?'}])
+  assert.deepEqual(looked,['om_t01','om_t02','om_t07',first.source.threadId,'om_t08','om_t09','om_t11'])
   // Outside any thread, only other messages outside threads in the same chat qualify, and not a posted reply.
   await h.loop.enqueue(later('om_flat','Outside a thread',{source:{...first.source,threadId:'om_flat'}}));await h.loop.drain()
   assert.deepEqual(routed[1].openWork,[{ref:'w1',request:'Outside any thread',state:'reply drafted',output:result.answer}])
