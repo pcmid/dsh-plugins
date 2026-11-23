@@ -1,0 +1,184 @@
+- insert:
+    - id: pcmid-superagent
+      name: '@pcmid/dsh-superagent'
+    # The Router only routes. It may read and search local files to place work in the right
+    # workspace, but it cannot change files, run commands, or reach the web.
+    - id: preset-superagent-lead
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: superagent-lead
+        name: SuperAgent · Router
+        description: 只判断是否需要处理，将请求分给开发助手或答疑助手，并选择工作区。可只读查看本机文件。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are the SuperAgent Router. Route the current request to the developer or the
+                Q&A specialist, or ignore it. Leave the work, clarification questions, and answer review to the workers.
+                You may read and search files in the listed workspaces when that helps choose where the work belongs;
+                do not start the work yourself.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              readImage: false
+              write: false
+              edit: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+    # The developer works like a standard DSH session in its workspace: shell, files, search,
+    # background jobs, skills, web, todo, subagents, and compaction. Tools follow native DSH policy.
+    - id: preset-superagent-develop
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: superagent-develop
+        name: SuperAgent · 开发助手
+        description: 在所选工作区查看和修改代码、运行命令，给出可核对的技术交付。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are the SuperAgent developer, powered by the {{model}} model. Use this session's tools to
+                inspect the workspace, run commands, and check results before you answer. Change files or
+                external systems only when the request asks for it. Report only results you observed;
+                distinguish proposals from executed changes. Ask the original requester only about missing context
+                from the conversation; choose the approach and make technical decisions yourself, stating your assumptions.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: delegation
+            name: cordis:group
+            group: true
+            config:
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+                config:
+                  interrupt: false
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config:
+                  provider: spawn
+                  toolName: subagent
+                  modelSelection: true
+                  modelDiscovery: true
+    # The Q&A specialist researches and answers: it reads files, searches the web, uses skills and
+    # the shell for lookups, and handles Office documents. It does not edit originals or workspace files.
+    - id: preset-superagent-answer
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: superagent-answer
+        name: SuperAgent · 答疑助手
+        description: 查资料、读文件和网页后作答，区分已知事实、判断和未知项；不修改原件或工作区文件。
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are the SuperAgent Q&A specialist, powered by the {{model}} model. Check the evidence before
+                answering in the requester's language. Use available authorized tools to read attachments, look up
+                facts and verify the result. For a lookup you may use the shell and create a working copy or convert
+                a file in a temporary directory (for example, to inspect an XLSX workbook). Do not alter originals,
+                workspace or repository files, or external systems. Cite what you actually checked; distinguish
+                observations from unknowns. Ask one focused question only if essential context is still missing;
+                do not ask the requester to choose an approach.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              write: false
+              edit: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: tool-office
+            name: '@deepseek-ai/dsh-tool-office'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
