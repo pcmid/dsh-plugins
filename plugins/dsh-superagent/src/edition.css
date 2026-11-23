@@ -71,7 +71,7 @@ html[data-input-modality='keyboard'] .sx2 .x2-case-row:focus-within .x2-row-menu
 .sx2 .x2-state { display: inline-flex; align-items: center; gap: 6px; color: var(--x2-muted); font-size: 12px; }
 .sx2 .x2-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--x2-muted); }
 .sx2 .x2-dot[data-status='delivered'] { background: var(--dsw-alias-state-success-primary); }
-.sx2 .x2-dot:is([data-status='uncertain'],[data-status='stopped'],[data-status='awaiting-release'],[data-status='question-release']) { background: var(--dsw-alias-state-warn-primary); }
+.sx2 .x2-dot:is([data-status='uncertain'],[data-status='stopped'],[data-status='intake-failed'],[data-status='awaiting-release'],[data-status='question-release']) { background: var(--dsw-alias-state-warn-primary); }
 .sx2 .x2-dot[data-status='failed'] { background: var(--dsw-alias-state-error-primary); }
 
 .sx2 .x2-panel, .sx2 .x2-reader { min-height: 0; min-width: 0; height: 100%; }

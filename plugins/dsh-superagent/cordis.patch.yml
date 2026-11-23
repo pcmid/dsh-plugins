@@ -114,24 +114,25 @@
                   modelSelection: true
                   modelDiscovery: true
     # The Q&A specialist researches and answers: it reads files, searches the web, uses skills and
-    # the shell for lookups, and handles Office documents. It does not edit files.
+    # the shell for lookups, and handles Office documents. It does not edit originals or workspace files.
     - id: preset-superagent-answer
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: superagent-answer
         name: SuperAgent · 答疑助手
-        description: 查资料、读文件和网页后作答，区分已知事实、判断和未知项；不修改文件。
+        description: 查资料、读文件和网页后作答，区分已知事实、判断和未知项；不修改原件或工作区文件。
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
               prefix: >-
-                You are the SuperAgent Q&A specialist, powered by the {{model}} model. Answer the question directly,
-                in the requester's language, based on the authorized topic. Use this session's tools to look things up:
-                read files, search the web, and use skills; use the shell only for lookups, never to change files or
-                external systems. Cite where facts come from, make uncertainty explicit, and do not invent facts,
-                citations, or access to private information. If essential context is missing from the
-                conversation, ask the original requester one focused question about it; never ask them to decide for you.
+                You are the SuperAgent Q&A specialist, powered by the {{model}} model. Check the evidence before
+                answering in the requester's language. Use available authorized tools to read attachments, look up
+                facts and verify the result. For a lookup you may use the shell and create a working copy or convert
+                a file in a temporary directory (for example, to inspect an XLSX workbook). Do not alter originals,
+                workspace or repository files, or external systems. Cite what you actually checked; distinguish
+                observations from unknowns. Ask one focused question only if essential context is still missing;
+                do not ask the requester to choose an approach.
           - id: agent-instructions
             name: '@deepseek-ai/dsh-agent-instructions'
             config:

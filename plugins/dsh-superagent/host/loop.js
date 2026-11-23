@@ -485,7 +485,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
   }
   return {enqueue,drain,release,retry,takeOver,
     jobInputs:()=>locked(s=>s.jobs.map(j=>structuredClone(pick(j,['caseId','messageId','source','retries'])))),
-    takenOverSessions:()=>locked(s=>s.jobs.filter(j=>j.status === 'taken-over').map(j=>j.sessionId)),
+    takenOverSessions:(ownsWorker=()=>true)=>locked(s=>s.jobs.filter(j=>j.status === 'taken-over' && ownsWorker(j)).map(j=>j.sessionId)),
     hasIntake:(scopeId,messageId)=>locked(s=>s.jobs.some(j=>j.source.scopeId===scopeId && j.messageId===messageId)),
     hasReceived:(b,chatId,id)=>locked(s=>s.jobs.some(j=>sameBinding(j,b) && j.source.chatId===chatId && j.messageId===id)),
     isSentMessage:(b,chatId,id)=>locked(s=>s.jobs.some(j=>sameBinding(j,b) && j.source.chatId === chatId &&

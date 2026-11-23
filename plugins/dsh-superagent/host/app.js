@@ -79,9 +79,15 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
       return loop.release(input,channel.validateRelease)
     },
     async start(){
+      if(closed)return
+      if(loop){
+        // A native owner prompt may arrive while the plugin is restoring its worker grants.
+        const recovery=loop.takenOverSessions(actors.ownsWorkerSession).then(ids=>actors.handOver(ids))
+        actors.waitForHandOvers?.(recovery)
+        await recovery
+      }
       if(roleDefaults){await cases.initializeRoles(roleDefaults);changed()}
       if(closed)return
-      if(loop)actors.handOver(await loop.takenOverSessions())
       channel.startPolling();return loop?.drain()
     },
     drain:()=>loop?.drain(),
@@ -98,7 +104,7 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
       const [workspace,rows]=await Promise.all([cases.snapshot(),loop?.snapshot() ?? []])
       const {mentions=[]}=await channel.activitySnapshot(workspace.cases,rows)
       const archived=new Set(workspace.cases.filter(c=>c.archivedAt).map(c=>c.id))
-      const needed=mentions.some(m=>m.canApprove===true) || !!actors?.awaitingApproval?.() ||
+      const needed=mentions.some(m=>m.canApprove===true || m.intakeFailure && !archived.has(m.caseId)) || !!actors?.awaitingApproval?.() ||
         rows.some(r=>r.status==='awaiting-release' || !archived.has(r.caseId) && ['stopped','uncertain'].includes(r.status))
       return {needed,revision:version}
     },

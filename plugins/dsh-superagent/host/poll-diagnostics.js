@@ -42,6 +42,16 @@ export function cliProblem(error,envelope) {
   return {reason:why,...(code === undefined ? {} : {larkCode:code})}
 }
 
+// Only an exact, admitted message may be deferred. A broken binding, grant, store or discovery page
+// must keep its scan position, even when the error surfaced during that message's history lookup.
+export function itemDiagnostic(error) {
+  const row=pollDiagnostic(error,'receive')
+  if (['scope-changed','settings-unavailable','loop-disposed','storage-unavailable','admission-denied'].includes(error?.code) ||
+      !['message','history','receive'].includes(row.stage) || row.larkCode===230027 || // Permission revoked during a private read.
+      ['cli-not-found','cli-not-executable','login-required','permission-denied','identity-mismatch','admission-denied','storage-unavailable'].includes(row.reason)) return
+  return row
+}
+
 export function pollDiagnostic(error,fallbackStage) {
   const local=localReason(error)
   return {at:Date.now(),

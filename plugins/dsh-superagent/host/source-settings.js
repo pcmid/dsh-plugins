@@ -46,8 +46,9 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     const scope = {profile,tenantId,recipientId,...(f.managed ? {managed:true} : {})}
     const configured = hasFeishuIdentity(f)
     const admission = configured ? createAdmission({scope,...permissions,consentSince:f.automationSince,privateEpoch:()=>{
-      const f=sourceValues(readConfig())
-      return f.enabled && f.automationSince && f.profile===profile && f.recipientId===recipientId && f.tenantId===tenantId ? f.privateChatsSince : undefined
+      const s=sourceValues(readConfig())
+      return s.enabled && s.automationSince && s.automationSince===f.automationSince && s.managed===f.managed &&
+        s.profile===profile && s.recipientId===recipientId && s.tenantId===tenantId ? s.privateChatsSince : undefined
     }}) : null
     const logKey = validAdmissionScope(f) ? createHash('sha256').update(JSON.stringify(scope)).digest('hex') : null
     const bindingId = configured ? logKey : null
@@ -56,7 +57,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     // The first profile is not enrolled and has no grants. A missing managed directory must never use the shared CLI.
     const check=()=>{if(current()!==rec) fail('scope-changed')}
     const rec = {key,logKey,unsavedLogs:[],config:f,names:new Map(),seen:new Map(),settings:{...f,version:randomUUID()},configured,admission,bindingId,scopeId,cliDir,auth:authFactory({cliDir,cliPath:f.cliPath})}
-    rec.source = createFeishuSource({config:f,cliDir,admission,check,onPollWarning:(e,stage)=>recordFailure(rec,e,stage),isSentMessage:(chatId,id)=>isSentMessage(scope,chatId,id),
+    rec.source = createFeishuSource({config:f,cliDir,admission,check,scopeForGrant:g=>grantScope(rec,g),onPollWarning:(e,stage)=>recordFailure(rec,e,stage),isSentMessage:(chatId,id)=>isSentMessage(scope,chatId,id),
       receive:(msg,grant)=>{
       check();checkPrivate(rec,msg)
       const automatic=!!f.automationSince
@@ -147,38 +148,66 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     } catch {rec.unsavedLogs=[row,...rec.unsavedLogs].slice(0,20)}
     if(!disposed && active===rec)onChange()
   }
-  // Persist the grant before attempting the exact original message. A crash before ack is safe:
-  // the case and loop already deduplicate the same message under the same grant.
-  async function replay(rec,groups) {
+  const receiptKey=r=>[r.chatId,r.threadId,r.messageId,r.at,r.privateChatsSince].join('/')
+  async function intake(rec,g,ref,attempted,archived) {
+    const scope=grantScope(rec,g), {messageId,at}=ref, key=receiptKey(ref)
+    if (attempted.has(key)) return
+    const original=g.triggers?.find(t=>t.messageId===messageId && !t.handled)
+    const checkGrant=(current,eligible)=>{
+      live(rec);checkPrivate(rec,ref)
+      if (grantScope(rec,current)!==scope || !eligible(ref)) fail('admission-denied')
+    }
+    if (rec.seen.get(messageId)?.scope!==scope && !await hasIntake(scope,messageId)) {
+      archived ??= await archive(rec,ref,checkGrant,scope)
+      if (archived) {
+        if (archived.senderId && ref.senderId && archived.senderId!==ref.senderId) fail('admission-denied')
+        if (archived.senderId) ref={...ref,senderId:archived.senderId}
+        const {intakeFailure}=await rec.source.consumeMention({...ref,scopeId:scope,...(original?.ownerSelfMention ? {ownerSelfMention:true} : {})},archived.text,checkGrant)
+        live(rec);checkPrivate(rec,ref)
+        if (intakeFailure) {
+          await rec.admission.settleIntake(g,ref,intakeFailure)
+          attempted.add(key)
+          await recordFailure(rec,intakeFailure,'receive')
+          return
+        }
+      }
+    }
+    live(rec);checkPrivate(rec,ref)
+    if (original || g.failures?.some(f=>f.messageId===messageId)) {
+      await rec.admission.settleIntake(g,ref)
+      onChange()
+    }
+    attempted.add(key)
+    rec.seen.set(messageId,{scope,at,epoch:g.privateChatsSince})
+  }
+  // A crash before acknowledgement is safe: the loop deduplicates this message under this grant.
+  async function replay(rec,groups,attempted=new Set()) {
     let ok=true
     for(const g of groups) {
-      if(g.mode==='pending')continue
-      for(const ref of g.triggers || []) {
-        if(ref.handled || ref.at<=rec.settings.automationSince)continue
+      if(g.mode==='pending' || g.mode==='ignored')continue
+      const refs=new Map((g.triggers ?? []).filter(t=>!t.handled).map(t=>[t.messageId,t]))
+      for(const f of g.failures ?? []) refs.set(f.messageId,f)
+      for(const {threadId,messageId,at,senderId=g.senderId} of refs.values()) {
+        if(at<=rec.settings.automationSince)continue
         live(rec)
         try {
-          const {threadId,messageId,at}=ref
-          const scope=grantScope(rec,g)
-          if (!await hasIntake(scope,messageId)) {
-            const target={chatId:g.chatId,threadId,messageId,at,...peerRef(g),...(g.mode==='sender' ? {senderId:g.senderId} : {})}, archived=await archive(rec,target)
-            if(archived) await rec.source.consumeMention(ref.ownerSelfMention ? {...target,ownerSelfMention:true} : target,archived.text)
-          }
-          live(rec)
-          await rec.admission.ackTrigger({chatId:g.chatId,threadId,messageId,grantId:g.grantId})
-          rec.seen.set(messageId,{scope,at,epoch:g.privateChatsSince})
-        } catch(e) {ok=false;await recordFailure(rec,e,'receive')} // Keep the unacknowledged trigger for retry; do not starve other groups.
+          await intake(rec,g,{chatId:g.chatId,threadId,messageId,at,...peerRef(g),...(senderId ? {senderId} : {})},attempted)
+        } catch(e) {ok=false;await recordFailure(rec,e,'receive')}
       }
     }
     return ok
   }
   // Reading a verified direct mention is not permission to create a case or call a model.
-  async function archive(rec,ref) {
+  async function archive(rec,ref,checkGrant,scope) {
     checkPrivate(rec,ref)
     const consent=rec.settings.automationSince
     const recorded=await rec.admission.getMention(ref,consent)
     live(rec)
     if(recorded) return recorded
-    const message=await rec.source.readMention(ref)
+    const read=()=>rec.source.readMention(ref)
+    // Legacy approved triggers may lack an archive. Recover it only inside their original grant.
+    const message=checkGrant ? await rec.admission.run({chatId:ref.chatId,threadId:ref.threadId,...(ref.senderId ? {senderId:ref.senderId} : {})},
+      (g,eligible)=>{checkGrant(g,eligible);return read()},g=>grantScope(rec,g)===scope) : await read()
     live(rec)
     checkPrivate(rec,ref)
     if(!message) return null
@@ -223,7 +252,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     }
   }
   // Each feed advances independently. A failed P2P read must not hold back group mentions (or vice versa).
-  async function scanFeed(rec,epoch,startedAt) {
+  async function scanFeed(rec,epoch,startedAt,attempted) {
     const consent=rec.settings.automationSince, a=rec.admission
     const floor=epoch ?? consent
     const check=()=>{ live(rec);if(epoch && rec.config.privateChatsSince!==epoch)fail('scope-changed') }
@@ -252,6 +281,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
         try {
           const recorded=await a.recordedThread(ref,consent)
           if(recorded) ref={...ref,threadId:recorded}
+          if(attempted.has(receiptKey(ref)))continue
           // An ignored conversation, or messages from before a revocation, are not read, recorded or proposed.
           if(await a.skip(ref)) continue
           const archived=await archive(rec,ref)
@@ -266,14 +296,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
           } : undefined
           const {grant,changed}=await a.observe(ref,consent,verifyOwn)
           if(changed)onChange()
-          if(!grant)continue
-          const scope=grantScope(rec,grant), original=grant.triggers?.find(t=>t.messageId===ref.messageId && !t.handled)
-          if(rec.seen.get(ref.messageId)?.scope!==scope && !await hasIntake(scope,ref.messageId)) {
-            await rec.source.consumeMention(original?.ownerSelfMention ? {...ref,ownerSelfMention:true} : ref,archived.text)
-            check()
-          }
-          if(original)await a.ackTrigger({chatId:ref.chatId,threadId:ref.threadId,messageId:ref.messageId,grantId:grant.grantId})
-          rec.seen.set(ref.messageId,{scope,at:ref.at,epoch})
+          if(grant)await intake(rec,grant,ref,attempted,archived)
         } catch(e) {pageOK=false;await recordFailure(rec,e,'receive')}
       }
       check()
@@ -303,9 +326,10 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
           if(name) onChange()
         } catch(e) {await recordFailure(rec,e,'group')} // Missing display names do not block intake.
       }
-      let ok=await replay(rec,groups) && hydrated
+      const attempted=new Set()
+      let ok=await replay(rec,groups,attempted) && hydrated
       for(const epoch of [undefined,...(rec.config.allowPrivateChats ? [rec.config.privateChatsSince] : [])]){
-        try { ok=await scanFeed(rec,epoch,startedAt) && ok }
+        try { ok=await scanFeed(rec,epoch,startedAt,attempted) && ok }
         catch(e){if(e?.code!=='scope-changed'){ok=false;await recordFailure(rec,e,'poll')}}
       }
       await repairMentionNames(rec,groups)
@@ -352,21 +376,26 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     // Filter the copied action tokens against this same grant snapshot, not one storage read per job.
     const pending=new Map(automation.filter(r=>r.releaseToken).map(r=>[JSON.stringify([r.caseId,r.messageId]),r]))
     const key=(chat,thread,id)=>JSON.stringify([chat,thread,id])
+    const retryScopes=new Map()
+    for(const g of groups) for(const f of g.failures ?? []) retryScopes.set(key(g.chatId,f.threadId,f.messageId),grantScope(rec,g))
     for(const c of cases) {
       const s=c.source
       if(s.kind!=='feishu' || s.tenantId!==rec.settings.tenantId || s.recipientId!==rec.settings.recipientId ||
           !(c.feedScopeId===rec.scopeId || (!c.feedScopeId && previous.has(s.scopeId))))continue
       const allowed=pending.size && consent && rec.configured && (!rec.settings.managed || rec.cliDir) && previous.has(s.scopeId)
       for(const m of c.messages) if(m.kind==='feishu'){
-        links.set(key(s.chatId,s.threadId,m.requestId),c.id)
+        const k=key(s.chatId,s.threadId,m.requestId)
+        if(!retryScopes.has(k) || retryScopes.get(k)===s.scopeId)links.set(k,c.id)
         if(allowed)pending.delete(JSON.stringify([c.id,m.requestId]))
       }
     }
     // Without current access a pending reply can only be declined; sending rechecks access anyway.
     for(const row of pending.values()) row.releaseBlocked=true
-    return {source,mentions:rows.map(({privatePeerId,privateChatsSince,...row})=>{
+    const jobs=retryScopes.size ? new Set(automation.map(r=>JSON.stringify([r.caseId,r.messageId]))) : undefined
+    return {source,mentions:rows.map(({privatePeerId,privateChatsSince,intakeFailure,...row})=>{
       const caseId=links.get(key(row.chatId,row.threadId,row.messageId))
-      return {...row,scopeId:rec.scopeId,...(caseId ? {caseId,canApprove:false} : {})}
+      return {...row,scopeId:rec.scopeId,...(caseId ? {caseId,canApprove:false} : {}),
+        ...(intakeFailure && !jobs?.has(JSON.stringify([caseId,row.messageId])) ? {intakeFailure} : {})}
     })}
   }
   return {
@@ -375,7 +404,7 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     // requesterId is the job's verified author; a grant for one member covers only their requests.
     async validateRelease(source,signal,requesterId) {
       const {rec,checkGrant}=jobScope(source,signal)
-      await rec.admission.run({chatId:source.chatId,threadId:source.threadId,...(requesterId ? {senderId:requesterId} : {})},checkGrant)
+      await rec.admission.run({chatId:source.chatId,threadId:source.threadId,...(requesterId ? {senderId:requesterId} : {})},checkGrant,g=>grantScope(rec,g)===source.scopeId)
     },
     async assertAutomation(source,signal,requesterId) {
       const {rec,checkGrant}=jobScope(source,signal)

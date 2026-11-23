@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { z } from 'zod'
+import { pollLog } from './poll-diagnostics.js'
 
 const problem = code => Object.assign(new Error(code), { code })
 
@@ -28,7 +29,9 @@ const acknowledgement = z.strictObject({chatId:chat,threadId:root,messageId:root
 const cursor = z.strictObject({since:time,until:time.optional(),pageToken:z.string().min(1).max(4096).optional()})
   .refine(c=>(c.until === undefined || c.until >= c.since) && (!c.pageToken || c.until !== undefined))
 const common = {chatId:chat,name,...privateFields,triggers:z.array(trigger).min(1).optional()}
-const epoch = {approvedAt:time.optional(),grantId:z.uuidv4().optional()}
+// Retry locations are not trigger exceptions. They never carry a body, excerpt, attachment or CLI output.
+const failedIntake = z.strictObject({threadId:root,messageId:root,at:time,senderId:person.optional(),diagnostic:pollLog})
+const epoch = {approvedAt:time.optional(),grantId:z.uuidv4().optional(),failures:z.array(failedIntake).min(1).optional()}
 const row = z.discriminatedUnion('mode', [
   z.strictObject({...common,mode:z.literal('pending'),threadId:root.optional()}),
   z.strictObject({...common,mode:z.literal('once'),threadId:root,...epoch}),
@@ -39,6 +42,8 @@ const row = z.discriminatedUnion('mode', [
   z.strictObject({chatId:chat,name,...privateFields,mode:z.literal('ignored'),ignoredAt:time}),
 ]).refine(g=>{
   if ((g.privatePeerId===undefined)!==(g.privateChatsSince===undefined) || (g.approvedAt===undefined)!==(g.grantId===undefined)) return false
+  if (g.failures && (new Set(g.failures.map(f=>f.messageId)).size!==g.failures.length ||
+    g.failures.some(f=>g.mode==='once' && f.threadId!==g.threadId || g.mode==='sender' && f.senderId!==g.senderId))) return false
   if (!g.triggers) return true
   if (g.mode==='ignored') return true
   if (g.mode==='pending') return g.triggers.length===1 && g.triggers.every(t=>!t.handled && !t.ownerSelfMention && t.threadId===g.threadId)
@@ -53,13 +58,13 @@ export const admissionRecord = z.strictObject({
   key:z.string().regex(/^admission-[a-f0-9]{64}$/),groups:z.array(row),
   consentSince:generation.optional(),scan:cursor.optional(),
   privateScan:z.strictObject({epoch:generation,cursor}).optional(),
-  revoked:z.record(z.string().regex(/^oc_[\w-]{1,128}(?:\/om_[\w-]{1,128}|#ou_[\w-]{1,128})?$/),time).optional(),
+  revoked:z.record(z.string().regex(/^oc_[\w-]{1,128}(?:[\/@]om_[\w-]{1,128}|#ou_[\w-]{1,128})?$/),time).optional(),
 }).refine(r=>{
   if (r.scan && (!r.consentSince || r.scan.since < r.consentSince)) return false
   const seen = new Set(), permanent = new Set(), ignored = new Set()
   for (const g of r.groups) {
     const key = rowKey(g)
-    if (seen.has(key) || g.triggers?.some(t=>!r.consentSince || t.at <= r.consentSince)) return false
+    if (seen.has(key) || [g.triggers,g.failures].some(items=>items?.some(t=>!r.consentSince || t.at <= r.consentSince))) return false
     seen.add(key)
     if (g.mode === 'permanent') permanent.add(g.chatId)
     if (g.mode === 'ignored') ignored.add(g.chatId)
@@ -109,16 +114,18 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
       if (consentSince && record.consentSince > consentSince) throw problem('scope-changed')
       // Preserve grants, not discovery cursors, proposals or historical exceptions from another consent.
       record.groups = record.groups.filter(g=>g.mode !== 'pending' || !g.triggers)
-      for (const g of record.groups) delete g.triggers
+      for (const g of record.groups) { delete g.triggers; delete g.failures }
       delete record.scan
       delete record.privateScan
       if (consentSince) record.consentSince = consentSince
       else delete record.consentSince
     }
     record.groups=record.groups.filter(livePeer)
+    pruneFailures(record)
     return record
   }
   async function write(record) {
+    pruneFailures(record)
     try { await save(key,structuredClone(record)) } catch { throw problem('storage-unavailable') }
   }
   function clock() {
@@ -129,8 +136,9 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
   function checkConsent(value) {
     if (!consentSince || value !== consentSince) throw problem('scope-changed')
   }
-  const cutoff = (record,chatId,threadId,senderId) => Math.max(consentSince ?? 0,
-    record.revoked?.[chatId] ?? 0,record.revoked?.[targetKey(chatId,threadId)] ?? 0,senderId ? record.revoked?.[chatId+'#'+senderId] ?? 0 : 0)
+  const cutoff = (record,{chatId,threadId,senderId,messageId}) => Math.max(consentSince ?? 0,
+    record.revoked?.[chatId] ?? 0,record.revoked?.[targetKey(chatId,threadId)] ?? 0,
+    record.revoked?.[chatId+'#'+senderId] ?? 0,record.revoked?.[chatId+'@'+messageId] ?? 0)
   function unpack(id,stored) {
     const m = mentionRecord.parse(stored)
     if (m.feed !== feed || id !== feedKey(m.messageId) || m.at <= consentSince) throw problem('storage-unavailable')
@@ -144,10 +152,25 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
   }
   const sameMention = (m,r) => !!m && m.chatId === r.chatId && m.threadId === r.threadId && m.at === r.at && m.messageId === r.messageId && samePeer(m,r)
   // A member grant covers only that sender; callers that do not know the sender never match one.
-  const authorized = (groups,chatId,threadId,senderId) => groups.find(g=>g.chatId === chatId &&
-    (g.mode === 'permanent' || (g.mode === 'once' && g.threadId === threadId))) ??
-    (senderId ? groups.find(g=>g.chatId === chatId && g.mode === 'sender' && g.senderId === senderId) : undefined)
+  const covers=(g,chatId,threadId,senderId)=>g.chatId===chatId && (g.mode==='permanent' ||
+    g.mode==='once' && g.threadId===threadId || g.mode==='sender' && g.senderId===senderId)
+  const authorized = (groups,chatId,threadId,senderId,select) => {
+    const matches=g=>covers(g,chatId,threadId,senderId) && (!select || select(g))
+    return groups.find(g=>g.mode!=='sender' && matches(g)) ?? (senderId ? groups.find(g=>g.mode==='sender' && matches(g)) : undefined)
+  }
   const isIgnored = (groups,chatId) => groups.some(g=>g.chatId === chatId && g.mode === 'ignored')
+  function eligible(record,g,ref) {
+    if (!g || !consentSince || !livePeer(ref) || !samePeer(g,ref) || ref.at<=cutoff(record,ref) ||
+        !covers(g,ref.chatId,ref.threadId,ref.senderId)) return false
+    const t=g.triggers?.find(t=>t.messageId===ref.messageId)
+    return t ? !t.handled && t.threadId===ref.threadId && t.at===ref.at : ref.at>(g.approvedAt ?? 0)
+  }
+  function pruneFailures(record) {
+    for (const g of record.groups) if (g.failures) {
+      g.failures=g.failures.filter(f=>eligible(record,g,{...f,chatId:g.chatId,...withPeer(g)}))
+      if (!g.failures.length) delete g.failures
+    }
+  }
   function approvedRow(group,mode) {
     return {chatId:group.chatId,mode,...withPeer(group),...(group.name ? {name:group.name} : {}),approvedAt:clock(),grantId:randomUUID()}
   }
@@ -168,7 +191,7 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
     // message at or before a revocation, including the end of an ignore. It is not read at all.
     skip: ref => serial(async()=>{
       const record = await read()
-      return isIgnored(record.groups,ref.chatId) || ref.at <= cutoff(record,ref.chatId,ref.threadId,ref.senderId)
+      return isIgnored(record.groups,ref.chatId) || ref.at <= cutoff(record,ref)
     }),
 
     // Recording a verified body is not a grant. Keep it outside the routinely-read admission record.
@@ -210,7 +233,7 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
       checkConsent(since)
       const pending=async()=>{
         const record=await read()
-        if (!livePeer(ref) || ref.at<=cutoff(record,ref.chatId,ref.threadId) ||
+        if (!livePeer(ref) || ref.at<=cutoff(record,ref) ||
             !record.groups.some(g=>g.mode==='pending' && g.chatId===ref.chatId && g.threadId===ref.threadId && samePeer(g,ref))) return
         const m=await messageById(ref.messageId)
         if (sameMention(m,ref) && /@_user_\d+/.test(m.text)) return m
@@ -249,13 +272,16 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
       return serial(async()=>{
         const record = await read()
         const pending = new Set(record.groups.filter(g=>g.mode === 'pending').map(g=>targetKey(g.chatId,g.threadId)))
+        const failures=new Map(record.groups.flatMap(g=>(g.failures ?? []).map(f=>[f.messageId,{...f,chatId:g.chatId,...withPeer(g)}])))
         const items = []
         try {
           for (const [id,stored] of (await mentions(feed)).entries()) {
             if (!id.startsWith(feed+'-')) continue
             const {feed:_,...m} = unpack(id,stored)
             if (isIgnored(record.groups,m.chatId)) continue // Earlier messages of an ignored conversation stay out of Activity.
-            items.push({...m,canApprove:livePeer(m) && pending.has(targetKey(m.chatId,m.threadId)) && m.at > cutoff(record,m.chatId,m.threadId)})
+            const f=failures.get(m.messageId), failed=sameMention(f,m) && (!f.senderId || !m.senderId || f.senderId===m.senderId)
+            items.push({...m,canApprove:!failed && livePeer(m) && pending.has(targetKey(m.chatId,m.threadId)) && m.at > cutoff(record,m),
+              ...(failed ? {intakeFailure:f.diagnostic} : {})})
           }
         } catch { throw problem('storage-unavailable') }
         return items.sort((a,b)=>b.at-a.at || a.messageId.localeCompare(b.messageId))
@@ -270,8 +296,11 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
       const {chatId,threadId,messageId,at,name,senderId} = parsed.data
       return serial(async()=>{
         const record = await read()
-        if (at <= cutoff(record,chatId,threadId,senderId) || !livePeer(parsed.data) || isIgnored(record.groups,chatId)) return {changed:false}
-        const grant = authorized(record.groups,chatId,threadId,senderId)
+        if (at <= cutoff(record,parsed.data) || !livePeer(parsed.data) || isIgnored(record.groups,chatId)) return {changed:false}
+        // Overlapping member/topic grants can coexist. A rescan of an unresolved item belongs to its original grant.
+        const grant = authorized(record.groups,chatId,threadId,senderId,g=>samePeer(g,ref) &&
+          g.failures?.some(f=>f.messageId===messageId && f.threadId===threadId && f.at===at && (!f.senderId || f.senderId===senderId))) ??
+          authorized(record.groups,chatId,threadId,senderId)
         if (grant && !samePeer(grant,parsed.data)) return {changed:false}
         const trigger=grant?.triggers?.find(t=>t.messageId===messageId)
         const covered=grant && (trigger || at>(grant.approvedAt ?? 0))
@@ -353,6 +382,31 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
       })
     },
 
+    // A failed write rejects: the scanner cannot advance without a durable retry location.
+    async settleIntake(expected,ref,diagnostic) {
+      return serial(async()=>{
+        const record=await read(), g=authorized(record.groups,ref.chatId,ref.threadId,ref.senderId,
+          g=>rowKey(g)===rowKey(expected) && g.mode===expected.mode && g.grantId===expected.grantId && g.approvedAt===expected.approvedAt && samePeer(g,expected))
+        if (!eligible(record,g,ref)) throw problem('admission-denied')
+        const {messageId,threadId,at,senderId}=ref, rest=(g.failures ?? []).filter(f=>f.messageId!==messageId)
+        const previous=g.failures?.find(x=>x.messageId===messageId)
+        if (diagnostic) {
+          const f=failedIntake.parse({messageId,threadId,at,...(senderId ? {senderId} : {}),diagnostic})
+          if (previous && previous.threadId===threadId && previous.at===at && previous.senderId===senderId &&
+              previous.diagnostic.reason===diagnostic.reason && previous.diagnostic.stage===diagnostic.stage &&
+              previous.diagnostic.larkCode===diagnostic.larkCode) return // Already durable; keep the first occurrence of this error.
+          g.failures=[...rest,f]
+        } else {
+          const t=g.triggers?.find(t=>t.messageId===messageId)
+          if (t) t.handled=true
+          // A later scan must not restart a recovered receipt through the overlapping default grant.
+          if (previous && authorized(record.groups,ref.chatId,threadId,senderId)!==g) (record.revoked ??= {})[ref.chatId+'@'+messageId]=at
+          if (rest.length) g.failures=rest
+          else delete g.failures
+        }
+        await write(record)
+      })
+    },
     async update(command) {
       const parsed = updateCommand.safeParse(command)
       if (!parsed.success) throw problem('invalid-input')
@@ -365,7 +419,7 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
         const named = async () => {
           const m = consentSince && await messageById(messageId)
           if (group?.mode !== 'pending' || !m || !livePeer(m) || !samePeer(m,group) || m.chatId !== chatId || m.threadId !== threadId ||
-              m.at <= cutoff(record,chatId,threadId,m.senderId)) throw problem('admission-denied')
+              m.at <= cutoff(record,m) || groups.some(g=>g.failures?.some(f=>f.messageId===messageId))) throw problem('admission-denied')
           return m
         }
         if (action === 'register') {
@@ -414,7 +468,7 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
           groups.splice(groups.indexOf(group),1)
           const revoked = record.revoked ??= {}, k = group.mode === 'sender' ? chatId+'#'+group.senderId : targetKey(chatId,threadId)
           revoked[k] = Math.max(revoked[k] ?? 0,group.approvedAt ?? 0,clock())
-          for (const t of group.triggers ?? []) revoked[k] = Math.max(revoked[k],t.at)
+          for (const refs of [group.triggers,group.failures]) for (const t of refs ?? []) revoked[k] = Math.max(revoked[k],t.at)
         } else {
           if (group?.mode !== 'pending') throw problem('admission-denied')
           const approved = approvedRow(group,action)
@@ -433,6 +487,9 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
               const triggers = groups.filter(g=>g.chatId === chatId && g.mode === 'pending').flatMap(g=>g.triggers ?? [])
               if (triggers.length) approved.triggers = triggers
             }
+            // A replaced grant's failed self-mention must not reauthorize itself on an overlapping scan.
+            for (const g of groups) if (g.chatId===chatId) for (const f of g.failures ?? [])
+              if (!approved.triggers?.some(t=>t.messageId===f.messageId)) (record.revoked ??= {})[chatId+'@'+f.messageId]=f.at
             record.groups = groups.flatMap(g=>g === group ? [approved] : g.chatId === chatId ? [] : [g])
           }
         }
@@ -442,14 +499,14 @@ export function createAdmission({ scope, load, save, mentions, now = Date.now, c
     },
 
     // Omit threadId for any group-wide read. Await all protected work inside the callback.
-    async run(input, callback) {
+    async run(input, callback, select) {
       const parsed = target.safeParse(input)
-      if (!parsed.success || typeof callback !== 'function') throw problem('invalid-input')
+      if (!parsed.success || typeof callback !== 'function' || select!==undefined && typeof select!=='function') throw problem('invalid-input')
       const {chatId,threadId,senderId} = parsed.data
       return serial(async () => {
-        const grant = authorized((await read()).groups,chatId,threadId,senderId)
+        const record=await read(), grant=authorized(record.groups,chatId,threadId,senderId,select)
         if (!grant) throw problem('admission-denied')
-        return callback(Object.freeze(grant))
+        return callback(Object.freeze(grant),ref=>eligible(record,grant,ref))
       })
     },
   }

@@ -30,10 +30,11 @@ async function checkUpgrade(version) {
     ...(version>=3 ? {automation:{loop:{schema:1,jobs:[{status:'delivered'}]}}} : {}),
   }}))
   let approved
+  const diagnostic={at:1501,stage:'history',reason:'invalid-response'}
   for (let pass=0;pass<3;pass++) {
     const backend=new JsonStorageBackend(scratch),ctx={emit(){},logger:{warn(){},error(){}},storage:{backend:{get:()=>backend}}}
     const facility=new DomainFacility(ctx,{backend:'json'})
-    if (pass===1) await assert.rejects(openStore({open:spec=>facility.open({...spec,version:6,compatibleVersions:[]})}),{code:'version-mismatch'})
+    if (pass===1) await assert.rejects(openStore({open:spec=>facility.open({...spec,version:7,compatibleVersions:[]})}),{code:'version-mismatch'})
     const opened=[]
     const store=await openStore({open:s=>{opened.push(s.name);return facility.open(s)}})
     try {
@@ -60,12 +61,17 @@ async function checkUpgrade(version) {
         approved=await access.update({action:'once',...topic,messageId:ref.messageId})
         assert.equal(approved[0].approvedAt,1500)
         assert.ok(approved[0].grantId)
+        await access.settleIntake(approved[0],ref,diagnostic)
       } else {
+        const [pendingRetry]=await access.list()
+        assert.deepEqual(pendingRetry.failures,[{...trigger,diagnostic}])
+        await access.settleIntake(pendingRetry,ref)
+        approved[0].triggers[0].handled=true
         assert.deepEqual(await access.list(),approved)
         assert.deepEqual(await access.run(topic,grant=>grant),approved[0])
         assert.deepEqual(approved.slice(1),groups.slice(1))
         assert.deepEqual(await access.getScan(consentSince),scan)
-        assert.equal(await access.ackTrigger({...topic,messageId:ref.messageId,grantId:approved[0].grantId}),true)
+        assert.equal(await access.ackTrigger({...topic,messageId:ref.messageId,grantId:approved[0].grantId}),false)
         assert.equal((await access.list())[0].triggers[0].handled,true)
         assert.deepEqual(opened,['pcmid_superagent'])
         const other=createAdmission({scope:{...scope,managed:true},...store.permissions,consentSince})
@@ -79,8 +85,8 @@ async function checkUpgrade(version) {
 }
 
 try {
-  for (const version of [1,2,3,4,5,6]) await checkUpgrade(version)
-  console.log('Native storage: v1–v6 metadata migrated to v7; body records reopen only for their identity/consent; downgrade refused.')
+  for (const version of [1,2,3,4,5,6,7]) await checkUpgrade(version)
+  console.log('Native storage: v1–v7 metadata migrated to v8; body-free retry locations and isolated archives survive reopen; downgrade refused.')
 } finally {
   assert.equal(await realpath(scratch),scratch);assert.equal(dirname(scratch),temp)
   assert.ok(basename(scratch).startsWith('dsh-superagent-storage-'))

@@ -9,7 +9,7 @@ import { ownerRoutes } from './host/routes.js'
 import { starterTeam } from './host/role-defaults.js'
 
 export const name = 'pcmid-superagent'
-export const inject = ['connection','storageDomain','agentPresets']
+export const inject = ['connection','storageDomain','agentPresets','sessionProjections']
 export const Config = s.object({
   feishu:s.object({
     enabled:s.boolean().default(false).description('启用飞书来源。内部群与「与自己的聊天」仅接收直接 @本人的消息；可另外开启其他人的私聊。只有获准的会话或话题才交给助手办理。'),

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {chmod,mkdtemp,writeFile,rm,realpath} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join,dirname} from 'node:path'
-import {pollDiagnostic,cliProblem} from '../host/poll-diagnostics.js'
+import {pollDiagnostic,itemDiagnostic,cliProblem} from '../host/poll-diagnostics.js'
 import {openStore} from '../host/store.js'
 import {createFeishuSource} from '../host/feishu.js'
 
@@ -74,6 +74,19 @@ test('typed system/CLI failures never retain free text, identifiers or unbounded
   }
   assert.equal(pollDiagnostic({code:'storage-unavailable'},'message').stage,'storage')
   assert.equal(pollDiagnostic({code:'admission-denied'},'receive').reason,'admission-denied')
+})
+
+test('an admitted material failure is not a reason to advance past an authority, binding, storage or discovery failure',()=>{
+  for(const stage of ['message','history','receive']) {
+    const d=itemDiagnostic({stage,reason:'api-error',larkCode:42,message:secret,stdout:secret})
+    assert.equal(d.stage,stage);assert.equal(d.larkCode,42);assert.ok(!JSON.stringify(d).includes(secret))
+    for(const reason of ['login-required','identity-mismatch','permission-denied','storage-unavailable','admission-denied'])
+      assert.equal(itemDiagnostic({stage,reason}),undefined)
+    for(const code of ['scope-changed','storage-unavailable','admission-denied'])assert.equal(itemDiagnostic({stage,code}),undefined)
+    assert.equal(itemDiagnostic({stage,reason:'api-error',larkCode:230027}),undefined)
+  }
+  for(const stage of ['identity','group','search','metadata','storage','admission','poll'])
+    assert.equal(itemDiagnostic({stage,reason:'invalid-response'}),undefined)
 })
 
 test('real subprocess launch failures and JSON envelopes on either stream are classified without echo', {skip:process.platform==='win32'},async t=>{

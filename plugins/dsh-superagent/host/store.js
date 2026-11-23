@@ -9,7 +9,7 @@ const entry = z.object({schema:z.literal(1),
 })
 // Keep authorization separate from case writes; neither can overwrite the other.
 const loopState=z.strictObject({schema:z.literal(1),jobs:z.array(z.record(z.string(),z.json()))})
-const spec = {name:'pcmid_superagent',version:7,compatibleVersions:[1,2,3,4,5,6],tables:{
+const spec = {name:'pcmid_superagent',version:8,compatibleVersions:[1,2,3,4,5,6,7],tables:{
   workspace:{valueSchema:entry},
   automation:{valueSchema:loopState},
   admission:{valueSchema:admissionRecord},

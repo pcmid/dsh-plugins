@@ -139,8 +139,13 @@ export class Offline extends LlmAdapter {
         assert.equal(process.env.SMOKE_PHASE,'prepare');assert.deepEqual(options.tools ?? [],[])
         yield* result(JSON.stringify({action:'clarify',question:legacy.question}));return
       }
-      if(prompt===ownerAsk.prompt || prompt===manualPrompt(process.env.SMOKE_PHASE))assert.deepEqual(options.tools.map(t=>t.name),[workerTool],
-        'the handed-over seat no longer has any SuperAgent result tools')
+      const notices=messages.filter(m=>m.source?.kind==='plugin:superagent-handoff' && m.source.form==='notice')
+      if(prompt===ownerAsk.prompt || prompt===manualPrompt(process.env.SMOKE_PHASE)) {
+        assert.deepEqual(options.tools.map(t=>t.name),[workerTool],'no SuperAgent result tools after takeover')
+        assert.equal(notices.length,1,'the owner sees one native handoff notice, even across restart')
+        const firstOwner=messages.find(m=>m.source?.kind==='user' && m.content[0]?.text===manualPrompt('prepare'))
+        assert.ok(firstOwner && messages.indexOf(firstOwner)<messages.indexOf(notices[0]),'notice enters on the first owner turn')
+      } else assert.equal(notices.length,0,'only a taken-over worker receives the handoff notice')
       if(prompt===ownerAsk.prompt) {
         assert.equal(options.sessionId,this.manualSession)
         const reply=messages.slice(userIndex).find(m=>m.role==='tool' && m.source?.callId===ownerAsk.callId)

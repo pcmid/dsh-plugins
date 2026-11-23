@@ -37,7 +37,10 @@ test('private opt-in has its own scan and only the current epoch may read or app
   const grants=await a.update({action:'once',...topic,messageId:ref.messageId})
   assert.equal(grants.find(g=>g.chatId===chatId).privatePeerId,ref.privatePeerId)
   assert.equal(await a.run(topic,g=>g.privateChatsSince),epoch)
+  await a.settleIntake(grants.find(g=>g.chatId===chatId),ref,{at:350,stage:'history',reason:'invalid-response'})
+  assert.equal((await a.listMentions(consentSince))[0].intakeFailure.stage,'history')
   epoch=undefined
+  assert.equal((await a.listMentions(consentSince))[0].intakeFailure,undefined)
   await assert.rejects(a.run(topic,hit),{code:'admission-denied'})
   assert.equal(await a.getMention(ref,consentSince),null)
   assert.equal((await a.listMentions(consentSince))[0].canApprove,false)
@@ -719,6 +722,48 @@ test('ignoring an earlier message once keeps a newer one already received in tha
   assert.deepEqual(await a.observe(first,consentSince),{changed:false})
   await a.update({action:'dismiss',...topic,messageId:newer.messageId})
   assert.deepEqual(await approvable(),[])
+})
+
+test('retry references for the allowed member never authorize the pending colleague and disappear on revoke',async()=>{
+  const {open,tick}=fixture(), a=open(), diagnostic={at:2400,stage:'history',reason:'invalid-response'}
+  const theirs={...ref,senderId:colleague}, mine={...ref,messageId:'om_mine',at:ref.at+1,senderId:member}
+  await seen(a,[theirs],[mine])
+  const g=(await a.update({action:'sender',...topic,messageId:mine.messageId})).find(g=>g.mode==='sender')
+  const later={...mine,messageId:'om_later',at:tick()}, newer={...later,messageId:'om_newer',at:tick()}
+  for(const m of [mine,later,newer]){
+    await a.recordMention({...m,text:m.messageId},consentSince)
+    await a.settleIntake(g,m,diagnostic)
+  }
+  await assert.rejects(a.settleIntake(g,theirs,diagnostic),{code:'admission-denied'})
+  const current=(await open().list()).find(x=>x.mode==='sender')
+  assert.deepEqual(current.failures.map(t=>t.messageId),[mine,later,newer].map(m=>m.messageId))
+  assert.deepEqual(current.triggers,[evidence(mine)],'ordinary post-grant failures are not approval triggers')
+  const rows=await a.listMentions(consentSince)
+  for(const m of [mine,later,newer]){
+    const r=rows.find(r=>r.messageId===m.messageId)
+    assert.equal(r.canApprove,false);assert.deepEqual(r.intakeFailure,diagnostic)
+  }
+  assert.equal(rows.find(r=>r.messageId===theirs.messageId).canApprove,true)
+  await a.settleIntake(g,mine)
+  assert.equal((await a.list()).find(x=>x.mode==='sender').triggers[0].handled,true)
+  assert.equal((await a.listMentions(consentSince)).find(x=>x.messageId===mine.messageId).intakeFailure,undefined)
+  await a.update({action:'revoke',chatId,senderId:member})
+  assert.ok(!(await open().listMentions(consentSince)).some(x=>x.intakeFailure))
+})
+
+test('promoting another request to permanent cannot restart a failed owner self-mention from the discarded grant',async()=>{
+  const a=fixture().open(), mine={...ref,senderId:scope.recipientId}, body={...mine,text:'old'}
+  const other={...ref,threadId:'om_new_topic',messageId:'om_new',at:ref.at+1,senderId:colleague}
+  await a.recordMention(body,consentSince)
+  const {grant}=await a.observe(mine,consentSince,()=>({...body,ownerSelfMention:true}))
+  await a.settleIntake(grant,mine,{at:3000,stage:'history',reason:'context-too-large'})
+  await seen(a,[other])
+  const [permanent]=await a.update({action:'permanent',chatId,threadId:other.threadId,messageId:other.messageId})
+  assert.deepEqual(permanent.triggers,[evidence(other)]);assert.equal(permanent.failures,undefined)
+  assert.ok(await a.skip(mine))
+  assert.deepEqual(await a.observe(mine,consentSince,assert.fail),{changed:false})
+  await assert.rejects(a.settleIntake(grant,mine),{code:'admission-denied'})
+  assert.ok(!(await a.listMentions(consentSince)).some(m=>m.intakeFailure))
 })
 
 test('ignoring a message once does not reopen the topic for a newer message an allowed member already covers',async()=>{

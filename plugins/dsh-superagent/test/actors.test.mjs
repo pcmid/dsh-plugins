@@ -251,7 +251,9 @@ test('empty director binding routes natively with the authorized topic and no ac
   assert.deepEqual(await f.actors.decide(base),{action:'work',role:'develop'})
   const req=f.nativeRequests[0]
   assert.equal(req.model,'director');assert.deepEqual(names(req),routerTools);assert.ok(!('agentPreset' in f.requested[0]))
-  assert.match(taskOf(req),/short reference.*route it/s);assert.match(taskOf(req),/Route engineering requests to the developer/)
+  assert.match(taskOf(req),/short reference, even a bare @mention/i)
+  assert.match(taskOf(req),/no matching material or follow-up appeared before the trigger, call superagent_ignore/i)
+  assert.match(taskOf(req),/"develop" for code and engineering/)
   assert.deepEqual(inputOf(req),{request:base.text,topic:base.workerContext})
   assert.equal(f.oneShots.length,0)
   for(const response of [route('lead'),call('superagent_route',{role:'answer',criteria:'not requested'}),call('superagent_deliver'),answer('Not the Router’s tool.')]) {
@@ -276,6 +278,22 @@ test('the router dispatches once and the selected worker checks its own public a
   assert.equal(w.messages[0].content[0].text,'Actual persona: engineer')
   assert.match(taskOf(w),/Check your own result against the request/)
   assert.equal(f.nativeRequests.length,2);assert.equal(f.oneShots.length,0)
+})
+
+test('a worker asks for an @ only when the requester needs one to resume',async t=>{
+  const f=await fixture(t), peer='ou_peer', dm={...base.source,privatePeerId:peer,privateChatsSince:1}
+  for(const [i,[source,requesterId,needsMention]] of [
+    [base.source,peer,true], [base.source,base.source.recipientId,true], [dm,peer,false], [dm,dm.recipientId,true],
+  ].entries()) {
+    await f.actors.work({...base,messageId:'om_ask'+i,source,requesterId})
+    const req=f.nativeRequests.at(-1), instruction=taskOf(req).split('\n').slice(0,-1).join('\n')
+    assert.equal(instruction.includes('补充后请 @我'),needsMention)
+    assert.equal(instruction.includes('reply normally in this opted-in private chat'),!needsMention)
+    assert.match(instruction,/Inspect the actual read-only attachment/)
+    assert.match(instruction,/state what you tried and the concrete obstacle/)
+    assert.ok(!instruction.includes(requesterId),'no raw Feishu identity in the rule')
+    assert.deepEqual(names(req),workerTools)
+  }
 })
 
 test('result tools exist only on the seat’s own agent scope and only for its turn',async t=>{
@@ -1024,7 +1042,9 @@ test('the Router sees the conversation’s open work and gets the merge tool onl
   assert.deepEqual(await f.actors.decide({...base,openWork}),{action:'merge',target:'w2'})
   const [d]=f.nativeRequests
   assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,openWork})
-  assert.deepEqual(names(d),mergeTools);assert.match(taskOf(d),/"openWork".*superagent_merge/s)
+  assert.deepEqual(names(d),mergeTools)
+  assert.match(taskOf(d),/"openWork".*file, image or explanation between that question and this @.*superagent_merge with that ref/s)
+  assert.match(taskOf(d),/do not guess between items/i)
   const schema=d.tools.find(x=>x.name==='superagent_merge').parameters
   assert.deepEqual([schema.properties.target.enum,schema.required,schema.additionalProperties],[['w1','w2'],['target'],false])
   assert.deepEqual(seatRows(f,d.sessionId).map(r=>r.name),mergeTools);assert.ok(f.registrations.every(r=>r.disposed))

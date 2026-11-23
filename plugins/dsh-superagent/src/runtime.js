@@ -204,7 +204,7 @@ function spaceAttentionStore(ask) {
 function SpaceLeadIcon({size,store,tr}) {
   const needed=React.useSyncExternalStore(store.subscribe,store.getSnapshot);
   return h('span',{style:{position:'relative',display:'inline-flex'}},h(Mark,{name:'lead',size}),
-    needed && h('span',{role:'img','aria-label':tr('需要你处理','Needs your attention'),style:{position:'absolute',top:-1,right:-2,width:7,height:7,
+    needed && h('span',{role:'img','aria-label':tr('需要关注','Needs your attention'),style:{position:'absolute',top:-1,right:-2,width:7,height:7,
       borderRadius:'50%',background:'var(--dsw-alias-state-warn-primary)',boxShadow:'0 0 0 1.5px var(--dsw-specific-sidebar-fill)'}}));
 }
 function applySuperagent(ctx) {

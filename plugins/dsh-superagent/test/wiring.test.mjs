@@ -156,6 +156,46 @@ test('attention counts an approvable mention, not a merely recorded or already l
   try {assert.equal(await needed(reopened),false)} finally {await reopened.api.dispose();await reopened.close();await store.close()}
 })
 
+test('attention includes only live intake failures until retry, revocation, or archiving a partial case',async()=>{
+  const db=medium(),store=await openStore(db),cfg={...identity,automationSince:1},chatId='oc_group'
+  const feed=createAdmission({scope:cfg,...store.permissions,consentSince:1,now:()=>10})
+  await feed.update({action:'register',chatId})
+  const [grant]=await feed.update({action:'permanent',chatId})
+  const [first,second,partial]=['om_first','om_second','om_partial'].map((messageId,i)=>({chatId,threadId:messageId,messageId,at:20+i,senderId:'ou_sender'}))
+  const diagnostic={at:30,stage:'history',reason:'invalid-response'}
+  for(const ref of [first,second,partial])await feed.recordMention({...ref,text:'Synthetic intake'},1)
+  const f=await mount(db,cfg,{runCli:assert.fail})
+  const attention=async needed=>assert.deepEqual((await f.send('attention',{})).value,{needed,revision:f.api.viewRevision()})
+  try {
+    const {source}=await f.api.activitySnapshot([],[])
+    const {createHash}=await import('node:crypto'),hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex')
+    const {profile,tenantId,recipientId,automationSince}=cfg
+    const grantScope=hash([hash({profile,tenantId,recipientId}),automationSince,chatId,grant.mode,null,grant.grantId,grant.approvedAt])
+    const saved=await createCases(store.state).receive({...cfg,...partial,text:'Synthetic intake'},grantScope,source.scopeId)
+    await attention(false)
+    await feed.settleIntake(grant,first,diagnostic)
+    await attention(true)
+    await feed.settleIntake(grant,first)
+    await attention(false)
+    const receiveFailure={at:31,stage:'receive',reason:'unknown'}
+    await feed.settleIntake(grant,partial,receiveFailure)
+    await attention(true)
+    const projection=async()=>(await f.send('snapshot',{})).value.mentions.find(m=>m.messageId===partial.messageId)
+    const live=await projection()
+    assert.deepEqual([live.caseId,live.intakeFailure,live.canApprove],[saved.id,receiveFailure,false])
+    const {mentions}=await f.api.activitySnapshot([saved],[{caseId:saved.id,messageId:partial.messageId,status:'queued'}])
+    assert.equal(mentions.find(m=>m.messageId===partial.messageId).intakeFailure,undefined)
+    assert.ok((await f.send('archiveCase',{caseId:saved.id})).ok)
+    assert.deepEqual((await projection()).intakeFailure,receiveFailure)
+    await attention(false)
+    await feed.settleIntake(grant,second,diagnostic)
+    await attention(true)
+    const before=f.api.viewRevision()
+    assert.ok((await f.send('groupAccess',{scopeId:source.scopeId,chatId,action:'revoke'})).ok)
+    assert.ok(f.api.viewRevision()>before);await attention(false)
+  } finally {await f.api.dispose();await f.close();await store.close()}
+})
+
 test('attention reports pending sends always, failures only on unarchived cases, and an outstanding automatic seat approval',async()=>{
   for(const [status,needed] of [['awaiting-release',true],['stopped',true],['uncertain',true],
     ['ignored',false],['delivered',false],['taken-over',false],['merged',false]]){

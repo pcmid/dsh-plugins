@@ -7,7 +7,7 @@ import { fileKey, imageKey, legacyPostText, postText, renderTextMentions } from 
 import { validAdmissionScope } from './admission.js'
 import { replyScopes } from './auth.js'
 import { cliExecutable } from './cli-path.js'
-import { cliProblem,pollDiagnostic } from './poll-diagnostics.js'
+import { cliProblem,itemDiagnostic,pollDiagnostic } from './poll-diagnostics.js'
 
 const messages = '/open-apis/im/v1/messages'
 const chat = /^oc_[a-zA-Z0-9_-]{1,128}$/
@@ -117,7 +117,7 @@ function envelope(row, scope, group, displayScope, claimed) {
 }
 
 // Private Host adapter. No event listener, public ingress, credential or implicit send permission.
-export function createFeishuSource({config = {}, cliDir, admission, receive, isSentMessage=()=>false, onPollWarning=()=>{}, run = runCli.bind(null,config.cliPath), check=()=>{}}) {
+export function createFeishuSource({config = {}, cliDir, admission, scopeForGrant, receive, isSentMessage=()=>false, onPollWarning=()=>{}, run = runCli.bind(null,config.cliPath), check=()=>{}}) {
   const {profile,tenantId,recipientId} = config
   const enabled = config.enabled === true
   const configured = hasFeishuIdentity(config) && typeof admission?.run === 'function'
@@ -249,9 +249,10 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
     // A bare omt_ does not establish the owning chat before reading the thread.
     if (!matches(chat,chatId) || (threadId !== undefined && !matches(message,threadId)))
       throw Object.assign(new Error('请指定已批准的群；一次准入须提供 om_ 原话题根消息。'),{code:'invalid-input'})
-    return admission.run({chatId,threadId,...(senderId ? {senderId} : {})}, async grant => {
+    const select=scopeForGrant && target.scopeId ? g=>scopeForGrant(g)===target.scopeId : undefined
+    return admission.run({chatId,threadId,...(senderId ? {senderId} : {})}, async (grant,eligible) => {
       check()
-      before?.(grant)
+      before?.(grant,eligible)
       const proof=useGrantPeer ? grant : target
       if (proof.privatePeerId!==grant.privatePeerId || proof.privateChatsSince!==grant.privateChatsSince)
         throw failure('私聊与原准入不匹配。','admission-denied','group')
@@ -269,7 +270,7 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
         const d = pollDiagnostic(err,'receive')
         throw failure(detail,d.reason,d.stage,d.larkCode)
       }
-    })
+    },select)
   }
   // The endpoints have no field mask. Do not import other groups or nested forwarded bodies into the Host.
   const selfSender = chatId => chatId===selfChatId ? ' and .sender.id=='+JSON.stringify(recipientId)+' and .sender.sender_type=="user" and .sender.id_type=="open_id" and .sender.tenant_key=='+JSON.stringify(tenantId) : ''
@@ -562,23 +563,30 @@ export function createFeishuSource({config = {}, cliDir, admission, receive, isS
       const old=legacyText===true && unchanged ? messageText(row,undefined,true) : null
       return {chatId,threadId,messageId,at,senderId:event.senderId,text:event.text,...(old && old!==event.text ? {legacyText:old} : {}),...peerFields(group),...(verified.event.senderId===recipientId ? {ownerSelfMention:true} : {}),...(name ? {name} : {})}
     },
-    async consumeMention(ref,recordedText) {
+    async consumeMention(ref,recordedText,checkGrant) {
       validateRef(ref)
       if (recordedText!==undefined && !validText(recordedText)) throw malformed()
       const limits=historyLimits()
       if (hasPeer(ref) && (!privateEpoch() || privateEpoch()!==ref.privateChatsSince || ref.at<=ref.privateChatsSince)) return {accepted:0}
       return guarded(ref,async (grant,group)=>{
         if (!inGrant(grant,ref)) return {accepted:0}
-        const verified=await exactEvent(ref,group,grant)
-        if (!verified) return {accepted:0}
-        const {row,event}=verified
-        // Dispatch the version the owner saw, but only while this exact message remains eligible.
-        if (recordedText!==undefined) event.text=recordedText
-        await addHistory(event,row,grant,group,limits)
-        checkPrivate(group)
-        await receive(event,grant)
-        return {accepted:1}
-      })
+        try {
+          const verified=await exactEvent(ref,group,grant)
+          if (!verified || ref.senderId && verified.event.senderId!==ref.senderId) return {accepted:0}
+          const {row,event}=verified
+          // Dispatch the version the owner saw, but only while this exact message remains eligible.
+          if (recordedText!==undefined) event.text=recordedText
+          await addHistory(event,row,grant,group,limits)
+          checkPrivate(group)
+          await receive(event,grant)
+          return {accepted:1}
+        } catch (error) {
+          // The scanner can defer this exact item; identity and admission failures stay outside this path.
+          const intakeFailure=checkGrant && itemDiagnostic(error)
+          if (!intakeFailure) throw error
+          return {accepted:0,intakeFailure}
+        }
+      },checkGrant)
     },
     async assertAllowed(target,before) {
       if (!automated) throw failure('未完成自动办理授权。')

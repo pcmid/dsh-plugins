@@ -148,6 +148,41 @@ test('the poll log localizes the stored timestamp, step, cause and optional nume
   for(const larkCode of [null,0,-1,'99991400',1.5,2147483648])assert.equal('code' in rows([{...data[0],larkCode}],zh)[0],false)
   for(const larkCode of [1,2147483647])assert.equal(rows([{...data[0],larkCode}],en)[0].code,'Feishu error code: '+larkCode)
 })
+test('intake before a run shows the safe reason and automatic retry on the original activity row and detail',()=>{
+  const {activity,row,detail}=new Function('h','React',src+';return {activity:spaceActivity,row:SpaceActivityRow,detail:SpaceActivityDetail}')(
+    fake,{useRef:()=>({current:null}),useLayoutEffect(){},useId:()=>'row-status'})
+  const source={scopeId:'scope',settings:{tenantId:'tenant',recipientId:'owner'}}
+  const original={scopeId:'scope',chatId:'oc_fixture',threadId:'om_topic',messageId:'om_trigger',at:100,name:'协作群',text:'原消息',canApprove:false}
+  const intakeFailure={at:200,stage:'history',reason:'context-too-large',stderr:'private output'}
+  const [before]=activity([],[original],source),[failed]=activity([],[{...original,intakeFailure}],source)
+  const message={kind:'feishu',requestId:original.messageId,at:210,text:original.text,status:'received'}
+  const item={id:'case',feedScopeId:source.scopeId,source:{kind:'feishu',...source.settings,chatId:original.chatId},messages:[message]}
+  const [partial]=activity([item],[{...original,caseId:item.id,intakeFailure}],source)
+  const languages=[[zh=>zh,'收件失败，将自动重试 · 读取消息前文：消息上下文过长，未交给助手'],
+    [(_,en)=>en,'Intake failed; will retry automatically · Read prior messages: Message context too large; not sent to the assistant']]
+  for(const entry of [failed,partial]) {
+    assert.equal(entry.key,before.key);assert.equal(entry.message.at,original.at)
+    assert.equal(entry.message.status,'intake-failed');assert.equal(entry.name,original.name)
+    for(const [tr,expected] of languages) {
+      const p={tr},list=row({p,row:entry,open:key=>assert.equal(key,before.key)}),[open]=find(list,n=>n.type==='button')
+      assert.equal(text(open),original.text);open.props.onClick()
+      const description=find(list,n=>n.props.id && n.props.id===open.props['aria-describedby'])[0]
+      assert.ok(description);assert.ok(text(description).includes(expected))
+      const reading=detail({p,row:entry});assert.ok(text(reading).includes(expected))
+      assert.doesNotMatch(text(list)+text(reading),/private output/)
+      assert.equal(view.approval({p,mention:entry.mention}),null)
+      assert.equal(find(reading,n=>n.type.name==='SpaceMessageWork').length,0)
+    }
+  }
+  const queued={...message,status:'queued',run:{status:'queued'}}
+  const [received]=activity([{...item,messages:[queued]}],[{...original,caseId:item.id}],source)
+  assert.equal(received.key,failed.key);assert.equal(received.message.status,'queued')
+  assert.equal(received.message.intakeFailure,undefined);assert.equal(message.status,'received')
+  assert.equal(before.message.status,'not-handled')
+  const [unknown]=activity([],[{...original,intakeFailure:{...intakeFailure,reason:'unknown'}}],source)
+  assert.match(text(detail({p:{tr:zh=>zh},row:unknown})),/原因未确定/)
+})
+
 test('an actual historical log remains expandable independently of current connection or recovery; no fake empty errors',()=>{
   const [source,,groups]=panels.map(String),view=new Function(src+';return SpacePollLog')()
   for(const records of [undefined,[],[{at:1,stage:'not-a-stage',reason:'unknown'}]])assert.equal(view({records,tr:z=>z}),null)
@@ -189,7 +224,7 @@ test('private intake is an explicit versioned switch; even self-chat still needs
   assert.match(String(panels[0]),/授权一次.*对外发送仍遵守你的确认设置/)
   assert.match(runtime,/setPrivateChats:input=>change\('setPrivateChats',input\)/)
   const rows=new Function(src+';return spacePollLogRows')()([{at:1,stage:'history',reason:'context-too-large'}],cn=>cn)
-  assert.equal(rows[0].reason,'线程内容过长，未交给助手')
+  assert.equal(rows[0].reason,'消息上下文过长，未交给助手')
 })
 
 test('both settings tabs observe lightweight revisions without asking the host to scan',()=>{

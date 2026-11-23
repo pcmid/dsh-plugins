@@ -30,6 +30,8 @@ async function ownerPrompt(ctx,app,provider,transport,sessionId) {
   const log=await ctx.sessionPersistence.open(sessionId,'read')
   try {
     const {events}=await log.read(),phases=phase==='prepare'?['prepare']:['prepare','release']
+    const notices=events.filter(e=>e.type==='user/message' && e.data.source?.kind==='plugin:superagent-handoff')
+    assert.equal(notices.length,1,'one durable context notice, not a second prompt or turn after restoring the worker')
     const ends=events.filter(e=>e.type==='turn/end').map(e=>e.data.reason.kind)
     assert.equal(ends.length,1+phases.length)
     assert.equal(ends[0],'aborted','original native worker turn was cancelled, not completed')

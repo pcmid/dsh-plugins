@@ -16,6 +16,7 @@ function spaceRoleLabel(role,tr) {
 function spaceStatus(status,tr) {
   const labels={'awaiting-access':['待批准','Awaiting approval'],'not-handled':['已收到 · 未办理','Received · not handled'],received:['已收到','Received'],dispatching:['正在提交至 DSH','Submitting to DSH'],
     submitted:['已交给 DSH','Submitted to DSH'],failed:['提交失败','Submission failed'],
+    'intake-failed':['收件失败，将自动重试','Intake failed; will retry automatically'],
     queued:['待判断','Queued'],deciding:['Router 分流中','Router is routing'],assigned:['待承办','Assigned'],working:['助手办理中','In progress'],
     approved:['已完成 · 尚未发送','Done · not yet sent'],
     'awaiting-release':['待你确认发送最终答复','Final reply awaiting your confirmation'],'question-release':['待你确认发送追问','Question awaiting your confirmation'],
@@ -78,12 +79,17 @@ function spaceActivity(cases,mentions=[],source) {
   }
   for(const mention of mentions) {
     if(mention.scopeId!==source.scopeId)continue;
-    const {scopeId,chatId,threadId,messageId,text,at,name,canApprove,caseId}=mention;
-    const key=JSON.stringify([scopeId,chatId,threadId,messageId]),row=caseId && index.get(JSON.stringify([caseId,messageId]));
+    const {scopeId,chatId,threadId,messageId,text,at,name,canApprove,caseId,intakeFailure}=mention;
+    const key=JSON.stringify([scopeId,chatId,threadId,messageId]);
+    let row=caseId && index.get(JSON.stringify([caseId,messageId]));
     if(row) {
       row.key=key;row.message={...row.message,at};
       if(name) names.set(caseId,name);
-    } else rows.push({key,mention,chatId,name,message:{kind:'feishu',requestId:messageId,text,at,status:canApprove?'awaiting-access':'not-handled'}});
+    } else {
+      row={key,mention,chatId,name,message:{kind:'feishu',requestId:messageId,text,at,status:canApprove?'awaiting-access':'not-handled'}};
+      rows.push(row);
+    }
+    if(intakeFailure && !row.message.run) Object.assign(row.message,{status:'intake-failed',intakeFailure});
   }
   for(const row of rows) if(row.item) row.name=names.get(row.item.id) || row.name;
   return rows.sort((a,b)=>b.message.at-a.message.at);
@@ -121,14 +127,14 @@ function SpaceTime({at,tr,day=false}) {
 }
 
 function SpaceActivityRow({p,row,open,restore}) {
-  const {tr}=p,{message,mention}=row,trigger=React.useRef(null);
+  const {tr}=p,{message,mention}=row,trigger=React.useRef(null),statusId=React.useId();
   React.useLayoutEffect(()=>{if(restore)trigger.current?.focus()},[restore]);
   return h('li',{className:'x2-activity-row'},
     h(SpaceTime,{at:message.at,tr}),spaceStatusDot(message.status),
     h('div',{className:'x2-activity-copy'},
-      h('button',{type:'button',className:'x2-activity-open',ref:trigger,onClick:()=>open(row.key)},
+      h('button',{type:'button',className:'x2-activity-open',ref:trigger,'aria-describedby':message.intakeFailure ? statusId : undefined,onClick:()=>open(row.key)},
         message.text.length>140 ? message.text.slice(0,140)+'…' : message.text),
-      h('small',null,h(SpaceGroupLink,{tr,chatId:row.chatId,name:row.name}),' · ',spaceStatus(message.status,tr)),
+      h('small',{id:statusId},h(SpaceGroupLink,{tr,chatId:row.chatId,name:row.name}),' · ',spaceActivityStatus(message,tr)),
       h(SpaceApproval,{p,mention,returnFocus:trigger})),
     h('span',{className:'x2-row-link','aria-hidden':true},h(Mark,{name:'chevron',size:13})));
 }
@@ -201,7 +207,7 @@ const spacePollStages={
 };
 const spacePollReasons={
   'cli-not-found':['找不到 lark-cli','lark-cli was not found'],'cli-not-executable':['无法执行 lark-cli','lark-cli is not executable'],
-  'context-too-large':['线程内容过长，未交给助手','Thread too large; not sent to the assistant'],
+  'context-too-large':['消息上下文过长，未交给助手','Message context too large; not sent to the assistant'],
   timeout:['请求超时','Request timed out'],'login-required':['需要登录飞书','Feishu login required'],
   'permission-denied':['飞书权限不足','Insufficient Feishu permissions'],'invalid-parameters':['请求参数无效','Invalid request parameters'],
   'rate-limited':['请求过于频繁','Rate limit exceeded'],network:['网络连接失败','Network connection failed'],
@@ -210,15 +216,23 @@ const spacePollReasons={
   'admission-denied':['会话或话题未获准办理','Conversation or topic not approved'],'cli-failed':['lark-cli 执行失败','lark-cli failed'],
   unknown:['原因未确定','Cause unknown']
 };
+function spacePollLabels(row,tr) {
+  if(typeof row?.stage!=='string' || !Object.hasOwn(spacePollStages,row.stage) ||
+    typeof row.reason!=='string' || !Object.hasOwn(spacePollReasons,row.reason))return;
+  return {stage:tr(...spacePollStages[row.stage]),reason:tr(...spacePollReasons[row.reason])};
+}
+function spaceActivityStatus(message,tr) {
+  const status=spaceStatus(message.status,tr),problem=message.intakeFailure && spacePollLabels(message.intakeFailure,tr);
+  return problem ? status+' · '+problem.stage+tr('：',': ')+problem.reason : status;
+}
 function spacePollLogRows(records,tr) {
   if(!Array.isArray(records) || !records.length)return [];
   const format=new Intl.DateTimeFormat(tr('zh-CN','en-US'),{dateStyle:'medium',timeStyle:'medium'});
   return records.flatMap(row=>{
-    if(!row || !Number.isSafeInteger(row.at) || row.at<=0 || row.at>8.64e15 ||
-      typeof row.stage!=='string' || !Object.hasOwn(spacePollStages,row.stage) ||
-      typeof row.reason!=='string' || !Object.hasOwn(spacePollReasons,row.reason))return [];
-    const {at,stage,reason,larkCode}=row;
-    return [{iso:new Date(at).toISOString(),time:format.format(at),stage:tr(...spacePollStages[stage]),reason:tr(...spacePollReasons[reason]),
+    const labels=spacePollLabels(row,tr);
+    if(!labels || !Number.isSafeInteger(row.at) || row.at<=0 || row.at>8.64e15)return [];
+    const {at,larkCode}=row;
+    return [{iso:new Date(at).toISOString(),time:format.format(at),...labels,
       ...(Number.isInteger(larkCode) && larkCode>0 && larkCode<=2147483647 ? {code:tr('飞书错误码：','Feishu error code: ')+larkCode} : {})}];
   });
 }
@@ -663,11 +677,11 @@ function SpaceActivityDetail({p,row,back}) {
       h('button',{type:'button',className:'x2-back',onClick:back},h(Mark,{name:'back'}),tr('返回动态','Back to activity')),
       h('h2',{tabIndex:-1,ref:heading},tr('飞书消息','Feishu message')),
       h('div',{className:'x2-owners'},h(SpaceGroupLink,{tr,chatId:row.chatId,name:row.name}),
-        h(SpaceTime,{at:message.at,tr}),h('span',{className:'x2-state'},spaceStatusDot(message.status),spaceStatus(message.status,tr)))),
+        h(SpaceTime,{at:message.at,tr}),h('span',{className:'x2-state'},spaceStatusDot(message.status),spaceActivityStatus(message,tr)))),
     h('div',{className:'x2-read-scroll x2-transcript',tabIndex:0,role:'region','aria-label':tr('消息内容','Message contents')},
       h('div',{className:'x2-event-body'},h('p',null,message.text),
         h(SpaceApproval,{p,mention,returnFocus:heading}),
-        item && h(SpaceMessageWork,{p,item,message}),message.error && h('p',null,spaceErrorText(message.error,tr)))));
+        item && !message.intakeFailure && h(SpaceMessageWork,{p,item,message}),message.error && h('p',null,spaceErrorText(message.error,tr)))));
 }
 
 function spaceWorkspaceView(cases,view,compact,entries=[]) {

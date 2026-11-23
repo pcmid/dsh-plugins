@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
+import { createHash } from 'node:crypto'
+import { readFile,writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { crc32,deflateSync } from 'node:zlib'
 import { createLoop } from '../../host/loop.js'
-import { imageMarker } from '../../host/mention-text.js'
+import { fileMarker,imageMarker } from '../../host/mention-text.js'
 import { openStore } from '../../host/store.js'
 
 // A valid 1x1 RGB PNG, so DSH's real attachment store decodes and admits it.
@@ -27,7 +31,9 @@ const team={lead:'superagent-lead',develop:'',answer:'superagent-answer'}
 const models=model=>({lead:{provider:'offline',model:model ?? 'director'},answer:{provider:'offline',model:model ?? 'worker'}})
 const seeing={caseId:'images-case',messageId:'om_images_request',requesterId:'ou_images',source,team,roleModels:models(),
   text:'Fixture image: what does '+imageMarker(red.ref.key)+' show?',workerImages:[red,text,broken,gone].map(i=>i.ref)}
-const follow={...seeing,caseId:'images-follow',messageId:blue.ref.messageId,text:'Fixture image: @owner the blue one.',workerImages:[blue.ref]}
+const file={key:'file_fixture_log',messageId:'om_evidence',name:'evidence.csv',at:since+3},fileText='error,count\ntimeout,17\n'
+const follow={...seeing,caseId:'images-follow',messageId:blue.ref.messageId,text:'@Owner',workerImages:[blue.ref],workerFiles:[file],
+  workerContext:JSON.stringify([{speaker:'requester',at:file.at,text:fileMarker(file.key,file.name)},{speaker:'requester',at:blue.ref.at,text:'@Owner',request:true}])}
 const blind={caseId:'images-blind',messageId:'om_images_blind',requesterId:'ou_images',source:{...source,threadId:'om_images_blind'},team,
   roleModels:models('text-only'),text:'Fixture image: answer from text about '+imageMarker(red.ref.key)+'.',workerImages:[red.ref]}
 const question='Fixture image: which part do you mean?',answers={seeing:'Fixture image: red, then blue.',blind:'Fixture image: answered from text alone.'}
@@ -60,11 +66,12 @@ export async function imagesRound(ctx,provider,actors) {
   const requests=[],loads=[],sent=[],calls=provider.calls.length
   // The offline model answers these requests and records what each native request carried.
   provider.imageTurn=({stage,options,input,canonical})=>{
-    if(!input.request.startsWith('Fixture image:'))return
+    if(input.request!==follow.text && !input.request.startsWith('Fixture image:'))return
     requests.push({stage,sessionId:options.sessionId,model:options.model,content:canonical.content,
       images:options.messages.flatMap(m=>m.content.filter(b=>b.type==='image').map(b=>b.attachment?.attachmentId))})
     if(stage==='DECIDE' && input.request===follow.text){
       assert.deepEqual(input.openWork,[{ref:'w1',request:seeing.text,state:'waiting for the requester',output:question}])
+      assert.equal(JSON.parse(input.topic)[0].text,fileMarker(file.key,file.name));assert.ok(!canonical.content.some(b=>b.type==='file'))
       return ['superagent_merge',{target:'w1'}]
     }
     if(stage==='DECIDE')return ['superagent_route',{role:'answer'}]
@@ -74,15 +81,18 @@ export async function imagesRound(ctx,provider,actors) {
     return ['superagent_answer',{answer:answers.seeing}]
   }
   const loader=stage=>refs=>{loads.push([stage,refs.map(r=>r.key)]);return Promise.resolve(refs.map(r=>bytesOf.get(r.key)))}
+  const path=join(tmpdir(),file.name)
+  await writeFile(path,fileText,{flag:'wx'})
+  const loadFiles=async(refs,use)=>{assert.deepEqual(refs,[file]);return [await use(0,path)]}
   const store=await openStore({open:spec=>ctx.storageDomain.open({...spec,name:'images_fixture_'+spec.name})})
   const loop=createLoop({...store.automationStore,isReleaseRequired:()=>false,caseInfo:()=>seeing,
-    decide:j=>actors.decide({...j,loadImages:loader('decide')}),work:j=>actors.work({...j,loadImages:loader('work')}),
+    decide:j=>actors.decide({...j,loadImages:loader('decide')}),work:j=>actors.work({...j,loadImages:loader('work'),loadFiles}),
     deliver:async d=>{sent.push(d.text);return {chatId:d.source.chatId,inReplyTo:d.messageId,messageId:'om_images_receipt_'+sent.length}}})
   try {
     await loop.enqueue(seeing);await loop.drain()
     const [waiting]=await loop.snapshot()
     assert.deepEqual([waiting.status,waiting.messageId],['waiting-requester',seeing.messageId])
-    // The new @ brings a blue image; after routing it continues the original worker's session.
+    // Only the bare @ is enqueued. Its context brings the file and blue image to the original worker.
     await loop.enqueue(follow)
     await loop.drain()
     await loop.enqueue(blind);await loop.drain()
@@ -100,8 +110,10 @@ export async function imagesRound(ctx,provider,actors) {
     const seats=await actors.seats(seeing),followSeats=await actors.seats(follow),blindSeats=await actors.seats(blind)
     const [routed]=await prompts(ctx,seats.routerSessionId),[asked,resumed]=await prompts(ctx,seats.workerSessionId)
     const [routedFollow]=await prompts(ctx,followSeats.routerSessionId)
-    const [routerRed]=promptWith(routed,'DECIDE',[red]),[workerRed]=promptWith(asked,'WORK',[red]),[workerBlue]=promptWith(resumed,'WORK',[blue])
+    const [routerRed]=promptWith(routed,'DECIDE',[red]),[workerRed]=promptWith(asked,'WORK',[red]),[workerBlue]=promptWith(resumed.slice(0,-2),'WORK',[blue])
     assert.deepEqual(promptWith(routedFollow,'DECIDE',[blue]),[workerBlue])
+    assert.deepEqual(resumed.at(-2),{type:'text',text:fileMarker(file.key,file.name)})
+    assert.deepEqual(resumed.at(-1),{type:'file',attachment:{attachmentId:'sha256:'+createHash('sha256').update(fileText).digest('hex'),name:file.name,bytes:Buffer.byteLength(fileText)}})
     assert.equal(routerRed,workerRed,'the same image is the same content-addressed attachment')
     assert.notEqual(workerBlue,workerRed)
     for(const id of Object.values(blindSeats))(await prompts(ctx,id)).forEach(c=>promptWith(c,id===blindSeats.routerSessionId?'DECIDE':'WORK',[]))
@@ -111,8 +123,13 @@ export async function imagesRound(ctx,provider,actors) {
       ['DECIDE',seats.routerSessionId,'director',[routerRed]],['WORK',seats.workerSessionId,'worker',[workerRed]],
       ['DECIDE',followSeats.routerSessionId,'director',[workerBlue]],['WORK',seats.workerSessionId,'worker',[workerRed,workerBlue]],
       ['DECIDE',blindSeats.routerSessionId,'text-only',[]],['WORK',blindSeats.workerSessionId,'text-only',[]]])
-    assert.deepEqual(requests.slice(0,4).map(r=>r.content),[routed,asked,routedFollow,resumed])
-    console.log('PASS images: Router and worker received each admitted image, the merged clarification attached only the new image on the worker, and both answers were delivered. Unreadable images and the text-only model still produced no attachment.')
+    assert.deepEqual(requests.slice(0,3).map(r=>r.content),[routed,asked,routedFollow])
+    const visible=requests[3].content,copy=ctx.get('attachments').fileHostPath(resumed.at(-1).attachment)
+    assert.deepEqual(visible.slice(0,-1),resumed.slice(0,-1))
+    assert.equal(visible.at(-1).type,'text')
+    assert.ok(typeof copy==='string' && visible.at(-1).text.includes(copy),'DSH tells only the worker where its read-only copy lives')
+    assert.equal(await readFile(copy,'utf8'),fileText)
+    console.log('PASS images: Router and worker received each admitted image, the bare mention merged and gave the original worker the new image and exact file bytes, and both answers were delivered. Unreadable images and the text-only model still produced no attachment.')
   } finally {
     provider.imageTurn=undefined
     await loop.dispose();await store.close()

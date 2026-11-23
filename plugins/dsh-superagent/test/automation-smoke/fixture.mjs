@@ -67,6 +67,12 @@ export function apply(ctx) {
           const persona=row.config.plugins.find(p=>p.name==='@deepseek-ai/dsh-persona')?.config?.prefix
           assert.ok(persona?.trim(),'missing shipped persona: '+role)
           provider.personas[role]=persona.trim()
+          if(role==='answer') {
+            assert.match(persona,/Check the evidence before answering/)
+            assert.match(persona,/temporary directory.*XLSX.*Do not alter originals, workspace or repository files, or external systems/)
+            const fsTools=row.config.plugins.find(p=>p.name==='@deepseek-ai/dsh-tool-fs')
+            assert.deepEqual([fsTools.config.write,fsTools.config.edit],[false,false])
+          }
           assert.equal((await ready.agentPresets.resolve(row.config.id)).broken,undefined)
         }
         if(process.env.SMOKE_PHASE==='prepare') {
