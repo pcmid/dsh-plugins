@@ -17,6 +17,7 @@ const errors = {
   'case-busy': '上一条委托仍在交给 DSH。',
   'dispatch-uncertain': '上一条委托的交接结果未确认，请先核对原生会话。',
   'storage-unavailable': '无法读取或保存事项记录。',
+  'case-archived': '该话题的事项已归档。',
 }
 function fail(code) { throw Object.assign(new Error(errors[code]), { code }) }
 const expect = condition => { if (!condition) fail('invalid-input') }
@@ -63,6 +64,8 @@ function validCase(c) {
 }
 const safeErrors = new Set(['SOURCE_NOT_ALLOWED','INVALID_REQUEST','EXECUTOR_UNAVAILABLE','PRESET_UNAVAILABLE',
   'MODEL_UNAVAILABLE','SESSION_MISMATCH','SESSION_UNAVAILABLE','WORKSPACE_UNAVAILABLE','PROMPT_UNCERTAIN'])
+// One Feishu topic is one case, whichever grant admitted each of its messages.
+const sameTopic = (a,b) => a.kind === 'feishu' && a.tenantId === b.tenantId && a.recipientId === b.recipientId && a.chatId === b.chatId && a.threadId === b.threadId
 const sameInbox = (a,b) => a.kind === 'feishu' && a.scopeId === b.scopeId && a.tenantId === b.tenantId && a.recipientId === b.recipientId && a.chatId === b.chatId
 const replaceCase = (s,c) => ({ ...s, cases: [c, ...s.cases.filter(other => other.id !== c.id)] })
 const view = ({ team,roleModels,cases }) => copy({ team,roleModels,cases })
@@ -188,6 +191,15 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
       status: 'received', createdAt: at, updatedAt: at, messages: [] }
   }
 
+  // Older records filed a request that quoted another message under the quoted root; the thread that grew
+  // from such a request is still its topic.
+  const inTopic = (c,source) => sameTopic(c.source,source) || sameTopic(c.source,{...source,threadId:c.source.threadId}) &&
+    c.messages.some(m => m.kind === 'feishu' && m.requestId === source.threadId)
+  const latestInTopic = (s,source) => s.cases.filter(c => inTopic(c,source)).reduce((a,c) => !a || c.createdAt > a.createdAt ? c : a, undefined)
+  // Whether a topic's case was archived: its later messages are neither recorded nor handled.
+  function isArchivedTopic(source) {
+    return locked(s => latestInTopic(s,{kind:'feishu',...source})?.archivedAt !== undefined)
+  }
   // Untrusted external text is history, never execution authority or a delivery receipt.
   async function receive(event,scopeId,feedScopeId) {
     expect(feedScopeId === undefined || typeof feedScopeId === 'string' && /^[a-f0-9]{64}$/.test(feedScopeId))
@@ -196,12 +208,14 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
     const { tenantId,recipientId,chatId,threadId,messageId,senderId,text } = event
     const source = { kind:'feishu', tenantId,recipientId,chatId,threadId,...(scopeId ? {scopeId} : {}) }
     return locked(async s => {
-      const inbox = s.cases.filter(c => sameInbox(c.source, source))
-      const seen = inbox.find(c => c.messages.some(m => m.kind === 'feishu' && m.requestId === messageId))
+      const seen = s.cases.find(c => (sameInbox(c.source,source) || inTopic(c,source)) &&
+        c.messages.some(m => m.kind === 'feishu' && m.requestId === messageId))
       if (seen) return copy(seen)
       const at = now()
-      // A thread supplies context, not a shared case. Only a verified clarification resumes its original job.
-      const c = newCase(source,text,at)
+      // Later messages of a topic join its latest case; an archived topic takes no new messages.
+      const topic = latestInTopic(s,source)
+      if (topic?.archivedAt !== undefined) fail('case-archived')
+      const c = topic ?? newCase(source,text,at)
       const context = intakeContext(event.workerContext)
       const message = { kind:'feishu', requestId:messageId, senderId, text, at, status:'received', ...(context ? {context} : {}) }
       const next = { ...c, ...(feedScopeId ? {feedScopeId} : {}), messages: [...c.messages, message], updatedAt:at, status:message.status }
@@ -303,5 +317,5 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
   }
 
   return { snapshot:() => locked(view), teamSettings:() => locked(teamView), configure, intake, receive, archive, retryIntake,
-    settled:()=>queue,initializeRoles,setReleasePolicy,isReleaseRequired:()=>locked(s=>s.releaseRequired!==false) }
+    settled:()=>queue,initializeRoles,isArchivedTopic,setReleasePolicy,isReleaseRequired:()=>locked(s=>s.releaseRequired!==false) }
 }

@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createFeishuSource } from '../host/feishu.js'
+import { createCases } from '../host/cases.js'
 import { createLoop } from '../host/loop.js'
 import { fileMarker } from '../host/mention-text.js'
 
@@ -125,18 +126,26 @@ test('a follow-up approved under its own grant still finds the waiting request a
     work:b=>{worked.push(b);return {sessionId:'worker',workspaceId:'ws',resolvedPresetId:'analyst',
       ...worked.length===1 ? {question:'请贴一条日志'} : {answer:'是上游超时'}}},
     deliver:({source,messageId})=>({chatId:source.chatId,messageId:'om_sent_'+messageId,inReplyTo:messageId})})
+  // The case record files each message by its topic, as the source hands it over.
+  let record
+  const cases=createCases({load:async()=>structuredClone(record),save:async v=>{record=structuredClone(v)},listPresets:async()=>[],executor:{}})
+  const receive=(scopeId,messageId,threadId,text)=>cases.receive({tenantId,recipientId:me,chatId,threadId,messageId,senderId:requester,text},scopeId)
   // Recorded under the earlier rule: the waiting request is named by the message it quoted.
-  await loop.enqueue(base('a'.repeat(64),request,quoted));await loop.drain()
+  const waiting=await receive('a'.repeat(64),request,quoted,'text of '+request)
+  await loop.enqueue(base('a'.repeat(64),request,quoted,{caseId:waiting.id}));await loop.drain()
   assert.equal((await loop.snapshot())[0].status,'waiting-requester')
+  // The @ in the thread the request grew into still joins the request's case.
+  const joined=await receive('b'.repeat(64),follow,request,'@雷格')
+  assert.equal(joined.id,waiting.id)
   const files=[{messageId:file,key:'file_v3_sample',name:'样例.xlsx',at:at+20}]
-  await loop.enqueue(base('b'.repeat(64),follow,request,{text:'@雷格',workerFiles:files}));await loop.drain()
+  await loop.enqueue(base('b'.repeat(64),follow,request,{caseId:joined.id,text:'@雷格',workerFiles:files}));await loop.drain()
   assert.deepEqual(routed[1],[{ref:'w1',request:'text of '+request,state:'waiting for the requester',output:'请贴一条日志'}])
   const rows=await loop.snapshot()
   assert.deepEqual(rows.map(r=>r.status),['delivered','merged'])
   assert.deepEqual(worked[1].supplements,[{text:'@雷格',from:'requester'}])
   assert.deepEqual(worked[1].workerFiles,files)
   assert.equal(worked[1].continueWork,true)
-  // A message from another chat is never offered as related work.
+  // A message of another case is never offered its work.
   await loop.enqueue(base('b'.repeat(64),'om_elsewhere',request,{source:{...base('b'.repeat(64),'x',request).source,chatId:'oc_else'}}));await loop.drain()
   assert.equal(routed[2],undefined)
 })

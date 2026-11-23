@@ -25,7 +25,7 @@ export function sourceValues(f = {}) {
     tenantId:text(f?.tenantId),recipientId:text(f?.recipientId),pollIntervalMinutes:minutesOK(f?.pollIntervalMinutes) ? f.pollIntervalMinutes : 1,
     ...(automationSince ? {automationSince} : {}),allowPrivateChats,...(allowPrivateChats ? {privateChatsSince:f.privateChatsSince} : {})}
 }
-export function sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived=()=>false,hasIntake=()=>false,isSentMessage=()=>false,runCli,managedDir,onChange=()=>{},authFactory = createFeishuAuth}) {
+export function sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived=()=>false,hasIntake=()=>false,isArchivedTopic=async()=>false,isSentMessage=()=>false,runCli,managedDir,onChange=()=>{},authFactory = createFeishuAuth}) {
   let active, disposed = false, tail = Promise.resolve(), ioTail = Promise.resolve(), timer, polling, started=false
   let lastPrivateConsent=0
   function current() {
@@ -153,6 +153,13 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
     const scope=grantScope(rec,g), {messageId,at}=ref, key=receiptKey(ref)
     if (attempted.has(key)) return
     const original=g.triggers?.find(t=>t.messageId===messageId && !t.handled)
+    // An archived topic takes no new messages: settle its pending trigger or retry without receiving it.
+    if (await isArchivedTopic(rec.config,ref.chatId,ref.threadId)) {
+      live(rec)
+      if (original || g.failures?.some(f=>f.messageId===messageId)) {await rec.admission.settleIntake(g,ref);onChange()}
+      attempted.add(key)
+      return
+    }
     const checkGrant=(current,eligible)=>{
       live(rec);checkPrivate(rec,ref)
       if (grantScope(rec,current)!==scope || !eligible(ref)) fail('admission-denied')
@@ -282,8 +289,8 @@ export function sourceSettings({readConfig,saveConfig,permissions,receive,hasRec
           const recorded=await a.recordedThread(ref,consent)
           if(recorded) ref={...ref,threadId:recorded}
           if(attempted.has(receiptKey(ref)))continue
-          // An ignored conversation, or messages from before a revocation, are not read, recorded or proposed.
-          if(await a.skip(ref)) continue
+          // An ignored conversation, an archived topic, or messages from before a revocation, are not read, recorded or proposed.
+          if(await a.skip(ref) || await isArchivedTopic(rec.config,ref.chatId,ref.threadId)) continue
           const archived=await archive(rec,ref)
           if(!archived) continue
           check()

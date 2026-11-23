@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { setTimeout as delay } from 'node:timers/promises'
 import { gates,issued } from './worker-tool.mjs'
-import { chatId,colleague,messageId,source } from './feishu.mjs'
+import { chatId,colleague,mergeRoot,messageId,source } from './feishu.mjs'
 import { mergeCase } from './provider.mjs'
 
 const owner=source.recipientId, answers=mergeCase.answers
@@ -25,6 +25,8 @@ async function nativeLog(ctx,id) {
   } finally {await log.close()}
 }
 const supplied=(log,i)=>log.prompts[i].supplements?.map(s=>[s.from,s.text])
+// The merge topic's cases, each as its message IDs in order.
+const topicCases=state=>state.cases.filter(c=>c.source.chatId===chatId && c.source.threadId===mergeRoot).map(c=>c.messages.map(m=>m.requestId))
 // One merged message: terminal, pointing at the job it joined, with no worker of its own.
 function mergedInto(state,m,target) {
   const row=job(state,m.id)
@@ -88,18 +90,24 @@ export async function mergeBeforeExit(ctx,app,provider,transport) {
   assert.equal(transport.posts.length,posts)
   console.log('PASS merge draft: merging into a reply awaiting release made the old release token stale; the same worker drafted a new reply.')
 
-  // d) The Router sees the open request but routes this @ as separate work.
+  // d) Even a separate request in this topic goes to its worker: the Router has only merge and ignore (asserted by
+  // the Router fixture), and the same session answers it.
+  const calls=provider.calls.length
   transport.publishMerge(mergeCase.own,colleague)
-  const third=await poll(app), own=job(third,mergeCase.own.id)
+  const third=await poll(app), withOwn=job(third,mergeCase.work.id)
   assert.ifError(provider.error)
-  assert.deepEqual([own?.status,own?.answer,own?.role,own?.mergedInto],['awaiting-release',answers.own,'answer',undefined])
-  assert.ok(own.workerSessionId && own.workerSessionId!==workerId)
-  assert.deepEqual(job(third,mergeCase.work.id),redrafted,'independent work leaves the earlier request untouched')
-  await app.releaseOutput(decision(own,'decline'))
-  console.log('PASS merge route: with superagent_merge offered, a superagent_route decision got its own worker and left the earlier draft unchanged.')
+  mergedInto(third,mergeCase.own,withOwn)
+  assert.deepEqual(provider.calls.slice(calls),['DECIDE','WORK'],'no worker of its own')
+  assert.deepEqual([withOwn.status,withOwn.answer,withOwn.workerSessionId],['awaiting-release',answers.own,workerId])
+  assert.ok(withOwn.releaseToken && withOwn.releaseToken!==redrafted.releaseToken)
+  await assert.rejects(app.releaseOutput(decision(redrafted,'send')),{code:'release-stale'})
+  log=await nativeLog(ctx,workerId)
+  assert.deepEqual([log.ends,log.prompts[3].continue,supplied(log,3)],[['aborted','completed','completed','completed'],true,[[mergeCase.own.from,mergeCase.own.text]]])
+  assert.equal(transport.posts.length,posts)
+  console.log('PASS merge handover: in a topic that already has its worker, the Router was offered only superagent_merge and superagent_ignore; a separate request there was handed to the original worker, which drafted one reply in the same session.')
 
   // c) A posted reply in the thread reopens; its next reply is a new message.
-  await app.releaseOutput(decision(redrafted,'send'))
+  await app.releaseOutput(decision(withOwn,'send'))
   await app.drain()
   const sent=job(await app.snapshot(),mergeCase.work.id)
   assert.deepEqual([sent.status,sent.receipt],['delivered',{chatId,inReplyTo:mergeCase.work.id,messageId:'om_merge_receipt_1'}])
@@ -114,16 +122,21 @@ export async function mergeBeforeExit(ctx,app,provider,transport) {
   const resent=job(await app.snapshot(),mergeCase.work.id)
   assert.deepEqual([resent.status,resent.receipt],['delivered',{chatId,inReplyTo:mergeCase.work.id,messageId:'om_merge_receipt_2'}])
   const replies=transport.posts.slice(posts)
-  assert.deepEqual(replies.map(p=>[p.anchor,p.id,p.text]),[[mergeCase.work.id,'om_merge_receipt_1',answers.more],[mergeCase.work.id,'om_merge_receipt_2',answers.late]])
+  assert.deepEqual(replies.map(p=>[p.anchor,p.id,p.text]),[[mergeCase.work.id,'om_merge_receipt_1',answers.own],[mergeCase.work.id,'om_merge_receipt_2',answers.late]])
   assert.notEqual(replies[0].key,replies[1].key,'the reopened reply has its own delivery idempotency key')
   log=await nativeLog(ctx,workerId)
-  assert.deepEqual([log.ends,log.prompts[3].continue,supplied(log,3)],[['aborted','completed','completed','completed'],true,[[mergeCase.late.from,mergeCase.late.text]]])
+  assert.deepEqual([log.ends,log.prompts[4].continue,supplied(log,4)],[['aborted','completed','completed','completed','completed'],true,[[mergeCase.late.from,mergeCase.late.text]]])
   console.log('PASS merge delivered: an @ after the posted reply reopened it in the same session; after release a new message was posted with a different receipt and idempotency key.')
 
-  // e) The other group's open answer and om_root's open question were never offered (asserted by the Router fixture).
+  // e) Router openWork listed only this case's work: the other group's open answer and om_root's open question
+  // were never offered (asserted by the Router fixture). Every @ of the topic is a message of its one case.
+  const scoped=await app.snapshot(), workCase=job(scoped,mergeCase.work.id).caseId
+  assert.deepEqual(topicCases(scoped),[['work','add','more','own','late'].map(k=>mergeCase[k].id)],'one case for the topic, messages appended in order')
+  assert.ok(['add','more','own','late'].every(k=>job(scoped,mergeCase[k].id).caseId===workCase))
+  assert.ok(![other.messageId,messageId].some(id=>job(scoped,id).caseId===workCase),'other topics keep their own cases')
   await app.releaseOutput(decision(other,'decline'))
-  assert.equal(provider.mergeTurns,3)
-  console.log('PASS merge scope: Router openWork listed only earlier requests of the same native thread; open work in another thread and another group never appeared.')
+  assert.equal(provider.mergeTurns,4)
+  console.log('PASS merge scope: every @ of the topic joined its one case in order; Router openWork listed only that case’s work, never open work in another topic or group.')
 
   // f) Leave a merged follow-up mid-run at exit; it must survive the cold restart.
   transport.publishMerge(mergeCase.final,owner)
@@ -132,17 +145,19 @@ export async function mergeBeforeExit(ctx,app,provider,transport) {
   const inFlight=await app.snapshot()
   mergedInto(inFlight,mergeCase.final,job(inFlight,mergeCase.work.id))
   assert.equal(job(inFlight,mergeCase.work.id).status,'working')
+  assert.deepEqual(topicCases(inFlight),[['work','add','more','own','late','final'].map(k=>mergeCase[k].id)])
   await app.setReleasePolicy({required:false})
   assert.equal(transport.posts.length,posts+2)
-  return {workerId,tokens:[drafted.releaseToken,redrafted.releaseToken,reopened.releaseToken]}
+  return {workerId,tokens:[drafted.releaseToken,redrafted.releaseToken,withOwn.releaseToken,reopened.releaseToken]}
 }
 
 export async function mergeAfterRestart(ctx,app,provider,transport,saved) {
   const state=await app.snapshot(), target=job(state,mergeCase.work.id)
   assert.deepEqual([target?.status,target?.reason,target?.workerSessionId,target?.receipt],['uncertain','work-uncertain',saved.workerId,undefined])
   assert.deepEqual(target.supplements,[{messageId:mergeCase.final.id,text:mergeCase.final.text,senderId:owner}],'pending supplements survived the restart')
-  for(const k of ['add','more','late','final'])mergedInto(state,mergeCase[k],target)
-  assert.deepEqual([job(state,mergeCase.own.id).status,job(state,mergeCase.other.id).status],['declined','declined'])
+  for(const k of ['add','more','own','late','final'])mergedInto(state,mergeCase[k],target)
+  assert.equal(job(state,mergeCase.other.id).status,'declined')
+  assert.deepEqual(topicCases(state),[['work','add','more','own','late','final'].map(k=>mergeCase[k].id)],'the topic’s one case survived the restart')
   const start=provider.calls.length, posts=transport.posts.length
   assert.deepEqual(await app.retryWork(command(target)),{...command(target),status:'assigned'})
   await app.drain()
@@ -152,9 +167,9 @@ export async function mergeAfterRestart(ctx,app,provider,transport,saved) {
   assert.ok(after.releaseToken && !saved.tokens.includes(after.releaseToken))
   assert.deepEqual(provider.calls.slice(start),['WORK'],'no Router call: the merge decision persisted')
   const log=await nativeLog(ctx,saved.workerId)
-  assert.deepEqual(log.ends,['aborted','completed','completed','completed','aborted','completed'])
+  assert.deepEqual(log.ends,['aborted','completed','completed','completed','completed','aborted','completed'])
   assert.deepEqual(log.prompts.map((p,i)=>[p.continue,supplied(log,i)?.[0]?.[1]]),
-    [[undefined,undefined],...['add','more','late','final','final'].map(k=>[true,mergeCase[k].text])])
+    [[undefined,undefined],...['add','more','own','late','final','final'].map(k=>[true,mergeCase[k].text])])
   await app.releaseOutput(decision(after,'decline'))
   assert.equal(transport.posts.length,posts)
   console.log('PASS merge cold restart: merged rows and the pending supplement persisted; the owner retry continued the same native session with that supplement and drafted a new reply.')

@@ -1064,6 +1064,25 @@ test('the Router sees the conversation’s open work and gets the merge tool onl
   }
 })
 
+test('in a case that already has its worker the Router gets no route tool or helpers and hands the message to that worker',async t=>{
+  const f=await fixture(t)
+  const openWork=[{ref:'w1',request:'Earlier request',state:'replied',output:'The earlier reply.'}]
+  f.script=[route('develop'),call('superagent_merge',{target:'w1'})]
+  assert.deepEqual(await f.actors.decide({...base,openWork,routable:false}),{action:'merge',target:'w1'})
+  const d=f.nativeRequests.at(-2)
+  assert.deepEqual(names(d),['superagent_merge','superagent_ignore'])
+  assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,openWork})
+  assert.match(taskOf(d),/already has its worker, listed in "openWork"\. Hand any request, question, correction, follow-up or supplement in it to that worker with superagent_merge, even if it is a new request; do not start new work\./)
+  assert.doesNotMatch(taskOf(d),/superagent_route|No helper is available/)
+  assert.deepEqual(seatRows(f,d.sessionId).map(r=>r.name),['superagent_merge','superagent_ignore'])
+  assert.deepEqual(resultsOf(f,f.requested.at(-1).sessionId).map(m=>[m.isError,m.content[0].text]),
+    [[true,'Unknown tool: superagent_route'],[false,'Recorded.']])
+  // It can still ignore what asks nothing of the worker.
+  f.control=ignore()
+  assert.deepEqual(await f.actors.decide({...base,messageId:'om_chatter',openWork,routable:false}),{action:'ignore'})
+  assert.deepEqual(names(f.nativeRequests.at(-1)),['superagent_merge','superagent_ignore'])
+})
+
 test('malformed open work never reaches the Router, and it sees at most ten requests',async t=>{
   const f=await fixture(t)
   const valid=Array.from({length:12},(_,i)=>({ref:'w'+(i+3),request:'Request '+(i+3),state:'not started'}))

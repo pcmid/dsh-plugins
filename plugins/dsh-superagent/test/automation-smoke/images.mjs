@@ -32,7 +32,8 @@ const models=model=>({lead:{provider:'offline',model:model ?? 'director'},answer
 const seeing={caseId:'images-case',messageId:'om_images_request',requesterId:'ou_images',source,team,roleModels:models(),
   text:'Fixture image: what does '+imageMarker(red.ref.key)+' show?',workerImages:[red,text,broken,gone].map(i=>i.ref)}
 const file={key:'file_fixture_log',messageId:'om_evidence',name:'evidence.csv',at:since+3},fileText='error,count\ntimeout,17\n'
-const follow={...seeing,caseId:'images-follow',messageId:blue.ref.messageId,text:'@Owner',workerImages:[blue.ref],workerFiles:[file],
+// A later @ in the same topic is a message of the same case.
+const follow={...seeing,messageId:blue.ref.messageId,text:'@Owner',workerImages:[blue.ref],workerFiles:[file],
   workerContext:JSON.stringify([{speaker:'requester',at:file.at,text:fileMarker(file.key,file.name)},{speaker:'requester',at:blue.ref.at,text:'@Owner',request:true}])}
 const blind={caseId:'images-blind',messageId:'om_images_blind',requesterId:'ou_images',source:{...source,threadId:'om_images_blind'},team,
   roleModels:models('text-only'),text:'Fixture image: answer from text about '+imageMarker(red.ref.key)+'.',workerImages:[red.ref]}
@@ -70,6 +71,7 @@ export async function imagesRound(ctx,provider,actors) {
     requests.push({stage,sessionId:options.sessionId,model:options.model,content:canonical.content,
       images:options.messages.flatMap(m=>m.content.filter(b=>b.type==='image').map(b=>b.attachment?.attachmentId))})
     if(stage==='DECIDE' && input.request===follow.text){
+      assert.equal(input.helpers,undefined,'the case already has its worker: no new work is routed')
       assert.deepEqual(input.openWork,[{ref:'w1',request:seeing.text,state:'waiting for the requester',output:question}])
       assert.equal(JSON.parse(input.topic)[0].text,fileMarker(file.key,file.name));assert.ok(!canonical.content.some(b=>b.type==='file'))
       return ['superagent_merge',{target:'w1'}]

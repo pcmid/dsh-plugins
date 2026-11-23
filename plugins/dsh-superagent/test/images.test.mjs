@@ -263,7 +263,7 @@ test('a merged message adds its images to the job it joins: each image once, at 
 
 test('a merged @ with images continues a waiting worker; malformed attachments never enter the queue',async()=>{
   const seat={sessionId:result.sessionId,workspaceId:result.workspaceId,resolvedPresetId:result.resolvedPresetId}
-  const follow={...input,caseId:'case_follow',messageId:'om_answer',text:'@owner '+mark('img_9')}
+  const follow={...input,messageId:'om_answer',text:'@owner '+mark('img_9')}
   const h=queue({decide:b=>b.messageId===follow.messageId ? {action:'merge',target:'w1'} : {action:'work',role:'develop'},
     work:b=>b.continueWork ? result : {...seat,question:'Which one?'}},undefined,{caseInfo:()=>input})
   await h.loop.enqueue({...input,workerImages:[pic(1),pic(2)]});await h.loop.drain()

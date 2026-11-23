@@ -9,7 +9,8 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
   const cases = createCases({load:state.load,save:state.save,executor,listPresets})
   let revision=0, closed=false
   const changed=()=>{revision++}
-  const channel=sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived:(...args)=>loop?.hasReceived(...args) ?? false,hasIntake:(scope,id)=>loop?.hasIntake(scope,id) ?? false,isSentMessage:(...args)=>loop?.isSentMessage(...args) ?? false,
+  const channel=sourceSettings({readConfig,saveConfig,permissions,receive,hasReceived:(...args)=>loop?.hasReceived(...args) ?? false,
+    isArchivedTopic:({tenantId,recipientId},chatId,threadId)=>cases.isArchivedTopic({tenantId,recipientId,chatId,threadId}),hasIntake:(scope,id)=>loop?.hasIntake(scope,id) ?? false,isSentMessage:(...args)=>loop?.isSentMessage(...args) ?? false,
     runCli,managedDir,authFactory,onChange:changed})
   const guarded=fn=>async input=>{
     await channel.assertAutomation(input.source,input.signal,input.requesterId)
@@ -39,7 +40,8 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
       const index=item.messages.findIndex(m=>m.kind==='feishu' && m.requestId===event.messageId)
       if(index<0)throw new Error('message not recorded')
       const {team,roleModels,helpers}=await cases.teamSettings()
-      const source={...item.source,...(event.privatePeerId ? {privatePeerId:event.privatePeerId,privateChatsSince:event.privateChatsSince} : {})}
+      // The case may hold earlier messages of the topic; this one runs under its own grant.
+      const source={...item.source,scopeId,...(event.privatePeerId ? {privatePeerId:event.privatePeerId,privateChatsSince:event.privateChatsSince} : {})}
       await loop.enqueue({caseId:item.id,messageId:event.messageId,text:item.messages[index].text,requesterId:event.senderId,
         source,team,roleModels,helpers:assignable(helpers),workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {}),
         ...(event.workerFiles?.length ? {workerFiles:event.workerFiles} : {})})

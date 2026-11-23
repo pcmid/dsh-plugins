@@ -9,7 +9,8 @@ const input = {source:src,caseId:'case_a',messageId:'om_intake',requesterId:'ou_
   workerContext:'長'.repeat(262144),team:{lead:'dispatcher',answer:'analyst',develop:'coder'},roleModels:{}}
 const seat = {sessionId:'worker-1',workspaceId:'workspace',resolvedPresetId:'analyst'}
 const cmd = (row,action='send')=>({caseId:row.caseId,messageId:row.messageId,token:row.releaseToken,action})
-const mention = n=>({...input,caseId:'case_follow'+n,messageId:'om_reply'+n,text:'@owner clarification '+n,workerContext:undefined})
+// A later @ in the same topic belongs to the same case.
+const mention = n=>({...input,messageId:'om_reply'+n,text:'@owner clarification '+n,workerContext:undefined})
 // Release validation names the job's verified requester, so a grant for one member can be checked.
 const authorize = async (source,signal,requesterId)=>{assert.deepEqual(source,src);assert.equal(requesterId,input.requesterId);signal.throwIfAborted()}
 function fixture(overrides={}) {
@@ -112,8 +113,10 @@ test('takeover withdraws the outstanding question and later @ messages are not o
     await l.dispose();const reboot=f.open()
     assert.equal((await row(reboot)).status,'taken-over')
     if(previous)assert.equal((await reboot.enqueue(mention(1))).status,'merged')
+    const decided=f.calls.decide.length
     await reboot.enqueue(mention(2));await reboot.drain()
-    assert.equal(f.calls.decide.at(-1).openWork,undefined)
+    // The case's worker was handed over, so the message is ignored without asking the Router.
+    assert.equal(f.calls.decide.length,decided)
     assert.equal(f.disk.jobs.at(-1).status,'ignored')
     assert.equal(f.calls.work.length,n);assert.equal(f.calls.deliver.length,n)
   }

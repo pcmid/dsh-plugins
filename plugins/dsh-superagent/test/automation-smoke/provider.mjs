@@ -45,23 +45,23 @@ export const answer='Fixture usage example:\nconst smoke: boolean = true;'
 export const noteAnswer='Fixture explanation retained for approval.'
 export const sealId='fixture-developer-call', sealRE=/^SEAL:[a-f0-9-]{36}$/
 export const resultNames={DECIDE:['superagent_ignore','superagent_route'],WORK:['superagent_answer','superagent_ask_requester']}
-// Offered to the Router only while the conversation has earlier open work; workers no longer have a stop result.
+// Offered to the Router only while its case (one topic) has earlier work to hand the message to; workers no longer have a stop result.
 export const mergeTool='superagent_merge',retiredTool='superagent_stop'
 export const forbiddenAnswer='Fixture: the developer-only tool is not available to this seat.'
-// One native thread whose later mentions are merged into earlier work, plus an open request in another group.
+// One native topic whose later mentions all go to its worker, plus an open request in another group.
 export const mergeCase={
   root:'Fixture merge topic root.',gate:'merge widget build',gatedCall:'fixture-merge-gated',
   work:{id:'om_merge_work',text:'Fixture: build the merge widget.'},
   add:{id:'om_merge_add',text:'Fixture: also support dark mode for that widget.',from:'participant'},
   more:{id:'om_merge_more',text:'Fixture: and keep its public API unchanged.',from:'requester'},
-  own:{id:'om_merge_own',text:'Fixture: separately, list the release dates.'},
+  own:{id:'om_merge_own',text:'Fixture: separately, list the release dates.',from:'participant'},
   late:{id:'om_merge_late',text:'Fixture: one more thing for the widget, add an example.',from:'participant'},
   final:{id:'om_merge_final',text:'Fixture: final widget follow-up before the restart.',from:'requester'},
   other:{id:'om_other_request',text:'Fixture: an open request in another group.'},
-  answers:{add:'Widget with dark mode.',more:'Widget with dark mode and an unchanged API.',own:'Release dates: none scheduled.',
+  answers:{add:'Widget with dark mode.',more:'Widget with dark mode and an unchanged API.',own:'Widget with dark mode and an unchanged API. Release dates: none scheduled.',
     late:'Widget with dark mode, an unchanged API and an example.',final:'Widget follow-up handled after the restart.',other:'Other group answer.'},
 }
-const merges=['add','more','late','final']
+const merges=['add','more','own','late','final']
 const open=(request,state,output)=>({request,state,...output!==undefined && {output}})
 export const legacy={request:'Fixture carried over from the JSON-result release.',question:'Which edition was selected?',reply:'The second edition.'}
 export const legacyPrompt='SUPERAGENT_WORK\nReturn {"action":"clarify","question":"one concrete question"} as JSON text.\n'+JSON.stringify({request:legacy.request,role:'answer'})
@@ -93,15 +93,14 @@ export class Offline extends LlmAdapter {
   calls=[]; controls=[]; workSessions=[]; personas={}; proposed=new Map(); probeAnswers=new Map()
   heldTurn=Promise.withResolvers(); archiveTurn=Promise.withResolvers(); manualTurns=[]
   mergeFinalTurn=Promise.withResolvers()
-  // The earlier requests of this same conversation that a Router may merge into, oldest first.
+  // The earlier work of this message's case (its topic) that the Router may hand it to, oldest first.
+  // A case with such work no longer routes new work; every other request here starts its own case.
   expectedOpenWork(text) {
-    const declined=open(declineRequest,'question drafted',declinedQuestion), work=mergeCase.work.text, a=mergeCase.answers
+    const work=mergeCase.work.text, a=mergeCase.answers
     if(text===ignored)return [open(request,'question drafted',this.firstDraft)]
     if(text===clarification)return [open(request,'waiting for the requester',this.firstDraft)]
-    if([held.text,archiveActive.text].includes(text) || process.env.SMOKE_PHASE==='prepare' && text===noteRequest)return [declined]
-    if(text===softStops[1].request)return [open(softStops[0].request,'reply drafted',softStops[0].answer)]
     return {[mergeCase.add.text]:[open(work,'in progress')],[mergeCase.more.text]:[open(work,'reply drafted',a.add)],
-      [mergeCase.own.text]:[open(work,'reply drafted',a.more)],[mergeCase.late.text]:[open(work,'replied',a.more)],
+      [mergeCase.own.text]:[open(work,'reply drafted',a.more)],[mergeCase.late.text]:[open(work,'replied',a.own)],
       [mergeCase.final.text]:[open(work,'replied',a.late)]}[text] ?? []
   }
   async listModels(provider){return models.map(id=>({provider,id,name:id}))}
@@ -184,7 +183,8 @@ export class Offline extends LlmAdapter {
       const role=stage==='DECIDE'?'lead':worker
       const current=messages.slice(userIndex)
       const expected=stage==='DECIDE'?this.expectedOpenWork(input.request).map((w,i)=>({ref:'w'+(i+1),...w})):[]
-      const results=[...resultNames[stage],...expected.length?[mergeTool]:[]]
+      // The Router routes only with helpers in its input, and merges only with openWork there.
+      const results=stage==='WORK'?resultNames.WORK:['superagent_ignore',...input.helpers?['superagent_route']:[],...input.openWork?[mergeTool]:[]]
       const submissions=current.flatMap(m=>m.role==='assistant'?m.content.filter(b=>b.type==='tool-call' && results.includes(b.name)).map(b=>b.id):[])
       assert.ok(!current.some(m=>m.role==='tool' && !m.isError && submissions.includes(m.toolCallId)),
         'DSH must conclude the turn on a successful result without asking the model again')
@@ -196,7 +196,7 @@ export class Offline extends LlmAdapter {
       const emptyRouter=stage==='DECIDE' && (probe || soft || [privateRequest,forbiddenRequest,quietRequest,memberColdRequest].includes(input.request))
       const presetNames=emptyRouter?[toolName]:role==='develop'?[workerTool]:[]
       assert.deepEqual(options.tools.map(t=>t.name).sort(),[...presetNames,...results].sort(),
-        'only this seat’s result tools and its selected ordinary preset tools are callable')
+        'only this seat’s result tools and its selected ordinary preset tools are callable: '+input.request)
       if(stage==='WORK')assert.ok(!options.tools.some(t=>t.name===retiredTool),'a worker has no stop result')
       if(emptyRouter)this.emptyRouter=options.sessionId
       // DSH fills the persona's {{model}} placeholder with the routed model.
@@ -210,10 +210,11 @@ export class Offline extends LlmAdapter {
       let body
       if(stage==='DECIDE') {
         assert.ok(Object.keys(input).every(k=>['request','topic','helpers','workspaces','openWork'].includes(k)),'routing does not invent criteria')
-        // The Router sees the helpers enabled at intake; the built-in pair by default.
-        assert.deepEqual(input.helpers.map(h=>h.id),['develop','answer'])
-        // Only earlier open or replied requests of this native thread are candidates; other threads and chats never are.
-        assert.deepEqual(input.openWork ?? [],expected,'open work of this conversation only: '+input.request)
+        // Only the earlier work of this message's case is a candidate; other topics and chats never are.
+        assert.deepEqual(input.openWork ?? [],expected,'open work of this case only: '+input.request)
+        // A case whose worker exists hands it every later message; only a case without one routes, with the
+        // helpers enabled at intake (the built-in pair by default).
+        assert.deepEqual(input.helpers?.map(h=>h.id),expected.length?undefined:['develop','answer'],'routable only without a worker: '+input.request)
         const merge=options.tools.find(t=>t.name===mergeTool)
         if(expected.length) {
           assert.deepEqual(merge.parameters.properties.target.enum,expected.map(w=>w.ref))
@@ -222,8 +223,10 @@ export class Offline extends LlmAdapter {
         assert.deepEqual(input.workspaces.find(w=>w.id===this.project.id),this.project)
         assert.ok(!input.workspaces.some(w=>w.path===this.ownPath),'SuperAgent itself is not a candidate')
         const route=options.tools.find(t=>t.name==='superagent_route')
-        assert.deepEqual([...route.parameters.properties.workspace.enum].sort(),input.workspaces.map(w=>w.id).sort())
-        assert.deepEqual(route.parameters.required,['role'])
+        if(route) {
+          assert.deepEqual([...route.parameters.properties.workspace.enum].sort(),input.workspaces.map(w=>w.id).sort())
+          assert.deepEqual(route.parameters.required,['role'])
+        }
         if(input.request===request) {
           assert.deepEqual(JSON.parse(input.topic).map(m=>m.text),[rootText,...oldLines,unselected,request,laterLine])
           this.routedTopic=input.topic
@@ -233,7 +236,7 @@ export class Offline extends LlmAdapter {
           if(process.env.SMOKE_PHASE==='prepare'){yield {type:'finish',reason:{kind:'error'}};return}
         }
         assert.ok(probe || soft || [ignored,request,clarification,declineRequest,noteRequest,privateRequest,quietRequest,memberRequest,memberColdRequest,forbiddenRequest,retryWorker.text,retryRoute.text,held.text,archiveActive.text,
-          mergeCase.work.text,mergeCase.own.text,mergeCase.other.text,...merges.map(k=>mergeCase[k].text)].includes(input.request))
+          mergeCase.work.text,mergeCase.other.text,...merges.map(k=>mergeCase[k].text)].includes(input.request),'unexpected Router request: '+input.request)
         if(soft?.routerDraft && !nudged){yield* result(soft.routerDraft);return}
         if(input.request===held.text) {
           if(!afterTool){yield* tool('fixture-bad-workspace','superagent_route',{role:worker,workspace:'missing-fixture-project'});return}
@@ -373,11 +376,10 @@ export class Offline extends LlmAdapter {
         }
         this.mergeTurns=(this.mergeTurns ?? 0)+1
         body={action:'answer',answer:mergeCase.answers[key]}
-      } else if(input.request===mergeCase.own.text || input.request===mergeCase.other.text) {
+      } else if(input.request===mergeCase.other.text) {
         assert.ok(stage==='WORK' && input.supplements===undefined && input.continue===undefined)
-        const own=input.request===mergeCase.own.text
-        assert.ok(!data.includes(own?mergeCase.other.text:mergeCase.root),'other conversations never reach this worker')
-        body={action:'answer',answer:own?mergeCase.answers.own:mergeCase.answers.other}
+        assert.ok(!data.includes(mergeCase.root),'other conversations never reach this worker')
+        body={action:'answer',answer:mergeCase.answers.other}
       } else {
         assert.ok(!data.includes(rootText),'other cases never receive this thread')
         if(input.request===declineRequest) body={action:'clarify',question:declinedQuestion}

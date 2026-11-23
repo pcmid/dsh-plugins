@@ -6,7 +6,8 @@ import {held,manualPrompt,noteRequest,resultNames} from './provider.mjs'
 
 const job=(s,id)=>s.automation.find(j=>j.messageId===id)
 const command=({caseId,messageId})=>({caseId,messageId})
-const waitingId='om_takeover_waiting'
+const waitingId='om_takeover_waiting',heldLater={id:'om_takeover_later',text:'Fixture: one more thing for the paused answer.'}
+async function poll(app) {await app.pollOnce();await app.drain();return app.snapshot()}
 
 async function seats(ctx,row) {
   assert.ok(row?.routerSessionId && row.workerSessionId && row.routerSessionId!==row.workerSessionId)
@@ -68,6 +69,16 @@ export async function exerciseTakeover(ctx,app,provider,transport) {
   assert.equal(provider.cancelledSession,sessionId,'the native provider received the cancellation signal')
   await ownerPrompt(ctx,app,provider,transport,sessionId)
 
+  // A later @ in that topic joins its case. Its only worker now belongs to the owner, so no Router runs.
+  const calls=provider.calls.length
+  transport.publishInTopic(heldLater.id,heldLater.text,held.id)
+  const after=await poll(app),later=job(after,heldLater.id),paused=job(after,held.id)
+  assert.ifError(provider.error);assert.ifError(transport.error)
+  assert.deepEqual([later?.status,later?.caseId,later?.routerSessionId,later?.workerSessionId],['ignored',paused.caseId,undefined,undefined],JSON.stringify(later))
+  assert.equal(provider.calls.length,calls,'no Router call for a topic whose worker was taken over')
+  assert.deepEqual(after.cases.filter(c=>c.source.threadId===held.id).map(c=>c.messages.map(m=>m.requestId)),[[held.id,heldLater.id]])
+  assert.equal(paused.status,'taken-over')
+
   transport.publishGranted(waitingId,noteRequest)
   await app.pollOnce();await app.drain()
   const ready=job(await app.snapshot(),waitingId)
@@ -80,7 +91,7 @@ export async function exerciseTakeover(ctx,app,provider,transport) {
     ['taken-over',ready.workerSessionId,undefined,undefined,undefined])
   assert.equal(transport.posts.length,posts)
   await app.setReleasePolicy({required:false})
-  console.log('PASS takeover: a running native worker was cancelled; its ordinary owner prompt completed in the same session. Taking over a ready answer invalidated its release token. Zero posts.')
+  console.log('PASS takeover: a running native worker was cancelled; its ordinary owner prompt completed in the same session. A later @ in that topic joined its case and was ignored without a Router call. Taking over a ready answer invalidated its release token. Zero posts.')
   return sessionId
 }
 export async function coldTakeover(ctx,app,provider,transport,sessionId) {

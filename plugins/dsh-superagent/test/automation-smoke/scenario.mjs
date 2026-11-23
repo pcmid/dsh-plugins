@@ -17,11 +17,14 @@ import { ignoreAfterRestart,ignoreBeforeExit } from './ignore.mjs'
 import { memberAfterRestart,memberBeforeExit } from './member.mjs'
 import { imagesRound } from './images.mjs'
 import { chatId,clarificationId,declineId,fakeFeishu,firstId,followupId,foreignMessageId,messageId,otherDM,peerSelfId,privateMessageId,questionId,receiptId,root,selfChatId,selfMessageId,selfReceiptId,source } from './feishu.mjs'
-import { answer,forbiddenAnswer,ownerAsk,probes,resultNames,mergeTool,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
+import { answer,clarification,forbiddenAnswer,ignored,ownerAsk,probes,resultNames,mergeTool,softStops,sealId,sealRE,supersededQuestion,supersededAnswer,declinedQuestion,noteAnswer,noteRequest,privateRequest,question,request,rootText,sibling,unselected } from './provider.mjs'
 
 const decision=(j,action)=>({caseId:j.caseId,messageId:j.messageId,token:j.releaseToken,action})
 const job=(snapshot,id)=>snapshot.automation.find(j=>j.messageId===id)
 const activity=(snapshot,id)=>snapshot.mentions.find(m=>m.messageId===id)
+// The cases of one Feishu topic, each as its messages in order.
+const topic=(snapshot,chat,thread)=>snapshot.cases.filter(c=>c.source.kind==='feishu' && c.source.chatId===chat && c.source.threadId===thread)
+  .map(c=>c.messages.map(m=>[m.requestId,m.text]))
 const act=(app,row,action)=>app.groupAccess({action,scopeId:row.scopeId,chatId:row.chatId,threadId:row.threadId,messageId:row.messageId})
 async function poll(app) {await app.pollOnce();await app.drain();return app.snapshot()}
 
@@ -185,7 +188,9 @@ async function prepare(ctx,app,provider,transport) {
   assert.ifError(provider.error)
   const second=job(ready,declineId)
   assert.equal(job(ready,followupId)?.status,'ignored')
-  assert.notEqual(job(ready,followupId).caseId,first.caseId,'distinct mentions in one thread are distinct requests')
+  // One topic is one case: the later @ joined the request's case and went to the Router without new-work routing.
+  assert.equal(job(ready,followupId).caseId,first.caseId,'a later @ in the topic joins its case')
+  assert.deepEqual(topic(ready,chatId,root),[[[messageId,request],[followupId,ignored]]],'one case for the topic, messages appended in order')
   assert.deepEqual([second?.status,second?.outputKind,second?.answer],['awaiting-release','question',declinedQuestion])
   assert.ok(second.releaseToken && second.releaseToken!==first.releaseToken)
   assert.deepEqual(provider.calls,['DECIDE','WORK','DECIDE','DECIDE','WORK'])
@@ -243,7 +248,8 @@ async function resumeWork(ctx,app,provider,transport,waiting,saved) {
   assert.deepEqual(issued,[],'the new OS process reuses the actual prior tool result without executing it again')
   const finalText=answer+' '+seal
   const merged=job(ready,clarificationId)
-  assert.notEqual(merged?.caseId,first.caseId)
+  assert.equal(merged?.caseId,first.caseId,'the reply joined the topic’s case')
+  assert.deepEqual(topic(ready,chatId,root),[[[messageId,request],[followupId,ignored],[clarificationId,clarification]]],'still one case after the cold restart')
   assert.deepEqual([merged?.status,merged?.mergedInto],['merged',{caseId:first.caseId,messageId}])
   assert.equal(ready.automation.length,saved.automation.length+1,'the mention has its own Router decision, not its own worker')
   assert.ok(merged.routerSessionId && !merged.workerSessionId)

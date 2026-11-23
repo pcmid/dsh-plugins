@@ -19,9 +19,9 @@ const ref=m=>({chatId,threadId:m.message_id,messageId:m.message_id,at:Number(m.c
 function fixture(t) {
   let now=1000,config={...cfg}
   t.mock.method(Date,'now',()=>now)
-  const grants=new Map(), feed=new Map(), jobs=new Set(), safeLogs=[], received=[], scopes=[], searches=[], history=[], exact=[], calls=[]
+  const grants=new Map(), feed=new Map(), jobs=new Set(), safeLogs=[], received=[], scopes=[], searches=[], history=[], exact=[], calls=[], topics=[]
   const first=msg('om_bad',1100), second=msg('om_ok',1200), last=msg('om_later',1300), rows=[first,second,last]
-  const control={hits:true,fault:'invalid',failSave:false}
+  const control={hits:true,fault:'invalid',failSave:false,archived:[]}
   const permissions={load:k=>grants.get(k),save:(k,v)=>{
     if(control.failSave && v.groups.some(g=>g.failures))throw Error(secret)
     grants.set(k,admissionRecord.parse(v))
@@ -30,6 +30,8 @@ function fixture(t) {
   const a=createAdmission({scope:cfg,...permissions,consentSince:cfg.automationSince})
   const open=()=>sourceSettings({readConfig:()=>config,permissions,
     hasIntake:async(s,id)=>{await control.beforeIntake?.(id);return jobs.has(s+id)},receive:(e,s)=>{received.push(e.messageId);scopes.push(s);jobs.add(s+e.messageId)},
+    // The topics whose case the owner archived.
+    isArchivedTopic:async({tenantId,recipientId},chat,threadId)=>{topics.push([tenantId,recipientId,chat,threadId]);return control.archived.includes(threadId)},
     runCli:async argv=>{
       calls.push(argv)
       const flag=k=>JSON.parse(argv[argv.indexOf(k)+1])
@@ -56,7 +58,7 @@ function fixture(t) {
       }
       return ok({items:[],has_more:false})
     }})
-  return {a,open,first,second,last,control,received,scopes,calls,searches,history,exact,feed,safeLogs,grants,
+  return {a,open,first,second,last,control,received,scopes,calls,searches,history,exact,feed,safeLogs,grants,topics,
     at:v=>{now=v},config:v=>{config=v},item:app=>app.activitySnapshot([],[]).then(x=>x.mentions.find(m=>m.messageId===first.message_id)),
     start:async()=>{await a.setScan(cfg.automationSince,{since:101});await a.update({action:'register',chatId});await a.update({action:'permanent',chatId});now=diag.at}}
 }
@@ -202,5 +204,48 @@ test('approval replay retains the exact manual trigger and stops if it is revoke
   await assert.rejects(f.a.settleIntake(g,r,diag),{code:'admission-denied'})
   f.control.fault=false;await app.pollOnce()
   assert.equal(f.history.length,n);assert.deepEqual(f.received,[]);assert.equal((await f.item(app)).intakeFailure,undefined)
+  await app.dispose()
+})
+
+test('a new @ in an archived topic is neither read, recorded nor proposed, and a pending retry there settles without intake',async t=>{
+  const f=fixture(t);await f.start()
+  f.control.archived=[f.second.message_id]
+  const app=f.open()
+  await app.pollOnce()
+  const shown=async()=>(await app.activitySnapshot([],[])).mentions.map(m=>m.messageId).sort()
+  assert.deepEqual(f.received,['om_later'])
+  assert.ok(!f.exact.includes(f.second.message_id),'its message is not read')
+  assert.ok(!f.history.includes(f.second.thread_id),'nor its thread')
+  assert.equal(f.feed.size,2,'nor recorded')
+  assert.deepEqual(await shown(),['om_bad','om_later'],'nor shown in Activity')
+  assert.ok(f.topics.some(x=>x.join()===[cfg.tenantId,cfg.recipientId,chatId,f.second.message_id].join()),'checked under the account binding')
+  assert.deepEqual((await f.a.list())[0].failures.map(x=>x.messageId),['om_bad'])
+  // The topic of the request awaiting its retry is archived next: the retry settles without reading or receiving it.
+  f.control.archived.push(f.first.message_id);f.control.fault=false
+  const exact=f.exact.length, history=f.history.length
+  f.at(diag.at+5000);await app.pollOnce()
+  assert.deepEqual(f.received,['om_later'])
+  assert.equal(f.exact.length,exact);assert.equal(f.history.length,history)
+  assert.equal((await f.a.list())[0].failures,undefined)
+  assert.equal((await f.item(app)).intakeFailure,undefined)
+  f.at(diag.at+8000);await app.pollOnce()
+  assert.deepEqual(f.received,['om_later']);assert.equal(f.exact.length,exact)
+  await app.dispose()
+})
+
+test('an approved trigger whose topic was archived is settled without reading or receiving it',async t=>{
+  const f=fixture(t), r=ref(f.first)
+  await f.a.setScan(cfg.automationSince,{since:100})
+  await f.a.recordMention({...r,text:secret},cfg.automationSince);await f.a.observe(r,cfg.automationSince)
+  f.at(diag.at);f.control.hits=false;f.control.fault=false
+  await f.a.update({action:'once',chatId,threadId:r.threadId,messageId:r.messageId})
+  assert.equal((await f.a.list())[0].triggers[0].handled,undefined)
+  f.control.archived=[r.threadId]
+  const app=f.open()
+  await app.pollOnce()
+  assert.deepEqual([f.received,f.exact,f.history],[[],[],[]])
+  assert.equal((await f.a.list())[0].triggers[0].handled,true)
+  await app.pollOnce()
+  assert.deepEqual([f.received,f.exact,f.history],[[],[],[]])
   await app.dispose()
 })

@@ -120,27 +120,29 @@ test('Feishu receipt keeps provenance and scoped dedup, but has no execution or 
   assert.equal(first.team,null)
   assert.equal(first.workerRole,null)
   assert.equal((await service.receive(event({threadId:'other',text:'redelivery'}))).id,first.id)
-  const independent=await service.receive(event({messageId:'follow',senderId:'person2'}))
-  assert.notEqual(independent.id,first.id)
-  assert.equal(independent.messages.length,1)
+  // A later message of the same topic joins its case.
+  const follow=await service.receive(event({messageId:'follow',senderId:'person2'}))
+  assert.equal(follow.id,first.id)
+  assert.deepEqual(follow.messages.map(m => [m.requestId,m.senderId]),[['root','sender'],['follow','person2']])
   for (const input of [{tenantId:'other'},{recipientId:'other'},{chatId:'other'},{threadId:'other',messageId:'different'}])
     assert.notEqual((await service.receive(event(input))).id,first.id)
   assert.equal(calls.length,0)
-  assert.equal((await restart().snapshot()).cases.length,6)
+  assert.equal((await restart().snapshot()).cases.length,5)
   const assigned = await service.intake(local({caseId:first.id,lane:'develop',requestId:'root'}))
   assert.equal(assigned.id,first.id)
   assert.deepEqual(assigned.source,first.source)
-  assert.deepEqual(assigned.messages.map(m => m.kind),['feishu','local'])
-  assert.equal(independent.messages[0].senderId,'person2')
+  assert.deepEqual(assigned.messages.map(m => m.kind),['feishu','feishu','local'])
   assert.equal(calls[0].sourceKind,'local')
   assert.equal(calls[0].text,local().text)
   assert.ok(!JSON.stringify(calls[0]).includes(event().text))
   await service.receive(event({messageId:'latest'}))
   assert.equal(calls.length,1)
+  // Joining the case dispatches nothing and changes neither its session nor its delivery state.
   const same = (await service.snapshot()).cases[0]
-  assert.notEqual(same.id,first.id)
+  assert.equal(same.id,first.id)
   assert.equal(same.status,'received')
-  assert.equal(same.sessionId,null)
+  assert.equal(same.sessionId,assigned.sessionId)
+  assert.deepEqual(same.messages.map(m => m.kind),['feishu','feishu','local','feishu'])
   assert.ok(!('delivered' in same))
 })
 
@@ -162,6 +164,75 @@ test('archive survives restart without closing the case or changing its message 
   assert.equal(follow.status,'submitted');assert.equal(f.calls.length,1)
 })
 
+test('one Feishu topic is one case: its later messages join it under any grant until the case is archived',async()=>{
+  const f=fixture(), grantA='a'.repeat(64), grantB='b'.repeat(64)
+  const topic={tenantId:'tenant',recipientId:'owner',chatId:'chat',threadId:'topic'}
+  const first=await f.service.receive(event(),grantA)
+  const second=await f.service.receive(event({messageId:'second',senderId:'person2'}),grantB)
+  assert.equal(second.id,first.id)
+  assert.deepEqual(second.source,first.source,'the case keeps the grant of its first message')
+  assert.deepEqual(second.messages.map(m=>[m.requestId,m.senderId]),[['root','sender'],['second','person2']])
+  // A redelivery under either grant is the same message.
+  for(const scope of [grantA,grantB]) assert.equal((await f.service.receive(event({messageId:'second'}),scope)).messages.length,2)
+  const elsewhere=await f.service.receive(event({messageId:'elsewhere',threadId:'topic-2'}),grantA)
+  assert.notEqual(elsewhere.id,first.id)
+  assert.equal(await f.service.isArchivedTopic(topic),false)
+  await f.service.archive({caseId:first.id})
+  const restored=f.restart()
+  assert.equal(await restored.isArchivedTopic(topic),true)
+  for(const other of [{threadId:'topic-2'},{chatId:'other'},{recipientId:'someone'},{tenantId:'other'}])
+    assert.equal(await restored.isArchivedTopic({...topic,...other}),false,JSON.stringify(other))
+  for(const scope of [grantA,grantB,undefined]) await rejected(restored.receive(event({messageId:'third'}),scope),'case-archived')
+  // A message it already holds is still the same message.
+  assert.equal((await restored.receive(event({messageId:'second'}),grantB)).id,first.id)
+  const cases=(await restored.snapshot()).cases
+  assert.equal(cases.length,2)
+  assert.deepEqual(cases.find(c=>c.id===first.id).messages.map(m=>m.requestId),['root','second'])
+  assert.equal((await restored.receive(event({messageId:'more',threadId:'topic-2'}),grantB)).id,elsewhere.id)
+  assert.equal(f.calls.length,0)
+})
+
+test('a topic left with several cases by an older build follows its latest case, archived or not',async()=>{
+  const f=fixture(), topic={tenantId:'tenant',recipientId:'owner',chatId:'chat',threadId:'topic'}
+  const older=await f.service.receive(event())
+  const newer={...structuredClone(older),id:'newer-case',createdAt:100,updatedAt:100,messages:[{...older.messages[0],requestId:'legacy',at:100}]}
+  for(const archivedNewer of [false,true]) {
+    const archived=yes=>yes ? {archivedAt:200} : {}
+    // Listed first, the older case is found first; only creation time decides.
+    await f.deps.save({...f.disk,cases:[{...older,...archived(!archivedNewer)},{...newer,...archived(archivedNewer)}]})
+    const service=f.restart()
+    assert.equal(await service.isArchivedTopic(topic),archivedNewer)
+    const next=service.receive(event({messageId:'next'}))
+    if(archivedNewer) await rejected(next,'case-archived')
+    else assert.deepEqual((await next).messages.map(m=>m.requestId),['legacy','next'])
+    assert.equal((await service.snapshot()).cases.find(c=>c.id===older.id).messages.length,1)
+  }
+})
+
+test('an older record named by the root its request quoted still takes the @ messages of the thread the request grew into',async()=>{
+  const f=fixture(), grantA='a'.repeat(64), grantB='b'.repeat(64)
+  // Recorded under the earlier rule: the request is filed under the message it quoted.
+  const request=await f.service.receive(event({threadId:'quoted-root',messageId:'request'}),grantA)
+  const grown={tenantId:'tenant',recipientId:'owner',chatId:'chat',threadId:'request'}
+  const follow=await f.service.receive(event({threadId:'request',messageId:'follow',senderId:'person2'}),grantB)
+  assert.equal(follow.id,request.id)
+  assert.deepEqual(follow.source,request.source)
+  assert.deepEqual(follow.messages.map(m=>m.requestId),['request','follow'])
+  // A redelivery under either grant is the same message.
+  for(const scope of [grantA,grantB])
+    assert.deepEqual((await f.service.receive(event({threadId:'request',messageId:'follow'}),scope)).messages.map(m=>m.requestId),['request','follow'])
+  // A thread named by a message of another chat, or by no recorded message, is its own topic.
+  for(const other of [{chatId:'other'},{threadId:'unrelated'}])
+    assert.notEqual((await f.service.receive(event({...other,messageId:'m-'+Object.values(other)[0]}),grantB)).id,request.id)
+  assert.equal(await f.service.isArchivedTopic(grown),false)
+  await f.service.archive({caseId:request.id})
+  const restored=f.restart()
+  for(const threadId of ['request','quoted-root']) assert.equal(await restored.isArchivedTopic({...grown,threadId}),true,threadId)
+  assert.equal(await restored.isArchivedTopic({...grown,chatId:'other'}),false)
+  await rejected(restored.receive(event({threadId:'request',messageId:'later'}),grantB),'case-archived')
+  assert.deepEqual((await restored.snapshot()).cases.find(c=>c.id===request.id).messages.map(m=>m.requestId),['request','follow'])
+})
+
 test('the thread context handed to the assistants is kept on its message, as they saw it, across restart',async()=>{
   const f=fixture(), lines=[{speaker:'participant-1',at:1,text:'早先的讨论'},{speaker:'owner',at:2,text:'我的补充'},
     {speaker:'requester',at:3,text:'来自话题的原文',request:true}]
@@ -170,13 +241,13 @@ test('the thread context handed to the assistants is kept on its message, as the
   assert.deepEqual((await f.restart().snapshot()).cases[0].messages[0].context,lines)
   for(const workerContext of ['','not json','[]',JSON.stringify([{speaker:'ou_real_id',at:1,text:'x'}]),JSON.stringify([{...lines[0],extra:1}])]) {
     const other=await f.service.receive(event({messageId:'m'+workerContext.length+workerContext.slice(0,3),workerContext}))
-    assert.equal('context' in other.messages[0],false,workerContext)
+    assert.equal('context' in other.messages.at(-1),false,workerContext)
   }
 })
 
 test('retry intake uses only the exact original Feishu message, original sender, and current team',async()=>{
   const {service,restart}=fixture(), e=event({messageId:'om_old',senderId:'ou_sender'})
-  const first=await service.receive(e), other=await service.receive(event({messageId:'om_other'}))
+  const first=await service.receive(e), other=await service.receive(event({messageId:'om_other',threadId:'other-topic'}))
   const settings=await service.configure({team:{answer:'a'},roleModels:{answer:{provider:'fixture',model:'text'}}})
   const r=restart(), fallback=await r.retryIntake(first.id,e.messageId)
   const {helpers,...routes}=settings
@@ -220,7 +291,7 @@ test('a separate inbound request during dispatch never joins the in-flight case'
   deps.executor.submit = () => { started(); return new Promise(r => { release = r }) }
   const sent = service.intake(local({caseId:c.id}))
   await entered
-  await service.receive(event({messageId:'later'}))
+  await service.receive(event({messageId:'later',threadId:'another-topic'}))
   release({accepted:true,sessionId:'s',workspaceId:'w'})
   const result = await sent
   assert.equal(result.status,'submitted')

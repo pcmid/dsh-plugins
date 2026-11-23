@@ -37,11 +37,12 @@ async function oldWorker(ctx,path,j) {
 
 export async function legacyRound(ctx,path,actors) {
   const store=await openStore({open:spec=>ctx.storageDomain.open({...spec,name:'legacy_fixture_'+spec.name})})
-  const follow={...job,caseId:'legacy-follow',messageId:'om_legacy_reply',text:legacy.reply}
+  const follow={...job,messageId:'om_legacy_reply',text:legacy.reply} // A later message of the same case.
   const loop=createLoop({...store.automationStore,caseInfo:()=>job,decide:b=>{
     if(!actors){assert.equal(b.messageId,job.messageId);return {action:'work',role:'answer'}}
     assert.equal(b.messageId,follow.messageId)
     assert.deepEqual(b.openWork,[{ref:'w1',request:job.text,state:'waiting for the requester',output:legacy.question}])
+    assert.equal(b.routable,false,'the case already has its worker')
     return {action:'merge',target:'w1'}
   },
     work:actors?.work ?? (j=>oldWorker(ctx,path,j)),deliver:async j=>{

@@ -25,9 +25,10 @@ const retryable = j => j.status === 'stopped' || j.status === 'uncertain' && j.r
 const takeable = j => isWorker(j) &&
   (['assigned','working','approved','awaiting-release','released','waiting-requester'].includes(j.status) || retryable(j))
 const accepted = new Set(['approved','awaiting-release','released','delivering','delivered','declined','waiting-requester'])
-// Jobs a later message in the same conversation may be merged into: unfinished worker jobs, and in a
-// native thread also a reply already posted. A reply being posted, and anything archived, is excluded.
+// The worker jobs of a case (one Feishu topic) that take its later messages: unfinished or failed work, and a
+// reply that was posted or declined. A reply being posted, a taken-over session and anything archived are excluded.
 const openStatuses = ['assigned','working','approved','awaiting-release','waiting-requester']
+const mergeable = j => openStatuses.includes(j.status) || ['delivered','declined'].includes(j.status) || retryable(j)
 const supplementsOK = v => v === undefined || Array.isArray(v) && v.length > 0 && v.length <= 20 &&
   v.every(x => only(x,['messageId','text','senderId']) && message(x.messageId) && prose(x.text,65536) && (x.senderId === undefined || user(x.senderId)))
 const releaseFields = ['caseId','messageId','token','action']
@@ -195,7 +196,8 @@ const keyOf = j => JSON.stringify([j.source.scopeId,j.messageId])
 export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequired=()=>true,caseInfo=async()=>undefined}) {
   let store, failed = false, tail = Promise.resolve(), running
   // Routing runs beside work, so a new message can be merged into a job that is still being worked on.
-  const lanes = {route:{status:j=>j.status === 'queued'},work:{status:j=>starting.has(j.status) && j.status !== 'queued'}}
+  // A message waits while its case's reply is being posted, then is handed to that worker.
+  const lanes = {route:{status:(j,_,all)=>j.status === 'queued' && !all.some(x=>x.caseId === j.caseId && x.status === 'delivering')},work:{status:j=>starting.has(j.status) && j.status !== 'queued'}}
   const controller = new AbortController(), signal = controller.signal
   async function commit(jobs) {
     const next = {schema:1,jobs}
@@ -230,29 +232,25 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     return jobs[index]
   }
   function stopped(reason) { return {status:'stopped',reason} }
-  // Earlier jobs in the same discussion this message might belong to: in a native thread, those of that
-  // thread, including the request the thread grew from; for a message outside any thread, other such
-  // messages in the same chat. Each job keeps its own grant, so a follow-up approved separately still
-  // finds the work it follows up on. Archived cases are excluded.
-  function related(s,j) {
-    const inThread = j.source.threadId !== j.messageId
-    return s.jobs.filter(x => x !== j && sameBinding(x,j.source) &&
-      x.source.chatId === j.source.chatId && isWorker(x) &&
-      (inThread ? x.source.threadId === j.source.threadId || x.messageId === j.source.threadId : x.source.threadId === x.messageId) &&
-      (openStatuses.includes(x.status) || inThread && x.status === 'delivered'))
-  }
+  // The earlier worker jobs of this message's case. Each job keeps its own grant, so a follow-up approved
+  // separately still reaches the work it follows up on.
+  const workers = (s,j) => s.jobs.filter(x => x !== j && x.caseId === j.caseId && sameBinding(x,j.source) && isWorker(x))
+  const related = (s,j) => workers(s,j).filter(mergeable)
+  // The case's worker takes every later message; only a case without one routes new work.
   async function openWork(j) {
-    const rows = await locked(s => related(s,j).slice(-10).map(x => structuredClone(pick(x,['caseId','messageId','source','status','text','answer','outputKind']))))
+    const [rows,routable] = await locked(s => [related(s,j).slice(-10).map(x => structuredClone(pick(x,['caseId','messageId','source','status','text','answer','outputKind']))),
+      !workers(s,j).length])
     const out = []
     for (const x of rows) {
       const info = await caseInfo(x.caseId,x.messageId)
       if (!info || info.archived) continue
-      const state = x.status === 'delivered' ? 'replied' : x.status === 'waiting-requester' ? 'waiting for the requester' :
+      const state = x.status === 'delivered' ? 'replied' : x.status === 'declined' ? 'reply not sent' : x.status === 'waiting-requester' ? 'waiting for the requester' :
+        ['stopped','uncertain'].includes(x.status) ? 'stopped' :
         ['approved','awaiting-release'].includes(x.status) ? (x.outputKind === 'question' ? 'question drafted' : 'reply drafted') :
         x.status === 'working' ? 'in progress' : 'not started'
       out.push({ref:'w'+(out.length+1),key:keyOf(x),caseId:x.caseId,messageId:x.messageId,request:x.text ?? info.text,state,...x.answer && {output:x.answer}})
     }
-    return out
+    return {open:out,routable}
   }
   async function execute(j,jobSignal) {
     const key = keyOf(j), signal = jobSignal
@@ -260,14 +258,17 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
       workerContext:j.workerContext ?? j.context,signal}
     const assignment = pick(j,['role','criteria','attempt','targetWorkspaceId'])
     if (j.status === 'deciding') {
-      const open = await openWork(j)
-      const d = await decide({...base,...open.length && {openWork:open.map(({ref,request,state,output})=>({ref,request,state,...output && {output}}))}}) // Routing only.
+      const {open,routable} = await openWork(j)
+      // A case whose worker was taken over, or whose reply's delivery is unconfirmed, takes no new work.
+      if (!routable && !open.length) return {status:'ignored'}
+      const d = await decide({...base,...open.length && {openWork:open.map(({ref,request,state,output})=>({ref,request,state,...output && {output}}))},
+        ...!routable && {routable:false}}) // Routing only.
       if (d?.action === 'ignore') return {status:'ignored'}
       if (d?.action === 'merge') {
         const target = open.find(row=>row.ref === d.target)
         return target ? {merge:target} : stopped('invalid-decision')
       }
-      if (d?.action !== 'work' || !isHelper(j,d.role) || d.criteria !== undefined && !prose(d.criteria,2048) ||
+      if (d?.action !== 'work' || !routable || !isHelper(j,d.role) || d.criteria !== undefined && !prose(d.criteria,2048) ||
           d.workspaceId !== undefined && !ref(d.workspaceId)) return stopped('invalid-decision')
       return {status:'assigned',role:d.role,...pick(d,['criteria']),presetId:j.team[d.role],
         ...d.workspaceId && {targetWorkspaceId:d.workspaceId}}
@@ -322,8 +323,8 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     delete next.answer; delete next.outputKind; delete next.workerProof; delete next.reason; delete next.receipt
     // A question still waiting for the requester is withdrawn; answered rounds stay on record.
     if (t.status === 'waiting-requester') next.turns = t.turns.slice(0,-1)
-    // A posted reply kept no intake; the case record and current team stand in.
-    if (t.status === 'delivered') {
+    // A posted or declined reply kept no intake; the case record and current team stand in.
+    if (!Object.hasOwn(t,'text')) {
       next = {...next,...pick(info,['text','team','roleModels']),...user(info.requesterId) && {requesterId:info.requesterId}}
       // The worker keeps its assigned preset, even if its helper was since changed or removed.
       if (next.team) next.team = {...next.team,[t.role]:t.presetId}

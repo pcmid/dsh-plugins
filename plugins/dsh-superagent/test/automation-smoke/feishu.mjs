@@ -12,6 +12,9 @@ export const memberGroup='oc_member_group',memberRoot='om_member_root',memberA='
 const owner=source.recipientId, api='/open-apis/im/v1/messages'
 const groupChats=new Set([chatId,otherGroup,quietGroup,memberGroup])
 const groupNames={[chatId]:'Fixture group',[otherGroup]:'Fixture other group',[quietGroup]:'Fixture quiet group',[memberGroup]:'Fixture member group'}
+// Every native thread the Host may read as context. Each separately handled request has its own topic.
+const topics=new Set(['root','another_topic','merge_root','other_root','quiet_root','member_root','member_a_later','member_a_cold',
+  'takeover_active','takeover_waiting','archive_active','route_retry','work_retry','text_only','max_tokens'].map(t=>'omt_'+t))
 const ok=data=>({ok:true,identity:'user',data})
 const flag=(args,key)=>{assert.ok(args.includes(key),key);return args[args.indexOf(key)+1]}
 
@@ -92,7 +95,7 @@ export function fakeFeishu(rows=[]) {
       assert.ok(p.page_size>0 && p.page_size<=50)
       const thread=p.container_id_type==='thread'
       if(thread) {
-        assert.ok(['omt_root','omt_another_topic','omt_merge_root','omt_other_root','omt_quiet_root','omt_member_root','omt_member_a_later','omt_member_a_cold'].includes(p.container_id))
+        assert.ok(topics.has(p.container_id),'unexpected thread read: '+p.container_id)
         assert.equal(p.sort_type,'ByCreateTimeAsc')
         assert.equal(p.start_time,undefined)
         assert.equal(p.end_time,undefined)
@@ -129,7 +132,7 @@ export function fakeFeishu(rows=[]) {
       // A reply reopened by a merged message is a new post with its own receipt.
       const sent=id===mergeCase.work.id?'om_merge_receipt_'+(posts.filter(p=>p.anchor===id).length+1):
         id===selfMessageId?selfReceiptId:id===privateMessageId?'om_private_receipt':id===peerSelfId?'om_peer_self_receipt':sealed(question)?questionId:receiptId
-      assert.ok(id===mergeCase.work.id?[mergeCase.answers.more,mergeCase.answers.late].includes(text):sealed(question) || sealed(answer) || text===noteAnswer)
+      assert.ok(id===mergeCase.work.id?[mergeCase.answers.own,mergeCase.answers.late].includes(text):sealed(question) || sealed(answer) || text===noteAnswer)
       assert.ok(!rows.some(r=>r.message_id===sent),'never post a question or final output twice')
       const r=publish(sent,text,{chat:target.chat_id,from:owner,thread:target.root_id ?? target.message_id,parent:id,mention:false})
       posts.push({id:sent,anchor:id,key,text})
@@ -152,7 +155,10 @@ export function fakeFeishu(rows=[]) {
     publishFirst:()=>+publish(firstId,unselected).create_time,
     publishRequest:()=>+publish(messageId,request,{from:owner}).create_time,
     publishFollowup:()=>publish(followupId,ignored),
-    publishGranted:(id,text)=>publish(id,text,{thread:'om_another_topic'}),
+    // The owner's @ in a new topic of its own: one once grant for that topic, without a click.
+    publishGranted:(id,text)=>publish(id,text,{thread:id,from:owner}),
+    // An @ from another member in an existing topic.
+    publishInTopic:(id,text,thread)=>publish(id,text,{thread}),
     publishMergeRoot:()=>publish(mergeRoot,mergeCase.root,{thread:mergeRoot,mention:false}),
     publishMerge:(m,from)=>publish(m.id,m.text,{thread:mergeRoot,from}),
     publishOther(){

@@ -22,7 +22,7 @@ function spaceStatus(status,tr) {
     approved:['已完成 · 尚未发送','Done · not yet sent'],
     'awaiting-release':['待你确认发送最终答复','Final reply awaiting your confirmation'],'question-release':['待你确认发送追问','Question awaiting your confirmation'],
     'question-ready':['追问待发送','Question ready to send'],'waiting-requester':['等待原提需人回复','Waiting for the original requester'],declined:['已选择不发送','Not sent by choice'],
-    'taken-over':['已由你接手','Taken over by you'],merged:['已并入其他事项','Merged into another request'],
+    'taken-over':['已由你接手','Taken over by you'],merged:['已交给原承办助手','Handed to the original worker'],
     delivering:['正在回复原消息','Delivering'],delivered:['已回复原消息','Delivered'],ignored:['无需处理','No action needed'],
     stopped:['已停止，未交付','Stopped without delivery'],uncertain:['结果待核实','Outcome unconfirmed']};
   return labels[status] ? tr(...labels[status]) : tr('状态未知','Status unknown');

@@ -152,7 +152,8 @@ test('each lane stays serial while routing runs beside work; the store lock is n
   const events=await Promise.all(Array.from({length:12},()=>h.loop.enqueue(input)))
   assert.ok(events.every(e=>e.messageId===input.messageId))
   const running=h.loop.drain();await entered.work.promise
-  const another={...input,messageId:'om_next',text:'Next request'}
+  // Messages of other cases, so neither is handed to the first one's worker.
+  const another={...input,caseId:'case_2',messageId:'om_next',text:'Next request'}
   const mutable=clone(another),second=h.loop.enqueue(mutable);mutable.source.chatId='oc_redirected'
   await second
   // The route lane decides the new message while the work lane is still busy.
@@ -160,7 +161,7 @@ test('each lane stays serial while routing runs beside work; the store lock is n
   assert.deepEqual(busy,{route:1,work:1})
   await assert.rejects(h.loop.enqueue({...input,source:{...input.source,threadId:'om_redirect'}}),{code:'request-conflict'})
   await assert.rejects(h.loop.enqueue({...input,source:{...input.source,scopeId:'a'.repeat(64)}}),{code:'request-conflict'})
-  await h.loop.enqueue({...input,messageId:'om_third',text:'Third request'})
+  await h.loop.enqueue({...input,caseId:'case_3',messageId:'om_third',text:'Third request'})
   // Both lanes are inside an actor call, yet the store still answers; the third message waits for the route lane.
   assert.deepEqual((await h.loop.snapshot()).map(r=>r.status),['working','deciding','queued'])
   gates.decide.resolve()
@@ -606,13 +607,15 @@ const other={...input,caseId:'case_other',messageId:'om_other',source:{...input.
 const cases=({archived=[],missing=[],info={}}={})=>async(caseId,messageId)=>missing.includes(messageId) ? undefined :
   {archived:archived.includes(messageId),text:'Case text of '+messageId,requesterId,team:input.team,roleModels:input.roleModels,...info[messageId]}
 const routedAs=b=>({messageId:b.messageId,...b.retries !== undefined && {retries:b.retries},...'openWork' in b && {openWork:clone(b.openWork)}})
+// Also whether the message's case may start new work; absent means it may.
+const routedFull=b=>({...routedAs(b),...'routable' in b && {routable:b.routable}})
 const mergeFollowUps=(routed,target='w1',ids=[followUp.messageId])=>b=>{
   routed.push(routedAs(b));return ids.includes(b.messageId) ? {action:'merge',target} : task
 }
 const byId=async(h,id)=>(await h.loop.snapshot()).find(r=>r.messageId===id)
 const stored=(doc,id)=>doc.jobs.find(j=>j.messageId===id)
 const atMerge=(h,id=followUp.messageId)=>h.commits.find(c=>stored(c,id)?.status==='merged')
-const clarification=later('om_answer','@owner October.',{caseId:'case_clarification'})
+const clarification=later('om_answer','@owner October.')
 
 test('a follow-up merges into work not yet started; the worker takes each merged message in and posts anew',async()=>{
   const gate=deferred(), busy=deferred(), routed=[], worked=[], keys=[]
@@ -634,7 +637,7 @@ test('a follow-up merges into work not yet started; the worker takes each merged
     const saved=stored(h.saved,job.messageId)
     for(const k of ['text','context','team','roleModels','requesterId','workerContext','supplements','supplementId'])assert.ok(!(k in saved),k)
   }
-  // Only open work of the same conversation is offered, and without internal keys.
+  // Only open work of the same case is offered, and without internal keys.
   const offered=[{ref:'w1',request:first.text,state:'not started'}]
   assert.deepEqual(routed,[{messageId:other.messageId},{messageId:first.messageId},
     {messageId:followUp.messageId,openWork:offered},{messageId:peer.messageId,openWork:offered}])
@@ -831,39 +834,52 @@ async function finished(overrides,job=first) {
   const h=harness(overrides);await run(h,job);return clone(h.saved.jobs[0])
 }
 
-test('the Router is offered only open work of the same conversation and binding, at most the ten latest',async()=>{
+test('the Router is offered only open work of the message’s case and binding, at most the ten latest',async()=>{
   const awaiting=await finished({}), asking=await finished({work:()=>({...seat,question:'Which month?'})})
   const posted=await finished({isReleaseRequired:()=>false}), failed=await finished({work:()=>{throw {code:'AUTOMATION_UNAVAILABLE'}}})
-  assert.deepEqual([awaiting.status,asking.status,posted.status,failed.status],['awaiting-release','awaiting-release','delivered','stopped'])
+  const unsure=await finished({work:()=>{throw {code:'WORK_UNCERTAIN'}}}), lost=await finished({isReleaseRequired:()=>false,deliver:()=>null})
+  const declining=harness(), drafted=await run(declining,first);await declining.loop.release(releaseCommand(drafted,'decline'),allow)
+  const handing=harness();await run(handing,first);await take(handing.loop,first)
+  const [declined,handed]=[declining.saved.jobs[0],handing.saved.jobs[0]]
+  assert.deepEqual([awaiting,asking,posted,failed,unsure,lost,declined,handed].map(j=>[j.status,j.reason]),[['awaiting-release',undefined],
+    ['awaiting-release',undefined],['delivered',undefined],['stopped','work-failed'],['uncertain','work-uncertain'],['uncertain','delivery-uncertain'],
+    ['declined',undefined],['taken-over',undefined]])
   const jobs=[
-    moved(awaiting,'om_t01',{text:'Same thread draft'}),
+    moved(awaiting,'om_t01',{text:'Same case draft'}),
     moved(posted,'om_t02'),
-    moved(awaiting,'om_t03',{source:{threadId:'om_other_root'}}),
-    moved(awaiting,'om_t04',{source:{threadId:'om_t04'},text:'Outside any thread'}),
-    moved(awaiting,'om_t05',{source:{chatId:'oc_elsewhere'}}),
-    moved(awaiting,'om_t06',{source:{recipientId:'ou_other'}}),
-    moved(awaiting,'om_t07',{source:{scopeId:'e'.repeat(64)},text:'Separate grant in the same thread'}),
-    moved(awaiting,first.source.threadId,{source:{threadId:'om_original_root'},text:'The request this thread grew from'}),
-    moved(awaiting,'om_t08'),
-    moved(awaiting,'om_t09'),
-    moved(failed,'om_t10'),
-    moved(asking,'om_t11',{text:'Same thread question'}),
-    moved(posted,'om_t12',{source:{threadId:'om_t12'}}),
+    moved(awaiting,'om_t03',{caseId:'case_other',text:'Another case in the same chat'}),
+    moved(awaiting,'om_t04',{source:{recipientId:'ou_other'}}),
+    moved(awaiting,'om_t05',{source:{tenantId:'elsewhere'}}),
+    moved(awaiting,'om_t06',{source:{scopeId:'e'.repeat(64)},text:'Separate grant in the same case'}),
+    moved(declined,'om_t07'),
+    moved(handed,'om_t08'),
+    moved(lost,'om_t09'),
+    moved(awaiting,'om_t10'),
+    moved(awaiting,'om_t11'),
+    moved(failed,'om_t12',{text:'Failed work'}),
+    moved(unsure,'om_t13',{text:'Unconfirmed work'}),
+    moved(asking,'om_t14',{text:'Same case question'}),
   ]
-  const routed=[], looked=[], info=cases({archived:['om_t08'],missing:['om_t09']})
-  const h=harness({caseInfo:(c,m)=>{looked.push(m);return info(c,m)},decide:b=>{routed.push(routedAs(b));return {action:'ignore'}}},{schema:1,jobs})
-  await h.loop.enqueue(later('om_new','In the thread'));await h.loop.drain()
-  assert.deepEqual(routed[0].openWork,[
-    {ref:'w1',request:'Same thread draft',state:'reply drafted',output:result.answer},
+  const routed=[], looked=[], info=cases({archived:['om_t10'],missing:['om_t11']})
+  const h=harness({caseInfo:(c,m)=>{looked.push(m);return info(c,m)},decide:b=>{routed.push(routedFull(b));return {action:'ignore'}}},{schema:1,jobs})
+  await h.loop.enqueue(later('om_new','In the case'));await h.loop.drain()
+  // Taken over and possibly posted work is not offered; a declined reply and failed work are.
+  assert.deepEqual(routed[0],{messageId:'om_new',routable:false,openWork:[
+    {ref:'w1',request:'Same case draft',state:'reply drafted',output:result.answer},
     {ref:'w2',request:'Case text of om_t02',state:'replied',output:result.answer},
-    {ref:'w3',request:'Separate grant in the same thread',state:'reply drafted',output:result.answer},
-    {ref:'w4',request:'The request this thread grew from',state:'reply drafted',output:result.answer},
-    {ref:'w5',request:'Same thread question',state:'question drafted',output:'Which month?'}])
-  assert.deepEqual(looked,['om_t01','om_t02','om_t07',first.source.threadId,'om_t08','om_t09','om_t11'])
-  // Outside any thread, only other messages outside threads in the same chat qualify, and not a posted reply.
-  await h.loop.enqueue(later('om_flat','Outside a thread',{source:{...first.source,threadId:'om_flat'}}));await h.loop.drain()
-  assert.deepEqual(routed[1].openWork,[{ref:'w1',request:'Outside any thread',state:'reply drafted',output:result.answer}])
-  assert.deepEqual(h.calls.map(([k])=>k),['decide','decide'])
+    {ref:'w3',request:'Separate grant in the same case',state:'reply drafted',output:result.answer},
+    {ref:'w4',request:'Case text of om_t07',state:'reply not sent',output:result.answer},
+    {ref:'w5',request:'Failed work',state:'stopped'},
+    {ref:'w6',request:'Unconfirmed work',state:'stopped'},
+    {ref:'w7',request:'Same case question',state:'question drafted',output:'Which month?'}]})
+  assert.deepEqual(looked,['om_t01','om_t02','om_t06','om_t07','om_t10','om_t11','om_t12','om_t13','om_t14'])
+  // Another case in the same chat sees only its own work; a case without any worker may start new work.
+  await h.loop.enqueue(later('om_beside','Beside it',{caseId:'case_other'}));await h.loop.drain()
+  assert.deepEqual(routed[1],{messageId:'om_beside',routable:false,
+    openWork:[{ref:'w1',request:'Another case in the same chat',state:'reply drafted',output:result.answer}]})
+  await h.loop.enqueue(later('om_fresh','A new case',{caseId:'case_fresh'}));await h.loop.drain()
+  assert.deepEqual(routed[2],{messageId:'om_fresh'})
+  assert.deepEqual(h.calls.map(([k])=>k),['decide','decide','decide'])
   assert.deepEqual(h.saved.jobs.slice(0,jobs.length),jobs,'offering work changes nothing')
   // Of the latest ten, an archived case drops out without bringing older work back in.
   const many=Array.from({length:12},(_,i)=>moved(awaiting,'om_m'+String(i+1).padStart(2,'0'),{text:'Request '+(i+1)}))
@@ -872,14 +888,109 @@ test('the Router is offered only open work of the same conversation and binding,
   assert.deepEqual(routed2[0].openWork,[3,4,6,7,8,9,10,11,12].map((n,i)=>({ref:'w'+(i+1),request:'Request '+n,state:'reply drafted',output:result.answer})))
 })
 
-test('a target that finished or was archived while the Router decided is dropped and the message is routed again',async()=>{
+test('a case that has its worker starts no other work: the Router may only hand a message to it or ignore the message',async()=>{
+  const routed=[], h=harness({caseInfo:cases(),decide:b=>{routed.push(routedFull(b));return task}})
+  const pending=await run(h,first)
+  // Even a clearly new request in the case is not routed to a new worker.
+  const fresh=later('om_new_request','Also translate the handbook.')
+  await h.loop.enqueue(fresh);await h.loop.drain()
+  assert.deepEqual(routed,[{messageId:first.messageId},{messageId:fresh.messageId,routable:false,
+    openWork:[{ref:'w1',request:first.text,state:'reply drafted',output:result.answer}]}])
+  const row=await byId(h,fresh.messageId)
+  assert.deepEqual([row.status,row.reason,row.role],['stopped','invalid-decision',undefined])
+  assert.deepEqual(await byId(h,first.messageId),pending)
+  assert.deepEqual(h.calls,[['decide',first.messageId],['work',first.messageId],['decide',fresh.messageId]])
+  // A worker taken over by the owner, or one whose reply may already be posted, takes nothing: the
+  // message is ignored without asking the Router.
+  const handed=harness();await run(handed,first);await take(handed.loop,first)
+  const lost=automatic({deliver:()=>null});await run(lost,first)
+  for(const saved of [handed.saved,lost.saved]) {
+    const m=harness({caseInfo:cases()},saved)
+    await m.loop.enqueue(followUp);await m.loop.drain()
+    assert.deepEqual([(await byId(m,followUp.messageId)).status,stored(m.saved,first.messageId).status],
+      ['ignored',saved.jobs[0].status])
+    assert.deepEqual(m.calls,[])
+  }
+  // A case whose messages so far were all ignored has no worker yet: its next message may start one.
+  const routed2=[], quiet=automatic({caseInfo:cases(),decide:b=>{routed2.push(routedFull(b));return b.messageId===first.messageId ? {action:'ignore'} : task}})
+  await run(quiet,first)
+  await quiet.loop.enqueue(followUp);await quiet.loop.drain()
+  assert.deepEqual(routed2,[{messageId:first.messageId},{messageId:followUp.messageId}])
+  assert.deepEqual((await quiet.loop.snapshot()).map(r=>[r.messageId,r.status]),[[first.messageId,'ignored'],[followUp.messageId,'delivered']])
+})
+
+test('a message waits while its case’s reply is being posted, then is handed to that worker',async()=>{
+  const posting=deferred(), release=deferred(), routed=[], seen=[], worked=[]
+  let n=0
+  const h=automatic({caseInfo:cases(),
+    decide:b=>{
+      routed.push(routedFull(b))
+      if(b.messageId!==followUp.messageId) return task
+      seen.push(stored(h.saved,first.messageId).status)
+      return {action:'merge',target:'w1'}
+    },
+    work:b=>{worked.push(b);return b.supplements ? {...result,answer:'Answer with the follow-up'} : result},
+    deliver:async b=>{if(b.messageId===first.messageId && !n++){posting.resolve();await release.promise};return {...reply(b),messageId:'om_sent'+b.messageId+n}}})
+  await h.loop.enqueue(first);await posting.promise
+  await h.loop.enqueue(followUp)
+  // Another case is routed meanwhile; this case's message is left for later.
+  const elsewhere={...input,caseId:'case_elsewhere',messageId:'om_elsewhere'}
+  await h.loop.enqueue(elsewhere)
+  await until(async()=>(await byId(h,elsewhere.messageId)).status==='assigned','the other case to be routed')
+  assert.deepEqual([(await byId(h,first.messageId)).status,(await byId(h,followUp.messageId)).status],['delivering','queued'])
+  assert.ok(!routed.some(r=>r.messageId===followUp.messageId))
+  release.resolve();await h.loop.drain()
+  // Judged once the reply was posted, the message reopens that reply.
+  assert.deepEqual(seen,['delivered'])
+  assert.deepEqual(routed.find(r=>r.messageId===followUp.messageId),{messageId:followUp.messageId,routable:false,
+    openWork:[{ref:'w1',request:'Case text of '+first.messageId,state:'replied',output:result.answer}]})
+  assert.deepEqual((await byId(h,followUp.messageId)).mergedInto,{caseId:first.caseId,messageId:first.messageId})
+  const rerun=worked.find(w=>w.messageId===first.messageId && w.supplements)
+  assert.deepEqual([rerun.continueWork,rerun.supplements],[true,[{text:followUp.text,from:'requester'}]])
+  const row=await byId(h,first.messageId)
+  assert.deepEqual([row.status,row.answer],['delivered','Answer with the follow-up'])
+  assert.equal(h.calls.filter(c=>c[0]==='deliver' && c[1]===first.messageId).length,2)
+  assert.equal((await byId(h,elsewhere.messageId)).status,'delivered')
+})
+
+test('a declined reply or a stopped worker takes a later message of its case and continues in its own session',async()=>{
+  // A declined reply kept no intake: the case record stands in, and the worker keeps its assigned preset.
+  const routed=[], worked=[]
+  const h=harness({caseInfo:cases({info:{[first.messageId]:{team:{...input.team,develop:'changed-since'}}}}),decide:mergeFollowUps(routed),
+    work:b=>{worked.push(b);return worked.length===1 ? result : {...result,answer:'Reconsidered'}}})
+  const pending=await run(h,first)
+  await h.loop.release(releaseCommand(pending,'decline'),allow)
+  await h.loop.enqueue(followUp);await h.loop.drain()
+  assert.deepEqual(routed.at(-1).openWork,[{ref:'w1',request:'Case text of '+first.messageId,state:'reply not sent',output:result.answer}])
+  const reopened=stored(atMerge(h),first.messageId)
+  assert.deepEqual([reopened.status,reopened.text,reopened.requesterId,reopened.presetId,reopened.team.develop],
+    ['assigned','Case text of '+first.messageId,requesterId,input.team.develop,input.team.develop])
+  assert.deepEqual([worked[1].continueWork,worked[1].previousWorkspaceId,worked[1].supplements],[true,result.workspaceId,[{text:followUp.text,from:'requester'}]])
+  const row=await byId(h,first.messageId)
+  assert.deepEqual([row.status,row.answer],['awaiting-release','Reconsidered'])
+  assert.notEqual(row.releaseToken,pending.releaseToken)
+  // Stopped or unconfirmed work keeps its intake and runs again with the message.
+  for(const code of ['AUTOMATION_UNAVAILABLE','WORK_UNCERTAIN']) {
+    const routed=[], worked=[]
+    const h=harness({caseInfo:cases(),decide:mergeFollowUps(routed),work:b=>{worked.push(b);if(worked.length===1)throw {code};return result}})
+    const failed=await run(h,first)
+    assert.equal(failed.status,code==='WORK_UNCERTAIN' ? 'uncertain' : 'stopped')
+    await h.loop.enqueue(followUp);await h.loop.drain()
+    assert.deepEqual(routed.at(-1).openWork,[{ref:'w1',request:first.text,state:'stopped'}],code)
+    assert.equal((await byId(h,followUp.messageId)).status,'merged')
+    assert.deepEqual([worked[1].continueWork,worked[1].text,worked[1].supplements],[true,first.text,[{text:followUp.text,from:'requester'}]])
+    const row=await byId(h,first.messageId)
+    assert.deepEqual([row.status,row.answer,row.reason],['awaiting-release',result.answer,undefined],code)
+  }
+})
+
+test('a target taken over or archived while the Router decided is dropped, and the message is judged again without it; a declined one still takes it',async()=>{
   for(const change of ['declined','taken-over','archived']) {
     const routed=[], archived=[]
     let pending
     const h=harness({caseInfo:cases({archived}),decide:async b=>{
       routed.push(routedAs(b))
       if(b.messageId===first.messageId) return task
-      if(routed.some(r=>r.retries)) return {action:'ignore'}
       if(change==='declined') await h.loop.release(releaseCommand(pending,'decline'),allow)
       else if(change==='taken-over') await take(h.loop,first)
       else archived.push(first.messageId)
@@ -887,27 +998,33 @@ test('a target that finished or was archived while the Router decided is dropped
     }})
     pending=await run(h,first)
     await h.loop.enqueue(followUp);await h.loop.drain()
+    // Judged again with no worker left to take it, the message is ignored without asking the Router.
     assert.deepEqual(routed.filter(r=>r.messageId===followUp.messageId),[
-      {messageId:followUp.messageId,openWork:[{ref:'w1',request:first.text,state:'reply drafted',output:result.answer}]},
-      {messageId:followUp.messageId,retries:1}],change)
-    const row=await byId(h,followUp.messageId)
+      {messageId:followUp.messageId,openWork:[{ref:'w1',request:first.text,state:'reply drafted',output:result.answer}]}],change)
+    const row=await byId(h,followUp.messageId), target=await byId(h,first.messageId)
+    if(change==='declined') {
+      assert.deepEqual([row.status,row.mergedInto],['merged',{caseId:first.caseId,messageId:first.messageId}])
+      assert.deepEqual([target.status,target.supplements],['awaiting-release',undefined])
+      assert.notEqual(target.releaseToken,pending.releaseToken)
+      continue
+    }
     assert.deepEqual([row.status,row.mergedInto],['ignored',undefined],change)
     assert.equal(stored(h.saved,followUp.messageId).retries,1)
-    const target=await byId(h,first.messageId)
     assert.deepEqual([target.status,target.supplements],[change==='archived' ? 'awaiting-release' : change,undefined],change)
     if(change==='archived') assert.equal(target.releaseToken,pending.releaseToken)
   }
 })
 
 test('a merge naming no listed work, or work that cannot take the message, stops it after a single decision',async()=>{
-  for(const [target,caseInfo] of [['w2',cases()],['w1',async()=>undefined]]) {
+  // Work whose case record is gone is not listed; with no other work to take it, the message is ignored undecided.
+  for(const [target,caseInfo,decided] of [['w2',cases(),true],['w1',async()=>undefined,false]]) {
     const routed=[], h=harness({caseInfo,decide:mergeFollowUps(routed,target)})
     const pending=await run(h,first)
     await h.loop.enqueue(followUp);await h.loop.drain()
     const row=await byId(h,followUp.messageId)
-    assert.deepEqual([row.status,row.reason,row.mergedInto],['stopped','invalid-decision',undefined])
+    assert.deepEqual([row.status,row.reason,row.mergedInto],decided ? ['stopped','invalid-decision',undefined] : ['ignored',undefined,undefined])
     assert.deepEqual(await byId(h,first.messageId),pending)
-    assert.deepEqual(h.calls.filter(c=>c[1]===followUp.messageId),[['decide',followUp.messageId]])
+    assert.deepEqual(h.calls.filter(c=>c[1]===followUp.messageId),decided ? [['decide',followUp.messageId]] : [])
   }
   // A posted reply whose case record lacks the original message cannot reopen; it is not offered again and again.
   const routed=[], merging=mergeFollowUps(routed)

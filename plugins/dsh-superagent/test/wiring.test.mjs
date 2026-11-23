@@ -359,3 +359,52 @@ test('the app names each job’s requester before every automated step, so a mem
     assert.ok(cli.some(a=>a.includes('+get-user')))
   } finally {await f.api.dispose();await f.close();await store.close()}
 })
+
+test('a later @ in a case’s topic runs under the grant that admitted it, not the one the case started under',async t=>{
+  let now=150
+  t.mock.method(Date,'now',()=>now)
+  const db=medium(), store=await openStore(db), cfg={...identity,automationSince:100}
+  const chatId='oc_group', root='om_root', later='om_later', base='/open-apis/im/v1/messages'
+  const row=(id,at,extra={})=>({message_id:id,chat_id:chatId,thread_id:'omt_root',deleted:false,msg_type:'text',create_time:String(at),
+    sender:{id_type:'open_id',sender_type:'user',id:'ou_requester',tenant_key:cfg.tenantId},
+    mentions:[{id:cfg.recipientId,id_type:'open_id',tenant_key:cfg.tenantId}],body:{content:JSON.stringify({text:'Request '+id})},...extra})
+  const rows=[row(root,200)]
+  const ok=data=>({ok:true,identity:'user',data})
+  const runCli=async argv=>{
+    const flag=k=>JSON.parse(argv[argv.indexOf(k)+1])
+    if(argv.includes('+get-user'))return ok({user:{open_id:cfg.recipientId,tenant_key:cfg.tenantId}})
+    if(argv.includes('check'))return {ok:false,granted:[],missing:['im:message.p2p_msg:get_as_user']}
+    if(argv.includes('chats'))return ok({name:'Group',chat_mode:'group',external:false,tenant_key:cfg.tenantId})
+    if(argv.includes(base+'/search'))return ok({items:rows.map(m=>({meta_data:{message_id:m.message_id,chat_id:chatId,is_p2p_chat:false}})),has_more:false})
+    if(argv.includes(base+'/mget'))return ok({items:rows.filter(m=>flag('--params').message_ids.includes(m.message_id))})
+    const m=rows.find(r=>argv.includes(base+'/'+r.message_id))
+    if(m)return ok({items:[m]})
+    assert.ok(argv.includes(base),'only the exact message and its native thread are read')
+    return ok({items:[],has_more:false})
+  }
+  const a=createAdmission({scope:cfg,...store.permissions,consentSince:cfg.automationSince})
+  await a.setScan(cfg.automationSince,{since:101})
+  await a.update({action:'register',chatId})
+  const [first]=await a.update({action:'permanent',chatId})
+  const decided=[]
+  const actors={decide:b=>{decided.push([b.messageId,b.source.scopeId]);return {action:'ignore'}},work:assert.fail,seats:()=>({})}
+  const f=await mount(db,cfg,{actors,runCli})
+  const {createHash}=await import('node:crypto'), hash=v=>createHash('sha256').update(JSON.stringify(v)).digest('hex')
+  const scopeOf=g=>hash([hash({profile:cfg.profile,tenantId:cfg.tenantId,recipientId:cfg.recipientId}),cfg.automationSince,chatId,g.mode,null,g.grantId,g.approvedAt])
+  try {
+    now=1000;await f.api.pollOnce();await f.api.drain()
+    // The owner revokes the chat and approves it again: later messages come under the new grant only.
+    now=1100;await a.update({action:'revoke',chatId});await a.update({action:'register',chatId})
+    now=1200;const [second]=await a.update({action:'permanent',chatId})
+    rows.push(row(later,1300,{root_id:root,parent_id:root}))
+    now=2000;await f.api.pollOnce();await f.api.drain()
+    const {cases}=await f.api.snapshot()
+    assert.equal(cases.length,1)
+    assert.deepEqual(cases[0].messages.map(m=>m.requestId),[root,later])
+    assert.equal(cases[0].source.scopeId,scopeOf(first),'the case keeps the grant of its first message')
+    const jobs=(await store.automationStore.load()).jobs
+    assert.deepEqual(jobs.map(j=>[j.messageId,j.caseId,j.source.scopeId,j.status]),
+      [[root,cases[0].id,scopeOf(first),'ignored'],[later,cases[0].id,scopeOf(second),'ignored']])
+    assert.deepEqual(decided,[[root,scopeOf(first)],[later,scopeOf(second)]])
+  } finally {await f.api.dispose();await f.close();await store.close()}
+})
