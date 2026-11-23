@@ -666,16 +666,16 @@
         ]
       },
       "dist-tags": {
-        "latest": "0.9.1"
+        "latest": "0.10.0"
       },
       "versions": [
         {
-          "version": "0.9.1",
-          "publishTimestamp": 1795434996,
+          "version": "0.10.0",
+          "publishTimestamp": 1795438575,
           "source": {
             "type": "git",
             "url": "https://github.com/pcmid/dsh-plugins",
-            "commit": "7431df638035e38baa6084c496bf4c57b27558b8",
+            "commit": "12538a10e65637eded5afbba9a9e80bbaa985da8",
             "path": "plugins/dsh-superagent"
           },
           "engines": {
