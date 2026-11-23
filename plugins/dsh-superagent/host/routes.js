@@ -9,7 +9,7 @@ const fields = {
   setCliPath: ['version','cliPath'],
   setHistoryLimits: ['version','historyCount','historyMinutes'],
   setPrivateChats: ['version','allowPrivateChats'],
-  configure: ['team','roleModels'],
+  configure: ['team','roleModels','helper'],
   setReleasePolicy: ['required'],
   releaseOutput: ['caseId','messageId','token','action'],
   archiveCase: ['caseId'],

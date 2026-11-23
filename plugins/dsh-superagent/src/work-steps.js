@@ -24,10 +24,10 @@ function spaceWorkSteps(message,tr) {
   else {
     if (run.role) {
       add('decision',router,'决定办理','Accepted for work');
-      const role=spaceRoleLabel(run.role,tr);
+      const role=spaceRoleLabel(run.role,tr,run.roleName);
       const where=run.targetWorkspaceId && tr('工作区：','Workspace: ')+(run.targetWorkspaceTitle || run.targetWorkspaceId);
       const preset=run.presetId && tr('指定预设：','Requested preset: ')+run.presetId;
-      add('assignment',router,role?'指派给'+role:'已派工',role?'Assigned to '+role:'Assigned',
+      add('assignment',router,'指派给'+role,'Assigned to '+role,
         [preset,where].filter(Boolean).join(tr('；','; ')) || undefined);
     }
     // Follow-up messages merged into this request, waiting for its worker.

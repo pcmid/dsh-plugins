@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createActors } from '../host/actors.js'
 import { createLoop } from '../host/loop.js'
+import { builtinHelpers as helpers } from '../host/helpers.js'
 
 const base = {caseId:'case-1',messageId:'om_m1',text:'Write out an example function.',context:'For a training handout.',
   source:{kind:'feishu',scopeId:'a'.repeat(64),tenantId:'t',recipientId:'ou_a',chatId:'oc_x',threadId:'om_t'},
@@ -253,8 +254,8 @@ test('empty director binding routes natively with the authorized topic and no ac
   assert.equal(req.model,'director');assert.deepEqual(names(req),routerTools);assert.ok(!('agentPreset' in f.requested[0]))
   assert.match(taskOf(req),/short reference, even a bare @mention/i)
   assert.match(taskOf(req),/no matching material or follow-up appeared before the trigger, call superagent_ignore/i)
-  assert.match(taskOf(req),/"develop" for code and engineering/)
-  assert.deepEqual(inputOf(req),{request:base.text,topic:base.workerContext})
+  assert.match(taskOf(req),/superagent_route with the id of the helper in "helpers" whose description best fits/)
+  assert.deepEqual(inputOf(req),{request:base.text,topic:base.workerContext,helpers})
   assert.equal(f.oneShots.length,0)
   for(const response of [route('lead'),call('superagent_route',{role:'answer',criteria:'not requested'}),call('superagent_deliver'),answer('Not the Router’s tool.')]) {
     f.control=response; await assert.rejects(f.actors.decide({...base,messageId:String(f.requested.length)}),denied)
@@ -272,7 +273,7 @@ test('the router dispatches once and the selected worker checks its own public a
   assert.equal(result.answer,'First draft.')
   assert.deepEqual(f.requested.map(row=>row.agentPreset),['my-team-lead','engineer'])
   const [d,w]=f.nativeRequests
-  assert.deepEqual(inputOf(d),{request:job.text,topic:job.workerContext})
+  assert.deepEqual(inputOf(d),{request:job.text,topic:job.workerContext,helpers})
   assert.deepEqual(inputOf(w),{role:job.role,request:job.text,topic:job.workerContext})
   assert.equal(d.model,'director');assert.equal(w.model,'coder');assert.notEqual(d.sessionId,w.sessionId)
   assert.equal(w.messages[0].content[0].text,'Actual persona: engineer')
@@ -865,7 +866,7 @@ test('the Router sees the other registered DSH workspaces and may place the work
   f.control=call('superagent_route',{role:'develop',workspace:'proj'})
   assert.deepEqual(await f.actors.decide(base),{action:'work',role:'develop',workspaceId:'proj'})
   const [d]=f.nativeRequests
-  assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,
+  assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,helpers,
     workspaces:[{id:'proj',title:'Project',path:project.path},{id:'docs',title:'Docs',path:docs.path}]})
   const schema=d.tools.find(x=>x.name==='superagent_route').parameters
   assert.deepEqual(schema.properties.workspace.enum,['proj','docs']);assert.deepEqual(schema.required,['role'])
@@ -1041,7 +1042,7 @@ test('the Router sees the conversation’s open work and gets the merge tool onl
   f.control=call('superagent_merge',{target:'w2'})
   assert.deepEqual(await f.actors.decide({...base,openWork}),{action:'merge',target:'w2'})
   const [d]=f.nativeRequests
-  assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,openWork})
+  assert.deepEqual(inputOf(d),{request:base.text,topic:base.workerContext,helpers,openWork})
   assert.deepEqual(names(d),mergeTools)
   assert.match(taskOf(d),/"openWork".*file, image or explanation between that question and this @.*superagent_merge with that ref/s)
   assert.match(taskOf(d),/do not guess between items/i)
@@ -1254,4 +1255,26 @@ test('a continuing worker gets only files its session has not received; an unrea
   assert.deepEqual(f.prompts.map(filesOf),[[[fileMark('file_v3_1','log-1.txt'),'file']],[[fileMark('file_v3_2','log-2.txt'),'file']]])
   // A loader that does not answer for each requested file fails the seat.
   await assert.rejects(f.actors.work({...await sharing(t,f,[doc(9)]),messageId:'om_short',loadFiles:async()=>[]}),denied)
+})
+
+test('the Router routes only to the queued helpers; an owner-added helper learns its own responsibility',async t=>{
+  const f=await fixture(t), ops={id:'helper-0a1b2c3d',name:'运维助手',description:'Server checks and alerts.'}
+  const job={...base,helpers:[ops],team:{...base.team,[ops.id]:''},roleModels:{...base.roleModels,[ops.id]:{provider:'offline',model:'coder'}}}
+  f.control=call('superagent_route',{role:ops.id})
+  assert.deepEqual(await f.actors.decide(job),{action:'work',role:ops.id})
+  const [d]=f.nativeRequests
+  assert.deepEqual(inputOf(d).helpers,[ops])
+  assert.deepEqual(d.tools.find(x=>x.name==='superagent_route').parameters.properties.role.enum,[ops.id])
+  f.control=route('develop')
+  await assert.rejects(f.actors.decide({...job,messageId:'om_built_in'}),denied)
+  const out=await f.actors.work({...job,role:ops.id})
+  assert.equal(out.answer,'First draft.')
+  assert.match(taskOf(f.nativeRequests.at(-1)),/the team's helper "运维助手"\. Your responsibility: Server checks and alerts\./)
+  await assert.rejects(f.actors.work({...job,messageId:'om_gone',role:'develop'}),denied)
+  // With every helper disabled the Router has no route tool and is told to ignore new requests.
+  f.control=ignore()
+  assert.deepEqual(await f.actors.decide({...job,messageId:'om_none',helpers:[]}),{action:'ignore'})
+  const none=f.nativeRequests.at(-1)
+  assert.ok(!names(none).includes('superagent_route'))
+  assert.match(taskOf(none),/No helper is available for new work: call superagent_ignore/)
 })

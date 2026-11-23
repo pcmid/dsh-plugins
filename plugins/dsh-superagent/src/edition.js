@@ -9,9 +9,10 @@ function Mark({name,size=16}) {
   return h('svg',{width:size,height:size,viewBox:'0 0 24 24',fill:'none',stroke:'currentColor',strokeWidth:1.65,
     strokeLinecap:'round',strokeLinejoin:'round','aria-hidden':true,focusable:false},h('path',{d:spaceMarkPaths[name]}));
 }
-function spaceRoleLabel(role,tr) {
+// Built-in roles use their localized names; a custom helper uses the name recorded with the run.
+function spaceRoleLabel(role,tr,name) {
   const row=spaceRoles.find(([id])=>id===role);
-  return row ? tr(row[1],row[2]) : '';
+  return row ? tr(row[1],row[2]) : name || role;
 }
 function spaceStatus(status,tr) {
   const labels={'awaiting-access':['待批准','Awaiting approval'],'not-handled':['已收到 · 未办理','Received · not handled'],received:['已收到','Received'],dispatching:['正在提交至 DSH','Submitting to DSH'],
@@ -51,7 +52,7 @@ function spaceWithRuns(cases,runs=[]) {
     });
     const latest=messages.at(-1);
     return {...item,messages,status:latest?.status || item.status,hasWork:messages.some(m=>m.run && !['ignored','merged'].includes(m.status)),
-      workerRole:latest?.run?.role || item.workerRole};
+      workerRole:latest?.run?.role || item.workerRole,workerRoleName:latest?.run?.roleName};
   });
 }
 function spaceCaseStatus(item) {
@@ -547,7 +548,7 @@ function SpaceRunOutput({p,item,message}) {
 // Matches the Host: failed work can be retried; a reply that may already be posted cannot.
 const spaceRetryable=run=>run.status==='stopped' || run.status==='uncertain' && run.reason==='work-uncertain';
 // Matches the Host: a worker session can be taken over except while its reply is being posted.
-const spaceTakeable=run=>!!run.workerSessionId && ['develop','answer'].includes(run.role) &&
+const spaceTakeable=run=>!!run.workerSessionId && !!run.role && run.role!=='lead' &&
   (['assigned','working','approved','awaiting-release','waiting-requester'].includes(run.status) || spaceRetryable(run));
 // Actions in the shared row menu, on the case's latest eligible message. Only cases still
 // listed in Activity can be archived, so an archived case stays reachable there.
@@ -632,12 +633,12 @@ function SpaceMessageWork({p,item,message}) {
       h('summary',null,tr('办理过程','Work process'),' · ',spaceStatus(message.status,tr)),
       h('ol',{className:'x2-events'},steps.map((step,i)=>h('li',{key:i,className:'x2-process-step'},
         h('div',{className:'x2-byline'},h('strong',null,step.who),
-          step.kind==='worker' && h('span',null,worker || spaceRoleLabel(run.role,tr))),
+          step.kind==='worker' && h('span',null,worker || spaceRoleLabel(run.role,tr,run.roleName))),
         h('p',null,step.stage),step.detail && h('p',{className:'x2-step-detail'},step.detail)))),
       (run.routerSessionId || run.workerSessionId) && h('div',{className:'x2-model-output'},
         h('h4',null,tr('会话记录','Conversation record')),
         run.routerSessionId && h(SpaceSeatOutput,{p,sessionId:run.routerSessionId,who:spaceRoleLabel('lead',tr)}),
-        run.workerSessionId && h(SpaceSeatOutput,{p,sessionId:run.workerSessionId,who:worker || spaceRoleLabel(run.role,tr)})),
+        run.workerSessionId && h(SpaceSeatOutput,{p,sessionId:run.workerSessionId,who:worker || spaceRoleLabel(run.role,tr,run.roleName)})),
       (run.sessionId || run.workerSessionId) && h('button',{type:'button',className:'x2-back',onClick:()=>p.openSession(run.sessionId || run.workerSessionId)},
         h(Mark,{name:'link',size:13}),tr('查看本次承办会话','Open this work session'))),
     run.answer && h(SpaceRunOutput,{p,item,message}),
@@ -653,7 +654,7 @@ function SpaceRecord({p,item,headingRef}) {
       h('div',{className:'x2-record-title'},h('h2',{ref:headingRef,tabIndex:-1},item.title),
         h('button',{type:'button',className:'x2-material-toggle','aria-expanded':material,'aria-controls':material ? panelId : undefined,onClick:()=>setMaterial(!material)},
           tr('事项材料','Case materials'),h(Mark,{name:'chevron',size:13}))),
-      h('div',{className:'x2-owners'},h('span',null,spaceOrigin(item,tr)),item.workerRole && ' · '+spaceRoleLabel(item.workerRole,tr),
+      h('div',{className:'x2-owners'},h('span',null,spaceOrigin(item,tr)),item.workerRole && ' · '+spaceRoleLabel(item.workerRole,tr,item.workerRoleName),
         h('span',{className:'x2-state'},spaceStatusDot(status),spaceStatus(status,tr)),
         item.sessionId && h('button',{type:'button',className:'x2-back',onClick:()=>p.openSession(item.sessionId)},
           h(Mark,{name:'link',size:13}),tr('打开 DSH 会话','Open DSH conversation')))),

@@ -34,7 +34,7 @@ async function checkUpgrade(version) {
   for (let pass=0;pass<3;pass++) {
     const backend=new JsonStorageBackend(scratch),ctx={emit(){},logger:{warn(){},error(){}},storage:{backend:{get:()=>backend}}}
     const facility=new DomainFacility(ctx,{backend:'json'})
-    if (pass===1) await assert.rejects(openStore({open:spec=>facility.open({...spec,version:7,compatibleVersions:[]})}),{code:'version-mismatch'})
+    if (pass===1) await assert.rejects(openStore({open:spec=>facility.open({...spec,version:8,compatibleVersions:[]})}),{code:'version-mismatch'})
     const opened=[]
     const store=await openStore({open:s=>{opened.push(s.name);return facility.open(s)}})
     try {
@@ -85,8 +85,8 @@ async function checkUpgrade(version) {
 }
 
 try {
-  for (const version of [1,2,3,4,5,6,7]) await checkUpgrade(version)
-  console.log('Native storage: v1–v7 metadata migrated to v8; body-free retry locations and isolated archives survive reopen; downgrade refused.')
+  for (const version of [1,2,3,4,5,6,7,8]) await checkUpgrade(version)
+  console.log('Native storage: v1–v8 metadata migrated to v9; body-free retry locations and isolated archives survive reopen; downgrade refused.')
 } finally {
   assert.equal(await realpath(scratch),scratch);assert.equal(dirname(scratch),temp)
   assert.ok(basename(scratch).startsWith('dsh-superagent-storage-'))

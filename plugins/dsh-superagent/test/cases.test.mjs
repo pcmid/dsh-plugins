@@ -179,7 +179,8 @@ test('retry intake uses only the exact original Feishu message, original sender,
   const first=await service.receive(e), other=await service.receive(event({messageId:'om_other'}))
   const settings=await service.configure({team:{answer:'a'},roleModels:{answer:{provider:'fixture',model:'text'}}})
   const r=restart(), fallback=await r.retryIntake(first.id,e.messageId)
-  assert.deepEqual(fallback,{text:e.text,requesterId:e.senderId,...settings})
+  const {helpers,...routes}=settings
+  assert.deepEqual(fallback,{text:e.text,requesterId:e.senderId,...routes})
   await rejected(r.retryIntake(other.id,e.messageId),'case-not-found')
   const c=await r.intake(local())
   await rejected(r.retryIntake(c.id,'local-1'),'case-not-found')

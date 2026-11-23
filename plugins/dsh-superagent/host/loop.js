@@ -1,9 +1,11 @@
 import { createHash,randomUUID } from 'node:crypto'
+import { builtinIds,helperId,helperListOK,jobHelpers } from './helpers.js'
 
-const roles = ['lead','develop','answer']
 const legacySourceKeys = ['kind','scopeId','tenantId','recipientId','chatId','threadId']
 const sourceKeys = [...legacySourceKeys,'privatePeerId','privateChatsSince']
-const workerRoles = ['develop','answer']
+// A job's worker roles are the helpers enabled when it was queued; older jobs have the built-in pair.
+const isHelper = (j,role) => jobHelpers(j).some(h => h.id === role)
+const isWorker = j => isHelper(j,j.role)
 const starting = new Map([['queued','deciding'],['assigned','working'],['approved','delivering'],['released','delivering']])
 const terminal = new Set(['ignored','stopped','uncertain','delivered','declined','taken-over','merged'])
 // Records from the removed review stage stay readable; loading stops them as interrupted.
@@ -14,13 +16,13 @@ const accessErrors = new Set(['admission-denied','scope-changed','source-unconfi
 const publicFields = ['caseId','messageId','status','attempt','updatedAt','role','presetId','resolvedPresetId',
   'criteria','sessionId','workspaceId','targetWorkspaceId','answer','outputKind','reason','receipt','supplements','mergedInto']
 const storedFields = [...publicFields,'text','context','decisionHistory','source','team','roleModels','releaseNonce','releaseProof',
-  'requesterId','workerContext','workerImages','workerFiles','workerProof','turns','retries','supplementId']
+  'requesterId','workerContext','workerImages','workerFiles','workerProof','turns','retries','supplementId','helpers']
 // Later messages merged into this job wait in `supplements` until a worker run takes them in.
 const intakeKeys = ['text','context','team','roleModels','workerContext','workerImages','workerFiles','requesterId','supplements','supplementId']
 // Failed work keeps its intake so the owner can retry; a possibly delivered reply is never retried.
 const retryable = j => j.status === 'stopped' || j.status === 'uncertain' && j.reason === 'work-uncertain'
 // The owner can take over a worker session any time except while its reply is being posted.
-const takeable = j => workerRoles.includes(j.role) &&
+const takeable = j => isWorker(j) &&
   (['assigned','working','approved','awaiting-release','released','waiting-requester'].includes(j.status) || retryable(j))
 const accepted = new Set(['approved','awaiting-release','released','delivering','delivered','declined','waiting-requester'])
 // Jobs a later message in the same conversation may be merged into: unfinished worker jobs, and in a
@@ -47,8 +49,10 @@ const sourceOK = s => s?.kind === 'feishu' && matches(s.scopeId,/^[a-f0-9]{64}$/
   matches(s.tenantId,/^[\w-]{1,128}$/) && matches(s.recipientId,/^ou_[\w-]{1,128}$/) &&
   matches(s.chatId,/^oc_[\w-]{1,128}$/) && message(s.threadId) && (s.privatePeerId === undefined
     ? s.privateChatsSince === undefined : user(s.privatePeerId) && s.privatePeerId !== s.recipientId && time(s.privateChatsSince))
-const routesOK = j => object(j.team) && roles.every(k => j.team[k] === '' || short(j.team[k])) &&
-  object(j.roleModels) && Object.entries(j.roleModels).every(([k,m]) => roles.includes(k) && modelOK(m))
+const roleKey = k => k === 'lead' || helperId(k)
+const routesOK = j => object(j.team) && (j.team.lead === '' || short(j.team.lead)) &&
+  Object.entries(j.team).every(([k,v]) => roleKey(k) && (v === '' || short(v))) &&
+  object(j.roleModels) && Object.entries(j.roleModels).every(([k,m]) => roleKey(k) && modelOK(m))
 const contextOK = v => v === undefined || typeof v === 'string' && v.length <= 4096
 const workerContextOK = v => v === undefined || typeof v === 'string' && v.length <= 262144
 // Images of the conversation by reference: the message that carries each one and when it was sent.
@@ -76,9 +80,11 @@ function incoming(input) {
   if (!input || !ref(input.caseId) || !message(input.messageId) || !sourceOK(input.source) ||
       !prose(input.text,65536) || !contextOK(input.context) || !contextOK(input.decisionHistory) || !routesOK(input) ||
       !workerContextOK(input.workerContext) || !imagesOK(input.workerImages) || !filesOK(input.workerFiles) ||
-      input.requesterId !== undefined && !user(input.requesterId)) fail('invalid-input')
-  return structuredClone({...pick(input,['caseId','messageId','text','context','decisionHistory','roleModels','requesterId','workerContext','workerImages','workerFiles']),
-    source:pick(input.source,sourceKeys),team:pick(input.team,roles),status:'queued',attempt:0,updatedAt:Date.now()})
+      input.requesterId !== undefined && !user(input.requesterId) || input.helpers !== undefined && !helperListOK(input.helpers)) fail('invalid-input')
+  // Only the Router and the helpers it may assign keep their settings in the job.
+  const keys = ['lead',...jobHelpers(input).map(h => h.id)]
+  return structuredClone({...pick(input,['caseId','messageId','text','context','decisionHistory','requesterId','workerContext','workerImages','workerFiles','helpers']),
+    source:pick(input.source,sourceKeys),team:pick(input.team,keys),roleModels:pick(input.roleModels,keys),status:'queued',attempt:0,updatedAt:Date.now()})
 }
 
 // The nonce distinguishes approval requests; the digest pins the intake, the worker's answer and exact destination.
@@ -91,7 +97,7 @@ function releaseToken(j) {
 }
 function validTurns(j) {
   if (!j.turns) return j.turns === undefined && j.status !== 'waiting-requester'
-  if (!Array.isArray(j.turns) || !j.turns.length || !ref(j.sessionId) || !ref(j.workspaceId) || !workerRoles.includes(j.role) ||
+  if (!Array.isArray(j.turns) || !j.turns.length || !ref(j.sessionId) || !ref(j.workspaceId) || !isWorker(j) ||
       ['queued','deciding','ignored'].includes(j.status) || !terminal.has(j.status) && !user(j.requesterId)) return false
   const seen = new Set([j.messageId,j.source.threadId])
   for (const [i,t] of j.turns.entries()) {
@@ -111,7 +117,7 @@ function validJob(j) {
   if (!only(j,storedFields) || !ref(j.caseId) || !message(j.messageId) || !only(j.source,sourceKeys) || !sourceOK(j.source) ||
       !statuses.has(j.status) || !Number.isInteger(j.attempt) || j.attempt < 0 || j.attempt > 2 ||
       !Number.isFinite(j.updatedAt) || (j.reason !== undefined && !reasons.has(j.reason)) ||
-      j.retries !== undefined && !(Number.isSafeInteger(j.retries) && j.retries > 0)) return false
+      j.retries !== undefined && !(Number.isSafeInteger(j.retries) && j.retries > 0) || j.helpers !== undefined && !helperListOK(j.helpers)) return false
   const {status,attempt} = j
   if (!validTurns(j) || j.requesterId !== undefined && !user(j.requesterId) || !workerContextOK(j.workerContext) || !imagesOK(j.workerImages) || !filesOK(j.workerFiles) ||
       j.workerProof !== undefined && !(digest(j.workerProof) && ref(j.sessionId))) return false
@@ -122,24 +128,24 @@ function validJob(j) {
   } else if (j.releaseNonce !== undefined || j.releaseProof !== undefined) return false
   if (terminal.has(status)) {
     if (Object.hasOwn(j,'workerProof') || !retryable(j) && intakeKeys.some(k => Object.hasOwn(j,k))) return false
-    if (Object.hasOwn(j,'text') && (!prose(j.text,65536) || !contextOK(j.context) || !only(j.team,roles) || !routesOK(j))) return false
-  } else if (!prose(j.text,65536) || !contextOK(j.context) || !only(j.team,roles) || !routesOK(j)) return false
+    if (Object.hasOwn(j,'text') && (!prose(j.text,65536) || !contextOK(j.context) || !routesOK(j))) return false
+  } else if (!prose(j.text,65536) || !contextOK(j.context) || !routesOK(j)) return false
   if ((j.sessionId !== undefined || j.workspaceId !== undefined) && !(ref(j.sessionId) && ref(j.workspaceId))) return false
   if (j.resolvedPresetId !== undefined && !short(j.resolvedPresetId)) return false
   if (j.role !== undefined || !['queued','deciding','ignored','stopped','uncertain','merged'].includes(status)) {
-    if (!roles.includes(j.role) || !(short(j.presetId) || j.presetId === '') || j.criteria !== undefined && !prose(j.criteria,2048)) return false
+    if (!(j.role === 'lead' || isWorker(j)) || !(short(j.presetId) || j.presetId === '') || j.criteria !== undefined && !prose(j.criteria,2048)) return false
   }
   // The DSH workspace the Router chose for the worker; absent means the SuperAgent workspace.
-  if (j.targetWorkspaceId !== undefined && !(ref(j.targetWorkspaceId) && workerRoles.includes(j.role))) return false
+  if (j.targetWorkspaceId !== undefined && !(ref(j.targetWorkspaceId) && isWorker(j))) return false
   // A merged message points at the job it was merged into; supplements wait for that job's worker.
   if ((status === 'merged') !== (j.mergedInto !== undefined) || status === 'merged' && j.role !== undefined ||
       j.mergedInto !== undefined && !(only(j.mergedInto,['caseId','messageId']) && ref(j.mergedInto.caseId) && message(j.mergedInto.messageId))) return false
-  if (!supplementsOK(j.supplements) || j.supplements && !workerRoles.includes(j.role) ||
-      j.supplementId !== undefined && !(message(j.supplementId) && workerRoles.includes(j.role))) return false
+  if (!supplementsOK(j.supplements) || j.supplements && !isWorker(j) ||
+      j.supplementId !== undefined && !(message(j.supplementId) && isWorker(j))) return false
   if (['queued','deciding','ignored'].includes(status) && attempt !== 0 || status === 'assigned' && attempt > 1) return false
   if ((accepted.has(status) || ['working','awaiting-review','reviewing'].includes(status)) && attempt === 0) return false
   if ((accepted.has(status) || ['awaiting-review','reviewing'].includes(status)) && !ref(j.sessionId)) return false
-  if (status === 'taken-over' && !(workerRoles.includes(j.role) && ref(j.sessionId) && ref(j.workspaceId))) return false
+  if (status === 'taken-over' && !(isWorker(j) && ref(j.sessionId) && ref(j.workspaceId))) return false
   if (accepted.has(status) && !prose(j.answer,16384)) return false
   if (j.answer !== undefined && (!prose(j.answer,16384) || !(accepted.has(status) || ['stopped','uncertain'].includes(status)))) return false
   if (j.outputKind !== undefined && (!['answer','question'].includes(j.outputKind) || !prose(j.answer,16384))) return false
@@ -152,6 +158,9 @@ function projection(j) {
   const p = structuredClone(pick(j,publicFields))
   if (j.status === 'awaiting-release') p.releaseToken = releaseToken(j)
   if (j.status === 'released') p.status = 'approved'
+  // An owner-added helper's name as it was when the message was queued; built-in names are localized by the client.
+  const helper = !builtinIds.includes(j.role) && jobHelpers(j).find(h => h.id === j.role)
+  if (helper) p.roleName = helper.name
   return p
 }
 function transition(j,patch) {
@@ -228,7 +237,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
   function related(s,j) {
     const inThread = j.source.threadId !== j.messageId
     return s.jobs.filter(x => x !== j && sameBinding(x,j.source) &&
-      x.source.chatId === j.source.chatId && workerRoles.includes(x.role) &&
+      x.source.chatId === j.source.chatId && isWorker(x) &&
       (inThread ? x.source.threadId === j.source.threadId || x.messageId === j.source.threadId : x.source.threadId === x.messageId) &&
       (openStatuses.includes(x.status) || inThread && x.status === 'delivered'))
   }
@@ -247,7 +256,7 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
   }
   async function execute(j,jobSignal) {
     const key = keyOf(j), signal = jobSignal
-    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','retries','requesterId','workerImages','workerFiles'])),
+    const base = {...structuredClone(pick(j,['caseId','messageId','source','text','team','roleModels','helpers','retries','requesterId','workerImages','workerFiles'])),
       workerContext:j.workerContext ?? j.context,signal}
     const assignment = pick(j,['role','criteria','attempt','targetWorkspaceId'])
     if (j.status === 'deciding') {
@@ -258,14 +267,14 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
         const target = open.find(row=>row.ref === d.target)
         return target ? {merge:target} : stopped('invalid-decision')
       }
-      if (d?.action !== 'work' || !workerRoles.includes(d.role) || d.criteria !== undefined && !prose(d.criteria,2048) ||
+      if (d?.action !== 'work' || !isHelper(j,d.role) || d.criteria !== undefined && !prose(d.criteria,2048) ||
           d.workspaceId !== undefined && !ref(d.workspaceId)) return stopped('invalid-decision')
       return {status:'assigned',role:d.role,...pick(d,['criteria']),presetId:j.team[d.role],
         ...d.workspaceId && {targetWorkspaceId:d.workspaceId}}
     }
     const workerPacket = pick(j,['requesterId','workerProof'])
     if (j.status === 'working') {
-      if (!workerRoles.includes(j.role)) return stopped('invalid-decision') // Legacy lead assignments cannot execute as workers.
+      if (!isWorker(j)) return stopped('invalid-decision') // Legacy lead assignments cannot execute as workers.
       const last = j.turns?.at(-1)
       const supplements = j.supplements?.map(x=>({text:x.text,from:x.senderId && x.senderId === j.requesterId ? 'requester' : 'participant'}))
       const resume = {continueWork:true,...j.workspaceId && {previousWorkspaceId:j.workspaceId}}
@@ -314,7 +323,11 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
     // A question still waiting for the requester is withdrawn; answered rounds stay on record.
     if (t.status === 'waiting-requester') next.turns = t.turns.slice(0,-1)
     // A posted reply kept no intake; the case record and current team stand in.
-    if (t.status === 'delivered') next = {...next,...pick(info,['text','team','roleModels']),...user(info.requesterId) && {requesterId:info.requesterId}}
+    if (t.status === 'delivered') {
+      next = {...next,...pick(info,['text','team','roleModels']),...user(info.requesterId) && {requesterId:info.requesterId}}
+      // The worker keeps its assigned preset, even if its helper was since changed or removed.
+      if (next.team) next.team = {...next.team,[t.role]:t.presetId}
+    }
     if (next.turns && !next.turns.length) delete next.turns
     next = transition(next,{})
     return validJob(next) ? next : undefined
@@ -444,13 +457,13 @@ export function createLoop({load,save,decide,work,deliver,onChange,isReleaseRequ
       if (signal.aborted) fail('loop-disposed')
       const i = s.jobs.findIndex(j=>j.caseId === command.caseId && j.messageId === command.messageId), j = s.jobs[i]
       if (!j || !retryable(j)) fail('retry-unavailable')
-      const worker = workerRoles.includes(j.role)
+      const worker = isWorker(j)
       // Older failed records dropped their intake; the case history and current team settings stand in.
       const intake = Object.hasOwn(j,'text') ? pick(j,intakeKeys) : {...pick(fallback ?? {},['text','team','roleModels']),
         ...user(fallback?.requesterId) && {requesterId:fallback.requesterId}}
       // The worker keeps the preset it was assigned, even if the team settings changed since.
       if (worker && intake.team) intake.team = {...intake.team,[j.role]:j.presetId}
-      const next = {...pick(j,['caseId','messageId','source',...worker ? ['role','presetId','criteria','sessionId','workspaceId','resolvedPresetId','targetWorkspaceId'] : []]),
+      const next = {...pick(j,['caseId','messageId','source','helpers',...worker ? ['role','presetId','criteria','sessionId','workspaceId','resolvedPresetId','targetWorkspaceId'] : []]),
         ...structuredClone(intake),status:worker ? 'assigned' : 'queued',attempt:0,retries:(j.retries ?? 0)+1,updatedAt:Date.now(),
         ...worker && j.turns && {turns:j.turns.map(t=>pick(t,['questionId','replyId']))}}
       if (!validJob(next)) fail('retry-unavailable')

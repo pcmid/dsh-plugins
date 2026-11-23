@@ -1,6 +1,7 @@
 import { createCases } from './cases.js'
 import { createLoop } from './loop.js'
 import { sourceSettings } from './source-settings.js'
+import { assignable } from './helpers.js'
 
 // Only the source adapter can start a job. A browser snapshot never drains the queue.
 export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig, state, permissions,
@@ -37,10 +38,10 @@ export function makeApp({config = {}, readConfig = ()=>config.feishu, saveConfig
     if(automatic) {
       const index=item.messages.findIndex(m=>m.kind==='feishu' && m.requestId===event.messageId)
       if(index<0)throw new Error('message not recorded')
-      const {team,roleModels}=await cases.teamSettings()
+      const {team,roleModels,helpers}=await cases.teamSettings()
       const source={...item.source,...(event.privatePeerId ? {privatePeerId:event.privatePeerId,privateChatsSince:event.privateChatsSince} : {})}
       await loop.enqueue({caseId:item.id,messageId:event.messageId,text:item.messages[index].text,requesterId:event.senderId,
-        source,team,roleModels,workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {}),
+        source,team,roleModels,helpers:assignable(helpers),workerContext:event.workerContext ?? '',...(event.workerImages?.length ? {workerImages:event.workerImages} : {}),
         ...(event.workerFiles?.length ? {workerFiles:event.workerFiles} : {})})
     }
     changed()

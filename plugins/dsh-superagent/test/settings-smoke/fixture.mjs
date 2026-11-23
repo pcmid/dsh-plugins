@@ -24,7 +24,7 @@ async function verify(ctx, connection) {
   const settings = async () => {
     const response = await call('settingsSnapshot')
     assert.equal(response.ok, true, JSON.stringify(response.error))
-    assert.deepEqual(Object.keys(response.value).sort(), ['releaseRequired','revision','roleModels','source','team'])
+    assert.deepEqual(Object.keys(response.value).sort(), ['helpers','releaseRequired','revision','roleModels','source','team'])
     assert.ok(response.value.source.settings)
     return response.value.source.settings
   }

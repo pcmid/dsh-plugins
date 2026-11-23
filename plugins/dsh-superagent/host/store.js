@@ -3,13 +3,15 @@ import { admissionRecord,mentionRecord } from './admission.js'
 import { pollLog } from './poll-diagnostics.js'
 
 const entry = z.object({schema:z.literal(1),
-  team:z.object({lead:z.string(),develop:z.string(),answer:z.string()}),
+  team:z.object({lead:z.string(),develop:z.string(),answer:z.string()}).catchall(z.string()),
+  // Built-in helpers keep only their id and switch; owner-added ones also carry a name and description.
+  helpers:z.array(z.strictObject({id:z.string(),name:z.string().optional(),description:z.string().optional(),disabled:z.literal(true).optional()})).optional(),
   roleModels:z.record(z.string(),z.json()),cases:z.array(z.record(z.string(),z.json())),
   roleDefaultsApplied:z.literal(true).optional(),releaseRequired:z.boolean().optional(),
 })
 // Keep authorization separate from case writes; neither can overwrite the other.
 const loopState=z.strictObject({schema:z.literal(1),jobs:z.array(z.record(z.string(),z.json()))})
-const spec = {name:'pcmid_superagent',version:8,compatibleVersions:[1,2,3,4,5,6,7],tables:{
+const spec = {name:'pcmid_superagent',version:9,compatibleVersions:[1,2,3,4,5,6,7,8],tables:{
   workspace:{valueSchema:entry},
   automation:{valueSchema:loopState},
   admission:{valueSchema:admissionRecord},

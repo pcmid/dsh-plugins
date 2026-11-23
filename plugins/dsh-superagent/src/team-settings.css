@@ -18,12 +18,28 @@
 @media (forced-colors: active) { .sx2 .x2-switch { outline: 1px solid ButtonText; } .sx2 .x2-switch[aria-checked] > span { forced-color-adjust: none; background: ButtonText; } .sx2 .x2-switch:focus-visible { outline: 2px solid Highlight; } }
 .sx2 .x2-team-fields > .sx-replay { margin-top: 18px; }
 .sx2 .x2-roles table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.sx2 .x2-roles h3 { margin: 0 8px 4px; font-size: 14px; line-height: 20px; font-weight: 500; }
+.sx2 .x2-roles table + h3 { margin-top: 24px; }
 .sx2 .x2-roles :is(th,td) { padding: 10px 8px; text-align: start; overflow-wrap: anywhere; }
 .sx2 .x2-roles thead th { font-size: 12px; font-weight: 500; color: var(--x2-muted); }
-.sx2 .x2-roles th:nth-child(3) { width: 34%; }
+.sx2 .x2-router th:nth-child(2) { width: 40%; }
+.sx2 .x2-helpers th:nth-child(1) { width: 24%; }
+.sx2 .x2-helpers th:nth-child(3) { width: 26%; }
+.sx2 .x2-helpers th:nth-child(5) { width: 4.5rem; }
+.sx2 .x2-helpers th:nth-child(6) { width: 8rem; }
 .sx2 .x2-roles tbody tr { border-bottom: 1px solid var(--x2-rule); }
 .sx2 .x2-roles tbody th { font-size: 14px; font-weight: 550; }
+.sx2 .x2-roles tbody th small { display: block; margin-top: 2px; font-size: 12px; line-height: 18px; font-weight: 400; color: var(--x2-muted); white-space: pre-line; }
 .sx2 .x2-roles td { font-size: 13px; color: var(--x2-muted); }
+.sx2 .x2-helper-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.sx2 .x2-add-helper { margin: 12px 8px 0; }
+.sx2 .x2-helper-form { display: grid; gap: 12px; max-width: 32rem; margin: 12px 8px 0; }
+.sx2 .x2-helper-form label { display: grid; gap: 6px; font-size: 13px; }
+.sx2 .x2-helper-form :is(input,textarea) { min-width: 0; padding: 8px; border: 0; border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform); color: var(--dsw-alias-label-primary); }
+.sx2 .x2-helper-form input { height: 36px; padding-block: 0; }
+.sx2 .x2-helper-form textarea { resize: vertical; }
+@media (pointer:coarse) { .sx2 .x2-roles :is(.sx-quiet,.sx-solid,input) { min-height: 44px; } }
 .sx2 .x2-role-trigger, .sx2 .x2-roles select {
   display: inline-flex; min-width: 0; max-width: 100%; min-height: 32px; align-items: center; justify-content: space-between;
   gap: 8px; padding: 5px 7px; background: transparent; color: var(--x2-text); border: 0; border-radius: 7px; text-align: start;
@@ -123,5 +139,6 @@
   .sx2 .x2-roles tbody th { padding-block: 2px 5px; }
   .sx2 .x2-roles td { display: grid; grid-template-columns: 5.8em minmax(0,1fr); align-items: center; min-height: 30px; padding-block: 0; }
   .sx2 .x2-roles td::before { content: attr(data-label); font-size: 12px; }
+  .sx2 .x2-roles td:empty { display: none; }
   .sx2 .x2-role-trigger, .sx2 .x2-roles select { width: 100%; min-height: 44px; }
 }

@@ -209,7 +209,9 @@ export class Offline extends LlmAdapter {
       }
       let body
       if(stage==='DECIDE') {
-        assert.ok(Object.keys(input).every(k=>['request','topic','workspaces','openWork'].includes(k)),'routing does not invent criteria')
+        assert.ok(Object.keys(input).every(k=>['request','topic','helpers','workspaces','openWork'].includes(k)),'routing does not invent criteria')
+        // The Router sees the helpers enabled at intake; the built-in pair by default.
+        assert.deepEqual(input.helpers.map(h=>h.id),['develop','answer'])
         // Only earlier open or replied requests of this native thread are candidates; other threads and chats never are.
         assert.deepEqual(input.openWork ?? [],expected,'open work of this conversation only: '+input.request)
         const merge=options.tools.find(t=>t.name===mergeTool)

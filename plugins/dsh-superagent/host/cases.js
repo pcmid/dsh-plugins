@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { builtinIds, helperDescription, helperId, helperName, maxHelpers } from './helpers.js'
 
 const roles = ['lead', 'develop', 'answer']
 const newState = () => ({ schema: 1, team: { lead: '', develop: '', answer: '' }, roleModels: {}, cases: [] })
@@ -31,7 +32,14 @@ function modelChoice(value) {
   return { provider: value.provider, model: value.model, name: value.name || value.model, effort: value.effort || '' }
 }
 
-const isTeam = t => object(t) && roles.every(role => t[role] === '' || id(t[role]))
+const isTeam = t => object(t) && roles.every(role => t[role] === '' || id(t[role])) &&
+  Object.entries(t).every(([k,v]) => (k === 'lead' || helperId(k)) && (v === '' || id(v)))
+// Each built-in helper exactly once, plus owner-added helpers in the order they were added.
+const helpersOf = s => s.helpers ?? builtinIds.map(id => ({ id }))
+const helpersOK = list => Array.isArray(list) && list.length <= maxHelpers && new Set(list.map(h => h?.id)).size === list.length &&
+  builtinIds.every(b => list.some(h => h?.id === b)) && list.every(h => object(h) && helperId(h.id) && (h.disabled === undefined || h.disabled === true) &&
+    (builtinIds.includes(h.id) ? keysOnly(h,['id','disabled']) :
+      keysOnly(h,['id','name','description','disabled']) && helperName(h.name) && helperDescription(h.description)))
 // The thread lines handed to the assistants, as they saw them: anonymized speaker, time and text.
 const contextOK = rows => Array.isArray(rows) && rows.length <= 500 && rows.every(r => keysOnly(r,['speaker','at','text','request']) &&
   typeof r.speaker === 'string' && /^(?:requester|owner|participant-\d{1,4})$/.test(r.speaker) && Number.isFinite(r.at) &&
@@ -58,7 +66,8 @@ const safeErrors = new Set(['SOURCE_NOT_ALLOWED','INVALID_REQUEST','EXECUTOR_UNA
 const sameInbox = (a,b) => a.kind === 'feishu' && a.scopeId === b.scopeId && a.tenantId === b.tenantId && a.recipientId === b.recipientId && a.chatId === b.chatId
 const replaceCase = (s,c) => ({ ...s, cases: [c, ...s.cases.filter(other => other.id !== c.id)] })
 const view = ({ team,roleModels,cases }) => copy({ team,roleModels,cases })
-const teamView = ({ team,roleModels }) => copy({ team,roleModels })
+const teamView = s => copy({ team:s.team, roleModels:s.roleModels, helpers:helpersOf(s).map(h => ({ id:h.id, builtin:builtinIds.includes(h.id),
+  disabled:h.disabled === true, ...(h.name ? { name:h.name, description:h.description } : {}) })) })
 
 // load/save own one private, atomically replaced document; only the Host source adapter calls receive.
 export function createCases({ load, save, listPresets, executor, now = Date.now }) {
@@ -74,7 +83,7 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
     let stored
     try { stored = await load() } catch { fail('storage-unavailable') }
     if (stored === undefined) return cached = newState()
-    if (stored?.schema !== 1 || !isTeam(stored.team) || !object(stored.roleModels) ||
+    if (stored?.schema !== 1 || !isTeam(stored.team) || !object(stored.roleModels) || stored.helpers !== undefined && !helpersOK(stored.helpers) ||
         !Array.isArray(stored.cases) || !stored.cases.every(validCase)) fail('storage-unavailable')
     // A crash between Host commit and DSH acknowledgement must never replay the prompt.
     let interrupted = false
@@ -123,13 +132,41 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
       return {releaseRequired:required}
     })
   }
+  // One helper change: add, edit or remove an owner-added helper, or switch any helper on or off.
+  function changeHelpers(helpers, team, roleModels, op) {
+    const name = typeof op.name === 'string' ? op.name.trim() : op.name
+    const description = typeof op.description === 'string' ? op.description.trim() : op.description
+    if (op.action === 'add') {
+      expect(keysOnly(op,['action','name','description']) && helperName(name) && helperDescription(description) && helpers.length < maxHelpers)
+      let helper
+      do helper = 'helper-' + randomUUID().slice(0,8); while (helpers.some(h => h.id === helper))
+      team[helper] = ''
+      return [...helpers, { id:helper, name, description }]
+    }
+    const h = helpers.find(x => x.id === op.id), custom = !!h && !builtinIds.includes(h.id)
+    expect(!!h)
+    if (op.action === 'edit') {
+      expect(custom && keysOnly(op,['action','id','name','description']) && helperName(name) && helperDescription(description))
+      return helpers.map(x => x === h ? { ...x, name, description } : x)
+    }
+    if (op.action === 'enable' || op.action === 'disable') {
+      expect(keysOnly(op,['action','id']))
+      return helpers.map(x => x !== h ? x : op.action === 'disable' ? { ...x, disabled:true } : (({ disabled, ...rest }) => rest)(x))
+    }
+    expect(op.action === 'remove' && custom && keysOnly(op,['action','id']))
+    delete team[h.id]; delete roleModels[h.id]
+    return helpers.filter(x => x !== h)
+  }
   async function configure(patch) {
-    expect(keysOnly(patch, ['team','roleModels']))
+    expect(keysOnly(patch, ['team','roleModels','helper']))
     const patchTeam = patch.team === undefined ? {} : patch.team
     const patchModels = patch.roleModels === undefined ? {} : patch.roleModels
-    expect(keysOnly(patchTeam, roles) && keysOnly(patchModels, roles))
+    expect(object(patchTeam) && object(patchModels) && (patch.helper === undefined || object(patch.helper)))
     return locked(async s => {
       const team = { ...s.team }, roleModels = { ...s.roleModels }
+      const helpers = patch.helper ? changeHelpers(helpersOf(s), team, roleModels, patch.helper) : helpersOf(s)
+      const keys = ['lead', ...helpers.map(h => h.id)]
+      expect(keysOnly(patchTeam, keys) && keysOnly(patchModels, keys))
       const entries = Object.entries(patchTeam)
       const rows = entries.some(([,v]) => !!v) ? await roster() : []
       for (const [role, presetId] of entries) {
@@ -141,7 +178,7 @@ export function createCases({ load, save, listPresets, executor, now = Date.now 
         if (setting === null) delete roleModels[role]
         else roleModels[role] = modelChoice(setting)
       }
-      await commit({ ...s, team, roleModels })
+      await commit({ ...s, team, roleModels, ...(patch.helper || s.helpers ? { helpers } : {}) })
       return teamView(cached)
     })
   }
