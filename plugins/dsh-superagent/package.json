@@ -1,6 +1,6 @@
 {
   "name": "@pcmid/dsh-superagent",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "An autonomous supervisor for authorized Feishu mentions, DSH workers and their thread replies.",
   "author": "pcmid",
   "license": "MIT",

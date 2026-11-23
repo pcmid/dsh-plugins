@@ -6,7 +6,7 @@
 }
 .sx2 :is(h1,h2,h3,h4,p,ul,ol,blockquote) { margin: 0; }
 .sx2 :is(.x2-tree,.x2-events,.x2-history) { list-style: none; padding: 0; }
-.sx2 :is(button,summary,select,input,a,[tabindex]):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+.sx2 :is(button,summary,select,input,textarea,a,[tabindex]):focus-visible { outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
 .sx2 :is(.x2-nav button,.x2-read-scroll,.x2-activity-open,.x2-nav-toggle):focus-visible { outline-offset: -2px; }
 
 .sx2 .x2-mast { display: none; }

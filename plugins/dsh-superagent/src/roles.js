@@ -130,11 +130,15 @@ function spacePresetOptions({roster,rosterStatus,tr},id,groups) {
 
 function SpaceTeamRoles(p) {
   const {tr,team,roleModels,roster,catalog,busy,configure}=p, helpers=p.helpers || spaceBuiltinHelpers;
-  const [form,setForm]=React.useState(null), addButton=React.useRef(null), refocus=React.useRef(false);
-  React.useLayoutEffect(()=>{if(refocus.current && !form){refocus.current=false;addButton.current?.focus()}},[form]);
+  const [form,setForm]=React.useState(null), root=React.useRef(null), refocus=React.useRef(null);
+  // After the form closes, return focus to the control that opened it.
+  React.useLayoutEffect(()=>{
+    if(form || busy || !refocus.current) return;
+    root.current?.querySelector('[data-opens="'+refocus.current+'"]')?.focus();refocus.current=null;
+  },[form,busy]);
   const directory=spaceModelDirectory(catalog), presets=spacePresetGroups(roster,tr);
   const header=[tr('预设','Preset'),tr('模型','Model'),tr('思考强度','Reasoning effort')];
-  const columns=[tr('名称','Name'),...header,tr('启用','Enabled'),tr('操作','Actions')];
+  const thead=h('thead',null,h('tr',null,header.map(v=>h('th',{key:v,scope:'col'},v))));
   function pickers(role,name) {
     const saved=roleModels[role];
     const preset=spacePresetOptions(p,team[role],presets);
@@ -147,44 +151,48 @@ function SpaceTeamRoles(p) {
       return h('td',{key:column,'data-label':column},typeof choice==='string' ? choice :
         h(SpaceSelect,{...choice,tr,label:name+' · '+column,onChange,onEffort,disabled:busy}));
     }
-    return [cell(header[0],preset,value=>configure({team:{[role]:value}})),
+    return h('tr',null,cell(header[0],preset,value=>configure({team:{[role]:value}})),
       cell(header[1],model,value=>choose('model',value),value=>choose('effort',value)),
-      cell(header[2],effort,value=>choose('effort',value))];
+      cell(header[2],effort,value=>choose('effort',value)));
   }
   const helper=input=>configure({helper:input});
-  function close() {refocus.current=true;setForm(null)}
+  function close() {refocus.current=form.id || 'add';setForm(null)}
   async function submit(e) {
     e.preventDefault();
     const {id,name,description}=form;
     if (await helper(id ? {action:'edit',id,name,description} : {action:'add',name,description})) close();
   }
-  function helperRow(row) {
+  const edit=field=>e=>{const value=e.currentTarget.value;setForm(f=>({...f,[field]:value}))};
+  const helperForm=()=>h('form',{className:'x2-helper-form',onSubmit:submit},
+    h('label',null,tr('名称','Name'),h('input',{type:'text',value:form.name,disabled:busy,autoFocus:true,onChange:edit('name')})),
+    h('label',null,tr('描述','Description'),h('textarea',{rows:3,value:form.description,disabled:busy,onChange:edit('description')})),
+    h('div',{className:'x2-helper-actions'},
+      h('button',{type:'submit',className:'sx-solid',disabled:busy},form.id ? tr('保存','Save') : tr('添加','Add')),
+      h('button',{type:'button',className:'sx-quiet',onClick:close},tr('取消','Cancel'))));
+  // One helper per row group: its name, description and controls, then its pickers in the Router's columns.
+  function helperGroup(row) {
     const {id,builtin,disabled}=row, known=spaceRoles.find(r=>r[0]===id);
     const name=spaceRoleLabel(id,tr,row.name), description=known ? tr(known[3],known[4]) : row.description;
-    return h('tr',{key:id},h('th',{scope:'row'},name,description && h('small',null,description)),...pickers(id,name),
-      h('td',{'data-label':columns[4]},h('button',{type:'button',role:'switch','aria-checked':!disabled,'aria-label':name+' · '+columns[4],
-        className:'x2-switch',disabled:busy,onClick:()=>helper({action:disabled ? 'enable' : 'disable',id})},h('span',{'aria-hidden':true}))),
-      h('td',{'data-label':columns[5]},!builtin && h('div',{className:'x2-helper-actions'},
-        h('button',{type:'button',className:'sx-quiet',disabled:busy,onClick:()=>setForm({id,name:row.name,description:row.description})},tr('编辑','Edit')),
-        h('button',{type:'button',className:'sx-quiet',disabled:busy,onClick:()=>{if(form?.id===id)setForm(null);void helper({action:'remove',id})}},tr('删除','Delete')))));
+    const head=form?.id===id ? h('td',{colSpan:3},helperForm()) :
+      h('th',{colSpan:3,scope:'rowgroup'},h('div',{className:'x2-helper-title'},
+        h('span',null,h('span',{className:'x2-helper-name'},name),description && h('small',null,description)),
+        h('span',{className:'x2-helper-actions'},
+          !builtin && h('button',{type:'button',className:'sx-quiet','data-opens':id,disabled:busy,'aria-label':name+' · '+tr('编辑','Edit'),
+            onClick:()=>setForm({id,name:row.name,description:row.description})},tr('编辑','Edit')),
+          // A removed helper's row disappears; focus moves on to "Add helper".
+          !builtin && h('button',{type:'button',className:'sx-quiet',disabled:busy,'aria-label':name+' · '+tr('删除','Delete'),
+            onClick:()=>{refocus.current='add';void helper({action:'remove',id})}},tr('删除','Delete')),
+          h('button',{type:'button',role:'switch','aria-checked':!disabled,'aria-label':name+' · '+tr('启用','Enabled'),
+            className:'x2-switch',disabled:busy,onClick:()=>helper({action:disabled ? 'enable' : 'disable',id})},h('span',{'aria-hidden':true})))));
+    return h('tbody',{key:id,className:disabled ? 'x2-helper-off' : undefined},h('tr',{className:'x2-helper-head'},head),pickers(id,name));
   }
-  const edit=field=>e=>{const value=e.currentTarget.value;setForm(f=>({...f,[field]:value}))};
-  return h('div',{className:'x2-roles'},
+  return h('div',{className:'x2-roles',ref:root},
     h('h3',null,'Router'),
-    h('table',{className:'x2-router','aria-label':'Router'},
-      h('thead',null,h('tr',null,header.map(v=>h('th',{key:v,scope:'col'},v)))),
-      h('tbody',null,h('tr',null,pickers('lead',spaceRoleLabel('lead',tr))))),
+    h('table',{className:'x2-router','aria-label':'Router'},thead,h('tbody',null,pickers('lead',spaceRoleLabel('lead',tr)))),
     h('h3',null,tr('助手','Helpers')),
-    h('table',{className:'x2-helpers','aria-label':tr('助手','Helpers')},
-      h('thead',null,h('tr',null,columns.map(v=>h('th',{key:v,scope:'col'},v)))),
-      h('tbody',null,helpers.map(helperRow))),
-    form ? h('form',{className:'x2-helper-form',onSubmit:submit},
-      h('label',null,tr('名称','Name'),h('input',{type:'text',value:form.name,disabled:busy,autoFocus:true,onChange:edit('name')})),
-      h('label',null,tr('描述','Description'),h('textarea',{rows:3,value:form.description,disabled:busy,onChange:edit('description')})),
-      h('div',{className:'x2-helper-actions'},
-        h('button',{type:'submit',className:'sx-solid',disabled:busy},form.id ? tr('保存','Save') : tr('添加','Add')),
-        h('button',{type:'button',className:'sx-quiet',onClick:close},tr('取消','Cancel')))) :
-      h('button',{type:'button',ref:addButton,className:'sx-quiet x2-add-helper',disabled:busy,onClick:()=>setForm({name:'',description:''})},tr('添加助手','Add helper')),
+    h('table',{className:'x2-helpers','aria-label':tr('助手','Helpers')},thead,helpers.map(helperGroup)),
+    form && !form.id ? helperForm() :
+      h('button',{type:'button',className:'sx-quiet x2-add-helper','data-opens':'add',disabled:busy,onClick:()=>setForm({name:'',description:''})},tr('添加助手','Add helper')),
     h('p',{className:'x2-role-note'},tr('更改只用于新事项；已有事项保留原分工。','Changes apply to new cases. Existing cases keep their assignments.')),
     !directory.rows.length && h('p',{className:'x2-role-note'},tr('本机没有已加载的模型目录。','No model catalog is loaded on this client.')));
 }
